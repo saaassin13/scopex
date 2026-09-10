@@ -1,0 +1,15 @@
+{
+  "base_url": "http://127.0.0.1:8000/v1",
+  "model": "REPLACE_WITH_SERVED_MODEL_ID",
+  "api_key_env": "SCOPEX_API_KEY",
+  "timeout_s": 180,
+  "sla_s": 120,
+  "max_rounds": 6,
+  "max_tool_calls": 8,
+  "max_file_bytes": 262144,
+  "request": {
+    "temperature": 0.1,
+    "max_tokens": 2048
+  },
+  "notes": "baseline: do not infer effective thinking mode or parser from the model display name"
+}
