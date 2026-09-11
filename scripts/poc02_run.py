@@ -281,21 +281,70 @@ def response_metadata(path, mime):
         return {'usage': None, 'finish_reasons': [], 'parse': 'unknown_raw_record_kept'}
 
 
-def extract_answer(stdout):
+def cli_outcome(stdout):
+    """2026.9.2: replay safety is NOT the task-completion predicate.
+
+    Preserve replayInvalid as a do-not-auto-replay warning. Genuine errors,
+    aborts, fallback, missing/erroneous payloads and pending states still block.
+    HTTP completion, evidence, input hashes and SLA are checked separately.
+    """
     obj = load(stdout)
     if not isinstance(obj, dict): raise ValueError('unrecognized CLI JSON envelope')
-    meta = obj.get('meta') or {}
-    if (meta.get('error') or meta.get('aborted') or meta.get('replayInvalid') or
-            (meta.get('executionTrace') or {}).get('fallbackUsed')):
-        raise ValueError('CLI reported incomplete/aborted/fallback result')
+    meta = obj.get('meta')
+    if meta is None: meta = {}
+    if not isinstance(meta, dict): raise ValueError('CLI meta must be object')
+    trace = meta.get('executionTrace')
+    if trace is None: trace = {}
+    if not isinstance(trace, dict): raise ValueError('CLI executionTrace must be object')
+    flags = {k: meta.get(k) for k in ('error', 'aborted', 'replayInvalid', 'livenessState', 'timeoutPhase')}
+    flags['fallbackUsed'] = trace.get('fallbackUsed')
+    blockers = []
+    for key in ('aborted', 'replayInvalid'):
+        if meta.get(key) is not None and type(meta[key]) is not bool:
+            blockers.append('invalid_' + key + '_type')
+    if trace.get('fallbackUsed') is not None and type(trace['fallbackUsed']) is not bool:
+        blockers.append('invalid_fallbackUsed_type')
+    if meta.get('error') is not None: blockers.append('error')
+    if meta.get('aborted'): blockers.append('aborted')
+    if trace.get('fallbackUsed'): blockers.append('fallbackUsed')
+    if meta.get('timeoutPhase') or meta.get('timedOut'): blockers.append('timeout')
+    if meta.get('livenessState') in ('abandoned', 'blocked', 'paused'):
+        blockers.append('nonterminal_or_failed_liveness')
     rows = obj.get('payloads')
-    if not isinstance(rows, list): raise ValueError('CLI payloads array missing')
-    if any(r.get('isError') for r in rows): raise ValueError('CLI error payload')
+    if not isinstance(rows, list) or not all(isinstance(r, dict) for r in rows):
+        raise ValueError('CLI payloads array missing or malformed')
+    if any(r.get('isError') for r in rows): blockers.append('error_payload')
     texts = [r['text'] for r in rows if isinstance(r.get('text'), str)
              and r['text'].strip() and not r.get('isReasoning')]
-    if not texts: raise ValueError('no final visible answer')
+    if not texts: blockers.append('no_final_visible_answer')
+    return {'flags': flags, 'blockers': blockers,
+            'automatic_replay_allowed': False,
+            'warnings': ['replay_unsafe_do_not_auto_retry'] if meta.get('replayInvalid') is True else [],
+            'answer': texts[-1] if texts else None, 'visible_payloads': len(texts)}
+
+
+def extract_answer(stdout):
+    outcome = cli_outcome(stdout)
+    if outcome['blockers']:
+        raise ValueError('CLI completion blocked: ' + ', '.join(outcome['blockers']))
     # Last visible payload only; never search earlier outputs for a passing answer.
-    return texts[-1], len(texts)
+    return outcome['answer'], outcome['visible_payloads']
+
+
+FILTER_FIRST_GUIDANCE = """执行策略补充（不改变上面的筛选条件和输出要求）：
+这是有明确筛选条件的文件任务。优先考虑使用现有命令或临时脚本在文件侧筛选，
+只把匹配记录及必要上下文带回模型；只有需要了解格式时才少量抽样，不默认逐页读取全文。
+具体工具、命令及步骤由你选择，不提供预制答案。取证时保留来源和可核对的位置。
+如需分页，只按工具明确返回的续读位置或已验证的行数继续；已到文件末尾就停止续读。
+取得足够证据并核对字段后交付；只有遗漏、冲突或校验疑点时才追加检查。
+不要为了减少调用而跳过必要核对，不要猜测未读取的内容，仍需严格遵守原输出格式。"""
+
+
+def task_text(prompt, strategy='baseline'):
+    task = prompt + '\n需要读取的文件：/agent/input.log\n'
+    if strategy == 'filter-first': task += '\n' + FILTER_FIRST_GUIDANCE + '\n'
+    elif strategy != 'baseline': raise ValueError('unknown strategy')
+    return task
 
 
 def grade(answer, expected):
@@ -312,15 +361,83 @@ def grade(answer, expected):
     return {'strict_match': False, 'content_match': None, 'format_only': False}
 
 
+def text_content(value):
+    if isinstance(value, str): return value
+    if isinstance(value, list) and all(isinstance(p, dict) and
+            p.get('type') == 'text' and isinstance(p.get('text'), str) for p in value):
+        return '\n'.join(p['text'] for p in value)
+    return None
+
+
+def read_coverage(messages, source):
+    """Exact source-line/offset alignment, not substring search across pages.
+
+    Newline encodings are normalized by splitlines; spaces and duplicate source
+    lines are retained. Only linked native read returns count. Exec is not run,
+    interpreted as Python, or accepted merely for mentioning the file path.
+    """
+    lines = source.decode('utf-8').splitlines()
+    calls, returned, conflicts = {}, {}, []
+    for message in messages:
+        if not isinstance(message, dict): raise ValueError('invalid transcript message')
+        if message.get('role') == 'assistant':
+            for call in message.get('tool_calls') or []:
+                cid, func = call.get('id'), call.get('function')
+                if not isinstance(cid, str) or not isinstance(func, dict):
+                    raise ValueError('invalid tool call')
+                if cid in calls and calls[cid] != func: conflicts.append('changed_call_for_same_id')
+                calls[cid] = func
+        if message.get('role') == 'tool':
+            cid = message.get('tool_call_id')
+            if not isinstance(cid, str): continue
+            if cid in returned and returned[cid] != message: conflicts.append('changed_result_for_same_id')
+            returned[cid] = message
+    covered, pages = set(), []
+    for cid, func in calls.items():
+        if func.get('name') != 'read': continue
+        try: args = load(func.get('arguments', '{}'))
+        except (ValueError, TypeError): continue
+        if not isinstance(args, dict) or args.get('path', args.get('file_path')) != '/agent/input.log': continue
+        offset = args.get('offset', 1)
+        if type(offset) is not int or offset < 1: continue
+        page = {'id': cid, 'offset': offset, 'matched_lines': 0, 'past_eof': offset > len(lines)}
+        result = returned.get(cid, {})
+        text = text_content(result.get('content'))
+        if result.get('isError') or text is None or page['past_eof']:
+            pages.append(page); continue
+        actual = text.splitlines()
+        count = 0
+        while count < len(actual) and offset - 1 + count < len(lines):
+            if actual[count] != lines[offset - 1 + count]: break
+            count += 1
+        tail = '\n'.join(actual[count:]).strip()
+        footer = re.fullmatch(r'\[Read output capped at [^\]\n]+ for this call\. Use offset=(\d+) to continue\.\]', tail)
+        # A known cap footer must agree with the exact contiguous source prefix.
+        valid_tail = not tail or bool(footer and int(footer[1]) == offset + count)
+        if valid_tail:
+            covered.update(range(offset, offset + count)); page['matched_lines'] = count
+        else:
+            page['unrecognized_tail_or_alignment'] = True
+        pages.append(page)
+    complete = bool(lines) and len(covered) == len(lines) and not conflicts
+    return {'status': 'verified_paged_read' if complete else 'review_required',
+            'source_lines': len(lines), 'covered_lines': len(covered), 'pages': pages,
+            'transcript_conflicts': conflicts,
+            'scope': 'recorded native read evidence, not OS syscall auditing; exec still needs review'}
+
+
 def evidence(out, source):
-    """Conservative: auto-verify full native read output; exec requires review.
+    """Verify complete native read coverage (one call or pages); exec needs review.
 
     This is runtime transcript evidence, not an OS syscall audit. No inference
     from tool-call count alone. Never promote an ambiguous script to success.
     """
     calls, results = {}, {}
+    all_messages = []
     for file in sorted(Path(out).glob('wire-*-request.json')):
-        for m in read(file).get('messages', []):
+        messages = read(file).get('messages', [])
+        all_messages.extend(messages)
+        for m in messages:
             if m.get('role') == 'assistant':
                 for c in m.get('tool_calls') or []:
                     calls[c['id']] = c.get('function', {})
@@ -342,7 +459,12 @@ def evidence(out, source):
         rows.append({'id': cid, 'name': name, 'arguments': args, 'has_return': cid in results,
                      'full_input_seen_in_read_result': bool(full_read)})
     save(Path(out) / 'tool-trace.json', rows)
-    return {'status': 'verified_full_read' if verified else 'review_required' if calls else 'missing',
+    coverage = read_coverage(all_messages, source)
+    proved = coverage['status'] == 'verified_paged_read'
+    return {'status': ('verified_full_read' if proved and verified else
+                       'verified_paged_read' if proved else 'review_required' if calls else 'missing'),
+            'read_coverage': coverage,
+
             'tool_calls_seen': len(calls), 'tool_names': [r['name'] for r in rows],
             'same_argument_extra_calls': sum(n - 1 for n in counts.values()),
             'note': 'exec, partial reads and structured script output require operator evidence review'}
@@ -373,6 +495,8 @@ def run_task(cli, cfg_path, env, runtime, out, agent_id, message, seconds, serve
 def main(argv=None, native=None):
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument('--preflight', type=Path, required=True)
+    ap.add_argument('--strategy', choices=['baseline', 'filter-first'], default='baseline',
+                    help='explicit prompt-only intervention; default preserves the original task')
     ap.add_argument('--openclaw-bin', type=Path, default=Path.home() / '.openclaw/bin/openclaw')
     args = ap.parse_args(argv)
     if not sys.platform.startswith('linux') or os.geteuid() == 0:
@@ -448,10 +572,13 @@ def main(argv=None, native=None):
         if str(config_path) not in [l.strip() for l in active.splitlines()]: raise ValueError('config path mismatch')
         native.run_command([str(cli), 'config', 'validate'], env, runtime, out, 'real-config-validate')
         thread = threading.Thread(target=server.serve_forever, daemon=True); thread.start()
-        task = case['prompt'] + '\n需要读取的文件：/agent/input.log\n'
+        task = task_text(case['prompt'], args.strategy)
         result.update(stage='real_agent', status='NOT_COMPLETED', agent_task_attempted=True,
                       preflight=str(pf), input_sha256=ref['input_sha256'],
-                      request_limit=6, sla_s=ref['sla_s'], timeout_s=ref['timeout_s'])
+                      request_limit=6, sla_s=ref['sla_s'], timeout_s=ref['timeout_s'],
+                      assessment_version=2, strategy=args.strategy,
+                      task_sha256=sha(task.encode('utf-8')),
+                      original_prompt_sha256=ref['prompt_sha256'])
         print('[run] starting ONE real OpenClaw task; raw output stays local', flush=True)
         timing = run_task(cli, config_path, env, runtime, out, agent_id, task, ref['timeout_s'], server)
         result.update(timing)
@@ -459,14 +586,18 @@ def main(argv=None, native=None):
         if timing['stop'] or timing['returncode'] != 0:
             result['status'] = 'NOT_COMPLETED'
         else:
-            answer, payload_count = extract_answer((out / 'agent.stdout.txt').read_text())
+            cli_text = (out / 'agent.stdout.txt').read_text(encoding='utf-8')
+            outcome = cli_outcome(cli_text)
+            result['runtime_flags'] = {k: v for k, v in outcome.items()
+                                       if k not in ('answer', 'visible_payloads')}
+            answer, payload_count = extract_answer(cli_text)
             (out / 'answer.txt').write_text(answer, encoding='utf-8')
             marks = grade(answer, case['expected']); result['grade'] = marks
             result['visible_payloads'] = payload_count
             wire_ok = bool(server.records) and all(r.get('forwarded') and r.get('http_status') == 200
                 and r.get('response_complete') and not r.get('error_type') for r in server.records)
             valid = wire_ok and gate_passed
-            proved = trace['status'] == 'verified_full_read'
+            proved = trace['status'] in ('verified_full_read', 'verified_paged_read')
             result['strict_correct'] = valid and proved and marks['strict_match']
             result['within_sla'] = result['strict_correct'] and timing['wall_s'] <= ref['sla_s']
             result['status'] = ('PASS_SINGLE_CASE' if result['within_sla'] else
