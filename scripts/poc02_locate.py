@@ -60,16 +60,81 @@ def program_paths(args, cwd=None):
     paths = []
     for index in sorted(names):
         value = args[index]
-        if len(value) > 4096 or any(c in value for c in ('\n', '\r', '\0', '=', '://')):
+        if len(value) > 4096 or any(c in value for c in ('\n', '\r', '\0', '=', '://', '$', '`', '%')):
             continue
         p = Path(value)
         if not p.is_absolute():
-            if cwd and ('/' in value or index == 1):
+            if cwd and Path(cwd).is_absolute() and ('/' in value or index == 1):
                 p = Path(cwd) / p
             else:
                 continue
         paths.append(str(p))
     return paths
+
+
+def wrapped_program_paths(args, cwd=None, depth=0):
+    """Best-effort metadata parsing of simple sg/sh/env launchers; NEVER execute.
+
+    systemctl show is display text and can flatten quoting. Its output is only
+    a path candidate, not a reconstructed launch command. Refuse complex shell
+    programs, variable expansion, and unknown option syntax.
+    """
+    paths = program_paths(args, cwd)
+    if not args or depth >= 6:
+        return paths
+    head = Path(args[0]).name
+    tail = args[1:]
+    body = None
+    if head == 'sg':
+        if tail and tail[0] == '-':
+            tail = tail[1:]
+        if not tail or not re.fullmatch(r'[A-Za-z0-9_.-]+', tail[0]):
+            return paths
+        tail = tail[1:]  # Group name, not a program or an arbitrary flag value.
+        if tail and tail[0] in ('-c', '--command'):
+            tail = tail[1:]
+        if tail:
+            body = tail[0] if len(tail) == 1 else ' '.join(tail)
+    elif head in ('sh', 'bash', 'dash', 'zsh'):
+        if len(tail) >= 2 and re.fullmatch(r'-[lc]+', tail[0]) and 'c' in tail[0]:
+            body = tail[1] if len(tail) == 2 else ' '.join(tail[1:])
+    elif head in ('env', 'exec'):
+        if head == 'env':
+            if tail and tail[0] in ('-i', '--ignore-environment'):
+                tail = tail[1:]
+            while tail and re.match(r'^[A-Za-z_][A-Za-z0-9_]*=', tail[0]):
+                tail = tail[1:]  # Never output assignment values.
+        if tail and tail[0] == '--':
+            tail = tail[1:]
+        if tail and not tail[0].startswith('-'):
+            paths += wrapped_program_paths(tail, cwd, depth + 1)
+    elif head in ('node', 'nodejs', 'bun'):
+        # Known no-argument Node switches only; no --eval or --require parsing.
+        while tail and (tail[0] in ('--no-warnings', '--no-deprecation') or
+                        tail[0].startswith('--disable-warning=')):
+            tail = tail[1:]
+        if tail and tail[0] == '--':
+            tail = tail[1:]
+        if tail and tail[0].endswith(('.js', '.mjs', '.cjs')) and not tail[0].startswith('-'):
+            paths += program_paths([args[0], tail[0]], cwd)
+    if body and len(body) <= 65536:
+        try:
+            lex = shlex.shlex(body, posix=True, punctuation_chars=';&|<>()')
+            lex.whitespace_split = True
+            lex.commenters = ''
+            inner = list(lex)
+        except ValueError:
+            inner = []
+        # Optional literal `cd /path && command`; do not parse general scripts.
+        if (len(inner) >= 4 and inner[0] == 'cd' and inner[2] == '&&' and
+                Path(inner[1]).is_absolute() and not re.search(r'[$`%\n\r]', inner[1])):
+            cwd, inner = inner[1], inner[3:]
+        # Leading literal environment assignments, without reading environment.
+        while inner and re.match(r'^[A-Za-z_][A-Za-z0-9_]*=', inner[0]):
+            inner = inner[1:]
+        if inner and not any(t and all(c in ';&|<>()' for c in t) for t in inner):
+            paths += wrapped_program_paths(inner, cwd, depth + 1)
+    return list(dict.fromkeys(paths))
 
 
 def summarize_unit(raw):
@@ -78,13 +143,21 @@ def summarize_unit(raw):
                                        'User', 'FragmentPath', 'WorkingDirectory')}
     start = fields.get('ExecStart', '')
     # A display parser, NOT a systemd launcher. Do not execute reconstructed argv.
-    m = re.search(r'argv\[\]=(.*?)(?: ; |\s*\})', start)
+    m = re.search(r'argv\[\]=(.*?)(?: ; (?:ignore_errors|flags|start_time)=|\s*\})', start)
     try:
         args = shlex.split(m.group(1)) if m else []
     except ValueError:
         args = []
-    result['program_paths'] = program_paths(args, fields.get('WorkingDirectory'))
-    result['entry_parse'] = 'paths_found' if result['program_paths'] else 'unknown'
+    result['program_paths'] = wrapped_program_paths(args, fields.get('WorkingDirectory'))
+    wrapper = Path(args[0]).name if args else None
+    result['launcher'] = wrapper if wrapper in ('sg', 'sh', 'bash', 'dash', 'zsh', 'env', 'exec') else None
+    if result['launcher']:
+        outer = set(program_paths(args, fields.get('WorkingDirectory')))
+        nested = [v for v in result['program_paths'] if v not in outer]
+        result['entry_parse'] = 'wrapped_paths_candidate' if nested else 'wrapper_only'
+    else:
+        result['entry_parse'] = 'paths_found' if result['program_paths'] else 'unknown'
+    result['entry_source'] = 'loaded_systemctl_show_metadata_not_executed'
     return result
 
 
