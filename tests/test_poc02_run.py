@@ -86,10 +86,16 @@ class Tests(unittest.TestCase):
             {'text':'{}'}]})),('{}',1))
 
     def test_incomplete_and_fallback_rejected(self):
-        for meta in ({'error':{'kind':'incomplete_turn'}},{'aborted':True},{'replayInvalid':True},
+        for meta in ({'error':{'kind':'incomplete_turn'}},{'aborted':True},
                      {'executionTrace':{'fallbackUsed':True}}):
             with self.subTest(meta=meta), self.assertRaises(ValueError):
                 p.extract_answer(json.dumps({'payloads':[{'text':'{}'}],'meta':meta}))
+
+    def test_replay_flag_is_preserved_but_not_completion_failure(self):
+        text=json.dumps({'payloads':[{'text':'{}'}], 'meta':{'replayInvalid':True}})
+        self.assertEqual(p.extract_answer(text), ('{}',1))
+        self.assertTrue(p.cli_outcome(text)['warnings'])
+        self.assertFalse(p.cli_outcome(text)['automatic_replay_allowed'])
 
     def test_missing_cli_envelope_rejected(self):
         for text in ('{}','[]','banner\n{"payloads":[]}', '{"payloads":[{"text":"error","isError":true}]}'):
