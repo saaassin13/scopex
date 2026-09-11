@@ -25,7 +25,9 @@ ROOT = Path(__file__).resolve().parents[1]
 TOOLS = ['read', 'exec', 'process']
 SYNTHETIC = 'SCOPEX_WIRE_CAPTURE_ONLY_NOT_A_MODEL_RESULT'
 MARKER = 'SCOPEX_SANDBOX_WIRE_CHECK'
-TOOL_ID = 'call_scopex_preflight'
+# Alphanumeric fixture ID survives the observed runtime ID sanitization.
+# Keep exact result-ID matching; do not strip punctuation from arbitrary IDs.
+TOOL_ID = 'callscopexpreflight'
 
 class CheckError(Exception):
     pass
@@ -151,6 +153,39 @@ def check_wire(payload, ref):
             'message_chars': len(json.dumps(payload.get('messages', []), ensure_ascii=False)),
             'problems': problems}
 
+
+def check_tool_return(payload):
+    """Inspect only tool-role returns; never accept a marker from another ID.
+
+    Parameter checks and result checks are separate diagnostics. The old fixture
+    used underscores that the observed runtime removed from both message IDs.
+    A stable emitted ID fixes that compatibility error without bypassing checks.
+    """
+    messages = payload.get('messages', [])
+    if not isinstance(messages, list):
+        raise CheckError('messages must be a list')
+    returned = [m for m in messages if isinstance(m, dict) and m.get('role') == 'tool']
+    matching = [m for m in returned if m.get('tool_call_id') == TOOL_ID]
+    def has_marker(message):
+        return MARKER in json.dumps(message.get('content', ''), ensure_ascii=False)
+    problems = []
+    if not matching:
+        problems.append('tool_call_id mismatch or missing tool result')
+    elif len(matching) != 1:
+        problems.append('duplicate tool results for expected ID')
+    elif not has_marker(matching[0]):
+        problems.append('expected tool result missing marker')
+    ids = [m.get('tool_call_id') for m in returned]
+    return {
+        'expected_tool_call_id': TOOL_ID,
+        'returned_tool_call_ids': [v if isinstance(v, str) and
+            re.fullmatch(r'[A-Za-z0-9_-]{1,80}', v) else '<invalid-or-omitted>' for v in ids],
+        'matching_result_count': len(matching),
+        'marker_present_in_tool_results': any(has_marker(m) for m in returned),
+        'marker_matched_expected_id': len(matching) == 1 and has_marker(matching[0]),
+        'problems': problems,
+    }
+
 class Receiver(ThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = False
@@ -200,10 +235,11 @@ class Handler(BaseHTTPRequestHandler):
                      'arguments': json.dumps({'command': "printf 'SCOPEX_SANDBOX_WIRE_CHECK\\n'"})}}]}
                 finish = 'tool_calls'
             else:
-                returned = [m for m in payload.get('messages', [])
-                            if m.get('role') == 'tool' and m.get('tool_call_id') == TOOL_ID]
-                if not any(MARKER in json.dumps(m.get('content', ''), ensure_ascii=False) for m in returned):
-                    return self.send({'error': 'native exec did not return the marker'}, 422)
+                check = check_tool_return(payload)
+                detail['tool_return'] = check
+                if check['problems']:
+                    return self.send({'error': 'native exec return validation failed: ' +
+                                      '; '.join(check['problems'])}, 422)
                 reply = {'role': 'assistant', 'content': SYNTHETIC}
                 finish = 'stop'
             if payload.get('stream'):
@@ -308,7 +344,8 @@ def main(argv=None):
     for p in (runtime / 'home', runtime / 'state', runtime / 'sandboxes'):
         p.mkdir(parents=True, mode=0o700)
     result = {'status': 'PREFLIGHT_FAILED', 'synthetic_response': True, 'model_inference_calls': 0,
-              'agent_task_executed': False, 'stage': 'docker_context', 'errors': []}
+              'agent_task_executed': False, 'stage': 'docker_context', 'errors': [],
+              'synthetic_tool_call_id': TOOL_ID}
     server = thread = None
     containers = []
     prefix = ''
