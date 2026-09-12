@@ -10,6 +10,7 @@ from scopex.evidence.catalog import EvidenceCatalog, EvidenceItem
 from scopex.evidence.collector import EvidenceCollector
 from scopex.events.progress import EventSink
 from scopex.finalizer.service import FinalizationResult, FinalizationService
+from scopex.finalizer.structured import StructuredFinalizer, StructuredFinalizerResult
 from scopex.runtime.controller import TaskController
 from scopex.runtime.convergence import (
     ConvergenceDecision,
@@ -103,7 +104,7 @@ class InvestigationCoordinator:
         )
 
     def start(self, message: str, *, turn_name: str = "turn-001") -> OpenClawTurnResult:
-        if self.task.state is not TaskState.CREATED:
+        if self.controller.state is not TaskState.CREATED:
             raise ValueError("start requires CREATED task")
         self.session.user(message)
         self.controller.created()
@@ -116,7 +117,7 @@ class InvestigationCoordinator:
         self.stop_gate.request("user_stop")
 
     def resume(self, message: str, *, turn_name: str) -> OpenClawTurnResult:
-        if self.task.state is not TaskState.PAUSED:
+        if self.controller.state is not TaskState.PAUSED:
             raise ValueError("resume requires PAUSED task")
         self.stop_gate.reset_for_resume()
         self.controller.resume(message)
@@ -180,11 +181,28 @@ class InvestigationCoordinator:
         *,
         service: FinalizationService | None = None,
     ) -> FinalizationResult:
-        if self.task.state is not TaskState.FINALIZING:
+        if self.controller.state is not TaskState.FINALIZING:
             raise ValueError("task must be FINALIZING")
         result = (service or FinalizationService()).finalize(payload, self.catalog)
         if not result.valid:
             self.controller.fail("structured_finalizer_validation_failed")
+            return result
+        self.controller.finalization_completed()
+        self.controller.complete()
+        return result
+
+    def finalize_fresh(
+        self,
+        finalizer: StructuredFinalizer,
+        *,
+        goal_satisfied: bool = False,
+    ) -> StructuredFinalizerResult:
+        """End Investigation by policy, then execute one fresh no-tool finalizer call."""
+
+        self.begin_finalization(goal_satisfied=goal_satisfied)
+        result = finalizer.run(user_request=self.task.user_request, catalog=self.catalog)
+        if not result.valid:
+            self.controller.fail("fresh_structured_finalizer_failed")
             return result
         self.controller.finalization_completed()
         self.controller.complete()
@@ -206,7 +224,7 @@ class InvestigationCoordinator:
         return self.agent.close()
 
     def _run_turn(self, message: str, *, turn_name: str) -> OpenClawTurnResult:
-        if self.task.state is not TaskState.RUNNING:
+        if self.controller.state is not TaskState.RUNNING:
             raise ValueError("agent turn requires RUNNING task")
         result = self.agent.run_turn(message, turn_name=turn_name)
         self._turns += 1
