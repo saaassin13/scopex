@@ -167,7 +167,7 @@ class RuntimeApiServiceTests(unittest.TestCase):
             service.stop(first_id, "pause now")
             wait_state(service, first_id, "PAUSED")
             deadline = time.monotonic() + 2
-            while factory.coordinators[0].release.is_set() and service._handles[first_id].worker_alive:
+            while service._handles[first_id].worker_alive:
                 if time.monotonic() >= deadline:
                     self.fail("paused worker did not unwind")
                 time.sleep(0.01)
@@ -176,6 +176,7 @@ class RuntimeApiServiceTests(unittest.TestCase):
 
             service.resume(first_id, "continue")
             wait_state(service, first_id, "COMPLETED")
+            factory.block_initial = False
             second = service.create_task("second")
             wait_state(service, second["id"], "COMPLETED")
 
