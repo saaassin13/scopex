@@ -21,6 +21,7 @@ from scopex.agent.openclaw_runner import OpenClawProcessResult, OpenClawTurnRunn
 from scopex.agent.outcome import CliOutcome, parse_cli_outcome
 from scopex.agent.proxy_control import RuntimeRequestHook
 from scopex.agent.request_policy import OpenClawRequestPolicy
+from scopex.agent.sandbox import SandboxCleanupResult, SandboxManager
 from scopex.events.observer import AgentProgressObserver
 from scopex.events.progress import EventSink
 from scopex.runtime.stop import SafeStopGate, StopBoundary
@@ -47,6 +48,7 @@ class OpenClawTaskSpec:
     max_requests: int = 12
     max_tokens: int = 2048
     skills: tuple[str, ...] = ()
+    docker_bin: str = "docker"
 
 
 @dataclass(frozen=True, slots=True)
@@ -198,3 +200,20 @@ class OpenClawTaskRuntime:
             proxy.shutdown()
             proxy.server_close()
             thread.join(timeout=3)
+
+    def close(self) -> SandboxCleanupResult:
+        """Remove only Docker sandboxes owned by this task's configured agent.
+
+        Session-scoped sandboxes must survive across turns for Stop/Resume and
+        Steering. Cleanup therefore happens only when the ScopeX task closes.
+        """
+
+        manager = SandboxManager(
+            docker_bin=self.spec.docker_bin,
+            env={
+                "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+                "DOCKER_HOST": self.spec.docker_host,
+            },
+            container_prefix=f"scopex-{self.spec.agent_id}-",
+        )
+        return manager.cleanup()
