@@ -126,6 +126,24 @@ class EvidenceExtractorTests(unittest.TestCase):
         self.assertEqual(catalog.get("E2").raw, "seco")
         self.assertTrue(catalog.get("E2").metadata["line_truncated"])
 
+    def test_equal_text_on_different_lines_keeps_distinct_evidence_identity(self):
+        events = InMemoryEventSink()
+        catalog = EvidenceCatalog("t1", "agent:sx:t1")
+        pipeline = EvidenceExtractionPipeline(
+            EvidenceCollector(catalog, events),
+            [ReadLineExtractor()],
+        )
+        trace = AgentTrace(
+            calls=(ToolCall("c1", "read", {"path": "/agent/repeat.log"}),),
+            results=(ToolResult("c1", "heartbeat ok\nheartbeat ok\n"),),
+        )
+        pipeline.process_trace(trace)
+        self.assertEqual(len(catalog.items), 2)
+        self.assertEqual(catalog.get("E1").raw, "heartbeat ok")
+        self.assertEqual(catalog.get("E2").raw, "heartbeat ok")
+        self.assertEqual(catalog.get("E1").metadata["line_number"], 1)
+        self.assertEqual(catalog.get("E2").metadata["line_number"], 2)
+
 
 if __name__ == "__main__":
     unittest.main()
