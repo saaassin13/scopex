@@ -269,15 +269,14 @@ class InvestigationCoordinator:
         self._snapshot()
         return result
 
-    def finalize_fresh(
+    def finish_fresh_finalization(
         self,
         finalizer: StructuredFinalizer,
-        *,
-        goal_satisfied: bool = False,
     ) -> StructuredFinalizerResult:
-        """End Investigation by policy, then execute one fresh no-tool finalizer call."""
+        """Execute a fresh no-tool finalizer after FINALIZING was claimed atomically."""
 
-        self.begin_finalization(goal_satisfied=goal_satisfied)
+        if self.controller.state is not TaskState.FINALIZING:
+            raise ValueError("task must be FINALIZING")
         result = finalizer.run(user_request=self.task.user_request, catalog=self.catalog)
         if self.audit is not None and result.payload is not None:
             self.audit.persist_claims(result.payload)
@@ -291,6 +290,17 @@ class InvestigationCoordinator:
         self._persist_structured_result(result)
         self._snapshot()
         return result
+
+    def finalize_fresh(
+        self,
+        finalizer: StructuredFinalizer,
+        *,
+        goal_satisfied: bool = False,
+    ) -> StructuredFinalizerResult:
+        """Atomically end Investigation, then execute one fresh no-tool finalizer call."""
+
+        self.begin_finalization(goal_satisfied=goal_satisfied)
+        return self.finish_fresh_finalization(finalizer)
 
     @property
     def metrics(self) -> InvestigationMetrics:
