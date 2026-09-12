@@ -29,6 +29,34 @@ def _unique_strings(value: Any) -> tuple[bool, list[str]]:
     return True, value
 
 
+def _claim_signature(claim: Mapping[str, Any], refs: list[str]) -> tuple[Any, ...] | None:
+    """Return the user-visible structural identity of a validated-ish claim.
+
+    Fact and temporal-association topics are intentionally not rendered, so two
+    such claims with the same structural fields and evidence refs would produce
+    duplicate user-visible output even if the model changed only ``topic``.
+    Causal hypotheses and unknowns do render topic, so topic remains part of
+    their signature. Evidence-ref order is canonicalized because it does not
+    change claim meaning.
+    """
+
+    kind = claim.get("kind")
+    relation = claim.get("relation")
+    scope = claim.get("scope")
+    confidence = claim.get("confidence")
+    if kind not in _KINDS or relation not in _RELATIONS or scope not in _SCOPES:
+        return None
+    topic = claim.get("topic") if relation in {"causal_hypothesis", "unknown"} else None
+    return (
+        kind,
+        relation,
+        scope,
+        confidence,
+        tuple(sorted(refs)),
+        topic,
+    )
+
+
 def validate_claim_payload(payload: Any, catalog: EvidenceCatalog) -> list[str]:
     """Validate generic epistemic structure.
 
@@ -49,6 +77,7 @@ def validate_claim_payload(payload: Any, catalog: EvidenceCatalog) -> list[str]:
 
     valid_refs = catalog.refs
     seen_ids: set[str] = set()
+    seen_signatures: set[tuple[Any, ...]] = set()
 
     for index, claim in enumerate(claims):
         prefix = f"claims[{index}]"
@@ -120,8 +149,20 @@ def validate_claim_payload(payload: Any, catalog: EvidenceCatalog) -> list[str]:
             if confidence != "unknown":
                 errors.append(prefix + ".unknown_confidence")
 
+        signature = _claim_signature(claim, refs)
+        if signature is not None:
+            if signature in seen_signatures:
+                errors.append(prefix + ".duplicate_claim")
+            else:
+                seen_signatures.add(signature)
+
     summary_ok, summary = _unique_strings(payload.get("summary_claim_ids"))
-    if not summary_ok or not summary or any(cid not in seen_ids for cid in summary):
+    if (
+        not summary_ok
+        or not summary
+        or len(summary) > 4
+        or any(cid not in seen_ids for cid in summary)
+    ):
         errors.append("summary_claim_ids")
 
     return errors
