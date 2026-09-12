@@ -1,0 +1,115 @@
+import unittest
+
+from scopex.evidence.catalog import EvidenceCatalog
+from scopex.finalizer.client import FinalizerResponse
+from scopex.finalizer.structured import StructuredFinalizer, parse_structured_payload
+
+
+class FakeClient:
+    def __init__(self, content, finish="stop", done=True):
+        self.content = content
+        self.finish = finish
+        self.done = done
+        self.calls = []
+
+    def complete(self, **kwargs):
+        self.calls.append(kwargs)
+        return FinalizerResponse(
+            content=self.content,
+            headers_s=0.01,
+            first_content_s=0.02,
+            elapsed_s=0.03,
+            finish_reasons=(self.finish,),
+            done_seen=self.done,
+            usage={"prompt_tokens": 10, "completion_tokens": 10, "total_tokens": 20},
+        )
+
+
+class StructuredFinalizerTests(unittest.TestCase):
+    def catalog(self):
+        catalog = EvidenceCatalog("t1", "s1")
+        catalog.add(source="system.log", raw="worker exited status=137")
+        catalog.add(source="app.log", raw="task failed target_pose_unavailable")
+        return catalog
+
+    def test_fenced_json_parse(self):
+        self.assertEqual(
+            parse_structured_payload('```json\n{"claims": [], "summary_claim_ids": []}\n```')["claims"],
+            [],
+        )
+
+    def test_finalizer_validates_and_renders(self):
+        content = '''{
+          "claims": [
+            {
+              "id": "C1",
+              "kind": "fact",
+              "topic": "GPU OOM caused everything",
+              "evidence_refs": ["E1"],
+              "confidence": "high",
+              "scope": "event",
+              "relation": "observed"
+            },
+            {
+              "id": "C2",
+              "kind": "inference",
+              "topic": "close in time",
+              "evidence_refs": ["E1", "E2"],
+              "confidence": "medium",
+              "scope": "time_window",
+              "relation": "temporal_association"
+            }
+          ],
+          "summary_claim_ids": ["C1", "C2"]
+        }'''
+        client = FakeClient(content)
+        result = StructuredFinalizer(client, model="m").run(
+            user_request="diagnose",
+            catalog=self.catalog(),
+        )
+        self.assertTrue(result.valid)
+        self.assertTrue(result.finalization.valid)
+        self.assertIn("worker exited status=137", result.finalization.rendered)
+        self.assertNotIn("GPU OOM caused everything", result.finalization.rendered)
+        self.assertIn("该结构不表示已证明因果", result.finalization.rendered)
+        self.assertEqual(len(client.calls), 1)
+        self.assertEqual(client.calls[0]["temperature"], 0)
+
+    def test_invalid_claim_structure_does_not_render(self):
+        client = FakeClient('''{
+          "claims": [{
+            "id": "C1",
+            "kind": "fact",
+            "topic": "x",
+            "evidence_refs": [],
+            "confidence": "high",
+            "scope": "event",
+            "relation": "observed"
+          }],
+          "summary_claim_ids": ["C1"]
+        }''')
+        result = StructuredFinalizer(client, model="m").run(
+            user_request="diagnose",
+            catalog=self.catalog(),
+        )
+        self.assertFalse(result.valid)
+        self.assertIn("claims[0].fact_requires_evidence", result.finalization.errors)
+        self.assertIsNone(result.finalization.rendered)
+
+    def test_transport_must_finish_normally(self):
+        content = '''{
+          "claims": [{
+            "id": "C1", "kind": "unknown", "topic": "cause",
+            "evidence_refs": ["E1"], "confidence": "unknown",
+            "scope": "event", "relation": "unknown"
+          }],
+          "summary_claim_ids": ["C1"]
+        }'''
+        result = StructuredFinalizer(FakeClient(content, finish="length"), model="m").run(
+            user_request="diagnose", catalog=self.catalog()
+        )
+        self.assertFalse(result.valid)
+
+
+if __name__ == "__main__":
+    unittest.main()
