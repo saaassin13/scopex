@@ -92,9 +92,21 @@ class RuntimeMvpCoreTests(unittest.TestCase):
 
     def make_claim_fixture(self):
         catalog = EvidenceCatalog("t1", "s1")
-        catalog.add(source="system.log", raw="worker exited status=137")
-        catalog.add(source="app.log", raw="task failed target_pose_unavailable")
-        catalog.add(source="robot.log", raw="joint_fault_code=0")
+        catalog.add(
+            source="/agent/system.log",
+            raw="worker exited status=137",
+            metadata={"line_number": 3},
+        )
+        catalog.add(
+            source="/agent/app.log",
+            raw="task failed target_pose_unavailable",
+            metadata={"line_number": 5},
+        )
+        catalog.add(
+            source="/agent/robot.log",
+            raw="joint_fault_code=0",
+            metadata={"line_number": 4},
+        )
         payload = {
             "claims": [
                 {
@@ -136,6 +148,8 @@ class RuntimeMvpCoreTests(unittest.TestCase):
         self.assertIn("worker exited status=137", rendered)
         self.assertIn("该结构不表示已证明因果", rendered)
         self.assertIn("status 137 trigger mechanism", rendered)
+        self.assertIn("E1 system.log:L3", rendered)
+        self.assertNotIn("证据索引", rendered)
         # A malicious/incorrect model topic on an observed fact must not become prose.
         self.assertNotIn("GPU OOM definitely caused this", rendered)
 
@@ -151,6 +165,21 @@ class RuntimeMvpCoreTests(unittest.TestCase):
         payload["claims"][1]["evidence_refs"] = ["E1"]
         errors = validate_claim_payload(payload, catalog)
         self.assertIn("claims[1].temporal_requires_two_refs", errors)
+
+    def test_validator_rejects_duplicate_user_visible_fact(self):
+        catalog, payload = self.make_claim_fixture()
+        payload["claims"].insert(1, {
+            "id": "C4",
+            "kind": "fact",
+            "topic": "different model topic but same visible fact",
+            "evidence_refs": ["E1"],
+            "confidence": "high",
+            "scope": "event",
+            "relation": "observed",
+        })
+        payload["summary_claim_ids"] = ["C1", "C2", "C3", "C4"]
+        errors = validate_claim_payload(payload, catalog)
+        self.assertIn("claims[1].duplicate_claim", errors)
 
     def test_audit_store_writes_task_files(self):
         with tempfile.TemporaryDirectory() as td:
