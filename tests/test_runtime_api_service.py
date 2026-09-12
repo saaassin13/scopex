@@ -142,12 +142,15 @@ class FakeCoordinator:
             raise ValueError("task must be FINALIZING")
         if self.block_finalizer:
             self.finalizer_release.wait(timeout=2)
-        self.controller.finalization_completed()
-        self.controller.complete()
+
+        # Mirror the production publication contract: result must exist before
+        # FINALIZATION_COMPLETED/TASK_COMPLETED become externally visible.
         self.audit.persist_result(
-            {"valid": True, "errors": [], "task_state": self.task.state.value},
+            {"valid": True, "errors": [], "task_state": TaskState.COMPLETED.value},
             rendered="final result",
         )
+        self.controller.finalization_completed()
+        self.controller.complete()
         self.audit.snapshot_control(self.task, self.session, self.catalog)
         return object()
 
