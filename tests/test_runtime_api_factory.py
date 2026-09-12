@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 from pathlib import Path
 import tempfile
 import unittest
@@ -14,7 +13,7 @@ from scopex.storage.runtime_audit import RuntimeAudit
 
 
 class RuntimeApiFactoryTests(unittest.TestCase):
-    def test_convergence_budget_matches_openclaw_hard_limits(self):
+    def test_runtime_options_propagate_to_openclaw_spec(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             cli = root / "openclaw"
@@ -37,6 +36,7 @@ class RuntimeApiFactoryTests(unittest.TestCase):
                 data_binds=("/srv/logs:/agent-data/logs:ro",),
                 exec_host="gateway",
                 exec_mode="full",
+                enable_view_image=True,
             )
             factory = OpenClawRuntimeFactory(config)
 
@@ -63,6 +63,10 @@ class RuntimeApiFactoryTests(unittest.TestCase):
             )
             self.assertEqual(coordinator.agent.spec.exec_host, "gateway")
             self.assertEqual(coordinator.agent.spec.exec_mode, "full")
+            self.assertEqual(
+                coordinator.agent.spec.tools,
+                ("read", "exec", "process", "view_image"),
+            )
             self.assertEqual(coordinator.convergence_policy.max_elapsed_s, 181.0)
             self.assertEqual(coordinator.convergence_policy.max_model_requests, 6)
 
