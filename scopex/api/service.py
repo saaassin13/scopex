@@ -156,11 +156,12 @@ class TaskService:
 
     def list_tasks(self) -> list[dict]:
         tasks: list[dict] = []
-        for task_id in reversed(self.store.list_task_ids()):
+        for task_id in self.store.list_task_ids():
             try:
                 tasks.append(self.get_task(task_id))
             except (TaskNotFoundError, json.JSONDecodeError, OSError):
                 continue
+        tasks.sort(key=lambda row: str(row.get("created_at", "")), reverse=True)
         return tasks
 
     def get_events(self, task_id: str, *, after: int = 0) -> list[dict]:
