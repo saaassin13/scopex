@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import json
+from pathlib import Path
 from typing import Any
 
 
@@ -94,6 +95,24 @@ def parse_messages(messages: Any) -> AgentTrace:
             cid = message["tool_call_id"]
             results[cid] = ToolResult(cid, text_content(message.get("content")))
 
+    return AgentTrace(tuple(calls.values()), tuple(results.values()))
+
+
+def load_audit_trace(audit_dir: Path) -> AgentTrace:
+    """Aggregate all recorded OpenClaw requests for one turn into one trace."""
+
+    calls: dict[str, ToolCall] = {}
+    results: dict[str, ToolResult] = {}
+    for path in sorted(Path(audit_dir).glob("wire-*-request.json")):
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, ValueError):
+            continue
+        trace = parse_messages(payload.get("messages") if isinstance(payload, dict) else None)
+        for call in trace.calls:
+            calls[call.id] = call
+        for result in trace.results:
+            results[result.tool_call_id] = result
     return AgentTrace(tuple(calls.values()), tuple(results.values()))
 
 
