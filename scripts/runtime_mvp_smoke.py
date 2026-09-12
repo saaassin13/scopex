@@ -97,6 +97,14 @@ def evidence_coverage(coordinator: InvestigationCoordinator) -> dict[str, bool]:
     return {name: name in sources for name in FILES}
 
 
+def text_tail(path: Path, max_chars: int = 4000) -> str:
+    try:
+        text = Path(path).read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        return f"<unreadable: {type(exc).__name__}: {str(exc)[:200]}>"
+    return text[-max_chars:]
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--preflight", type=Path, required=True)
@@ -139,7 +147,8 @@ def main(argv=None):
     staged = stage_fixture(workspace, args.fixture.resolve())
 
     task_id = "mvp-" + uuid.uuid4().hex[:12]
-    session_key = f"agent:sxmvp:{task_id}"
+    agent_id = "sxmvp" + uuid.uuid4().hex[:8]
+    session_key = f"agent:{agent_id}:{task_id}"
     task = Task(task_id, TASK, session_key)
     session = Session(task_id, session_key)
     memory_events = InMemoryEventSink()
@@ -157,7 +166,7 @@ def main(argv=None):
         audit_root=turn_audit,
         image=image,
         docker_host=host,
-        agent_id="sxmvp" + uuid.uuid4().hex[:8],
+        agent_id=agent_id,
         uid=os.getuid(),
         gid=os.getgid(),
         timeout_s=args.timeout,
@@ -178,6 +187,7 @@ def main(argv=None):
     result = {
         "status": "RUNTIME_MVP_SMOKE_FAILED",
         "task_id": task_id,
+        "agent_id": agent_id,
         "session_key": session_key,
         "root": str(root),
         "model": args.model,
@@ -186,6 +196,8 @@ def main(argv=None):
     try:
         turn = coordinator.start(TASK, turn_name="turn-001")
         coverage = evidence_coverage(coordinator)
+        stdout_tail = text_tail(turn.process.stdout_path)
+        stderr_tail = text_tail(turn.process.stderr_path)
         result["investigation"] = {
             "returncode": turn.process.returncode,
             "stop_reason": turn.process.stop_reason,
@@ -194,9 +206,15 @@ def main(argv=None):
             "forwarded_requests": sum(1 for row in turn.proxy_records if row.get("forwarded") is True),
             "coverage": coverage,
             "evidence_count": len(coordinator.catalog.items),
+            "stdout_tail": stdout_tail,
+            "stderr_tail": stderr_tail,
         }
-        if not all(coverage.values()):
-            result["error"] = "investigation did not read all three required fixture files"
+        if turn.process.returncode != 0 or turn.process.stop_reason is not None:
+            result["error"] = "OpenClaw investigation turn failed before successful completion"
+            coordinator.controller.fail("smoke_investigation_process_failed")
+            audit.snapshot_control(task, session, coordinator.catalog)
+        elif not all(coverage.values()):
+            result["error"] = "investigation completed but did not read all three required fixture files"
             coordinator.controller.fail("smoke_missing_required_evidence")
             audit.snapshot_control(task, session, coordinator.catalog)
         else:
