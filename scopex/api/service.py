@@ -7,7 +7,6 @@ import threading
 import uuid
 from typing import Callable, Protocol
 
-from scopex.events.progress import AuditEventSink if False else None
 from scopex.events.progress import EventSink, InMemoryEventSink
 from scopex.finalizer.structured import StructuredFinalizer
 from scopex.runtime.investigation import InvestigationCoordinator
@@ -85,6 +84,12 @@ class TaskService:
         self._lock = threading.RLock()
         self._handles: dict[str, TaskHandle] = {}
         self._active_task_id: str | None = None
+
+    @property
+    def active_task_id(self) -> str | None:
+        with self._lock:
+            self._release_terminal_active_locked()
+            return self._active_task_id
 
     def create_task(self, message: str) -> dict:
         message = self._message(message)
@@ -167,8 +172,11 @@ class TaskService:
         except FileNotFoundError:
             return []
         return [
-            row for row in rows
-            if isinstance(row, dict) and isinstance(row.get("seq"), int) and row["seq"] > after
+            row
+            for row in rows
+            if isinstance(row, dict)
+            and isinstance(row.get("seq"), int)
+            and row["seq"] > after
         ]
 
     def get_evidence(self, task_id: str) -> dict:
@@ -183,7 +191,11 @@ class TaskService:
         try:
             result = self.store.read_json(task_id, "result.json")
         except FileNotFoundError:
-            return {"task_id": task_id, "state": task.get("state"), "available": False}
+            return {
+                "task_id": task_id,
+                "state": task.get("state"),
+                "available": False,
+            }
         rendered = None
         try:
             rendered = self.store.read_text(task_id, "final.txt")
@@ -207,20 +219,32 @@ class TaskService:
                 except Exception:
                     pass
             thread = handle.thread if handle is not None else None
+
         if thread is not None and thread.is_alive():
             thread.join(timeout=max(0.0, timeout_s))
+
         with self._lock:
             if handle is not None and not handle.worker_alive and not handle.task.terminal:
                 handle.coordinator.controller.cancel("server_shutdown")
-                handle.audit.snapshot_control(handle.task, handle.session, handle.coordinator.catalog)
+                handle.audit.snapshot_control(
+                    handle.task,
+                    handle.session,
+                    handle.coordinator.catalog,
+                )
                 self._cleanup_terminal_locked(handle)
 
     def _run_initial(self, handle: TaskHandle, _unused: str) -> None:
-        handle.coordinator.start(handle.task.user_request, turn_name=handle.next_turn_name())
+        handle.coordinator.start(
+            handle.task.user_request,
+            turn_name=handle.next_turn_name(),
+        )
         self._drive_after_turn(handle)
 
     def _run_resume(self, handle: TaskHandle, message: str) -> None:
-        handle.coordinator.resume(message, turn_name=handle.next_turn_name())
+        handle.coordinator.resume(
+            message,
+            turn_name=handle.next_turn_name(),
+        )
         self._drive_after_turn(handle)
 
     def _drive_after_turn(self, handle: TaskHandle) -> None:
@@ -232,21 +256,34 @@ class TaskService:
                     at_turn_end=True,
                     running_tool_cancelled=False,
                 )
-                handle.audit.snapshot_control(handle.task, handle.session, coordinator.catalog)
-                return
-            if state is TaskState.PAUSED or state.terminal if False else False:
+                handle.audit.snapshot_control(
+                    handle.task,
+                    handle.session,
+                    coordinator.catalog,
+                )
                 return
             if state is TaskState.PAUSED:
                 return
             if state is TaskState.RUNNING and coordinator.steering.pending:
-                coordinator.continue_pending_steering(turn_name=handle.next_turn_name())
+                coordinator.continue_pending_steering(
+                    turn_name=handle.next_turn_name()
+                )
                 continue
             if state is TaskState.RUNNING:
                 if not coordinator.catalog.items:
-                    coordinator.controller.fail("investigation_completed_without_evidence")
-                    handle.audit.snapshot_control(handle.task, handle.session, coordinator.catalog)
+                    coordinator.controller.fail(
+                        "investigation_completed_without_evidence"
+                    )
+                    handle.audit.snapshot_control(
+                        handle.task,
+                        handle.session,
+                        coordinator.catalog,
+                    )
                     return
-                coordinator.finalize_fresh(self.finalizer_factory(), goal_satisfied=True)
+                coordinator.finalize_fresh(
+                    self.finalizer_factory(),
+                    goal_satisfied=True,
+                )
                 return
             return
 
@@ -264,11 +301,16 @@ class TaskService:
                 target(handle, arg)
             except Exception as exc:
                 if not handle.task.terminal:
-                    handle.coordinator.controller.fail("runtime_api_worker_exception")
+                    handle.coordinator.controller.fail(
+                        "runtime_api_worker_exception"
+                    )
                 handle.audit.store.write_json(
                     handle.task.id,
                     "worker-error.json",
-                    {"type": type(exc).__name__, "message": str(exc)[:800]},
+                    {
+                        "type": type(exc).__name__,
+                        "message": str(exc)[:800],
+                    },
                 )
                 handle.audit.snapshot_control(
                     handle.task,
@@ -321,7 +363,9 @@ class TaskService:
             if handle is not None:
                 return handle
         self._require_task(task_id)
-        raise TaskConflictError("task is historical and cannot be controlled after process restart")
+        raise TaskConflictError(
+            "task is historical and cannot be controlled after process restart"
+        )
 
     def _require_task(self, task_id: str) -> None:
         try:
