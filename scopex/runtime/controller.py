@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 from typing import Any
 
 from scopex.events.progress import EventSink, EventType
@@ -12,7 +13,8 @@ class TaskController:
 
     The controller does not decide business investigation steps. OpenClaw owns
     the agent loop; ScopeX owns lifecycle, stop/resume/steer and finalization
-    boundaries.
+    boundaries. State-changing methods are serialized because UI/API controls
+    and proxy callbacks can arrive from different threads.
     """
 
     def __init__(self, task: Task, session: Session, events: EventSink) -> None:
@@ -21,80 +23,108 @@ class TaskController:
         self.task = task
         self.session = session
         self.events = events
+        self._lock = threading.RLock()
+
+    @property
+    def state(self) -> TaskState:
+        with self._lock:
+            return self.task.state
 
     def created(self) -> None:
-        self.events.emit(self.task.id, EventType.TASK_CREATED, state=self.task.state.value)
+        with self._lock:
+            self.events.emit(self.task.id, EventType.TASK_CREATED, state=self.task.state.value)
 
     def start(self) -> None:
-        self.task.transition(TaskState.RUNNING)
-        self.events.emit(self.task.id, EventType.TASK_STARTED, state=self.task.state.value)
+        with self._lock:
+            self.task.transition(TaskState.RUNNING)
+            self.events.emit(self.task.id, EventType.TASK_STARTED, state=self.task.state.value)
 
     def steer(self, message: str) -> None:
-        if self.task.state not in {TaskState.RUNNING, TaskState.PAUSED}:
-            raise ValueError("steering requires RUNNING or PAUSED task")
-        turn = self.session.steer(message)
-        self.events.emit(
-            self.task.id,
-            EventType.USER_STEER,
-            turn_index=turn.index,
-            message=message,
-        )
+        with self._lock:
+            if self.task.state not in {TaskState.RUNNING, TaskState.PAUSED}:
+                raise ValueError("steering requires RUNNING or PAUSED task")
+            turn = self.session.steer(message)
+            self.events.emit(
+                self.task.id,
+                EventType.USER_STEER,
+                turn_index=turn.index,
+                message=message,
+            )
 
     def request_stop(self, message: str = "") -> None:
-        if self.task.state is not TaskState.RUNNING:
-            raise ValueError("stop requires RUNNING task")
-        self.session.stop(message)
-        self.task.transition(TaskState.PAUSING, reason="user_stop")
-        self.events.emit(self.task.id, EventType.USER_STOP, message=message)
+        with self._lock:
+            if self.task.state is not TaskState.RUNNING:
+                raise ValueError("stop requires RUNNING task")
+            self.session.stop(message)
+            self.task.transition(TaskState.PAUSING, reason="user_stop")
+            self.events.emit(self.task.id, EventType.USER_STOP, message=message)
 
     def safe_stop(self, **details: Any) -> None:
-        if self.task.state is not TaskState.PAUSING:
-            raise ValueError("safe_stop requires PAUSING task")
+        with self._lock:
+            if self.task.state is not TaskState.PAUSING:
+                raise ValueError("safe_stop requires PAUSING task")
+            self._safe_stop_locked(details)
+
+    def safe_stop_if_pausing(self, **details: Any) -> bool:
+        """Complete a pending stop; duplicate/late proxy callbacks are harmless."""
+        with self._lock:
+            if self.task.state is not TaskState.PAUSING:
+                return False
+            self._safe_stop_locked(details)
+            return True
+
+    def _safe_stop_locked(self, details: dict[str, Any]) -> None:
         self.task.transition(TaskState.PAUSED, reason="safe_boundary")
         self.events.emit(self.task.id, EventType.SAFE_STOP, **details)
 
     def resume(self, message: str) -> None:
-        if self.task.state is not TaskState.PAUSED:
-            raise ValueError("resume requires PAUSED task")
-        turn = self.session.resume(message)
-        self.task.transition(TaskState.RUNNING, reason="user_resume")
-        self.events.emit(
-            self.task.id,
-            EventType.USER_RESUME,
-            turn_index=turn.index,
-            message=message,
-        )
+        with self._lock:
+            if self.task.state is not TaskState.PAUSED:
+                raise ValueError("resume requires PAUSED task")
+            turn = self.session.resume(message)
+            self.task.transition(TaskState.RUNNING, reason="user_resume")
+            self.events.emit(
+                self.task.id,
+                EventType.USER_RESUME,
+                turn_index=turn.index,
+                message=message,
+            )
 
     def begin_finalization(self, *, reasons: tuple[str, ...] = ()) -> None:
-        if self.task.state is not TaskState.RUNNING:
-            raise ValueError("finalization requires RUNNING task")
-        self.events.emit(
-            self.task.id,
-            EventType.INVESTIGATION_COMPLETED,
-            reasons=list(reasons),
-        )
-        self.task.transition(TaskState.FINALIZING, reason=",".join(reasons) or None)
-        self.events.emit(self.task.id, EventType.FINALIZATION_STARTED)
+        with self._lock:
+            if self.task.state is not TaskState.RUNNING:
+                raise ValueError("finalization requires RUNNING task")
+            self.events.emit(
+                self.task.id,
+                EventType.INVESTIGATION_COMPLETED,
+                reasons=list(reasons),
+            )
+            self.task.transition(TaskState.FINALIZING, reason=",".join(reasons) or None)
+            self.events.emit(self.task.id, EventType.FINALIZATION_STARTED)
 
     def finalization_completed(self) -> None:
-        if self.task.state is not TaskState.FINALIZING:
-            raise ValueError("finalization_completed requires FINALIZING task")
-        self.events.emit(self.task.id, EventType.FINALIZATION_COMPLETED)
+        with self._lock:
+            if self.task.state is not TaskState.FINALIZING:
+                raise ValueError("finalization_completed requires FINALIZING task")
+            self.events.emit(self.task.id, EventType.FINALIZATION_COMPLETED)
 
     def complete(self) -> None:
-        if self.task.state not in {TaskState.RUNNING, TaskState.FINALIZING}:
-            raise ValueError("complete requires RUNNING or FINALIZING task")
-        self.task.transition(TaskState.COMPLETED)
-        self.events.emit(self.task.id, EventType.TASK_COMPLETED)
+        with self._lock:
+            if self.task.state not in {TaskState.RUNNING, TaskState.FINALIZING}:
+                raise ValueError("complete requires RUNNING or FINALIZING task")
+            self.task.transition(TaskState.COMPLETED)
+            self.events.emit(self.task.id, EventType.TASK_COMPLETED)
 
     def fail(self, reason: str) -> None:
-        if self.task.terminal:
-            return
-        self.task.transition(TaskState.FAILED, reason=reason)
-        self.events.emit(self.task.id, EventType.TASK_FAILED, reason=reason)
+        with self._lock:
+            if self.task.terminal:
+                return
+            self.task.transition(TaskState.FAILED, reason=reason)
+            self.events.emit(self.task.id, EventType.TASK_FAILED, reason=reason)
 
     def cancel(self, reason: str = "") -> None:
-        if self.task.terminal:
-            return
-        self.task.transition(TaskState.CANCELLED, reason=reason)
-        self.events.emit(self.task.id, EventType.TASK_CANCELLED, reason=reason)
+        with self._lock:
+            if self.task.terminal:
+                return
+            self.task.transition(TaskState.CANCELLED, reason=reason)
+            self.events.emit(self.task.id, EventType.TASK_CANCELLED, reason=reason)
