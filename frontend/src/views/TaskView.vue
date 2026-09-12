@@ -19,6 +19,41 @@ let timer: number | undefined
 const isRunning = computed(() => task.value?.state === 'RUNNING')
 const isPaused = computed(() => task.value?.state === 'PAUSED')
 const isTerminal = computed(() => ['COMPLETED', 'FAILED', 'CANCELLED'].includes(task.value?.state ?? ''))
+const lastTaskFailed = computed(() => {
+  for (let index = events.value.length - 1; index >= 0; index -= 1) {
+    if (events.value[index]?.type === 'TASK_FAILED') return events.value[index]
+  }
+  return null
+})
+const resultProblem = computed(() => {
+  if (!isTerminal.value || result.value?.rendered) return ''
+
+  const details: string[] = []
+  const payload = result.value?.result
+  if (payload) {
+    const parseError = payload.parse_error
+    if (typeof parseError === 'string' && parseError) {
+      details.push(`parse_error: ${parseError}`)
+    }
+    const errors = payload.errors
+    if (Array.isArray(errors)) {
+      for (const item of errors) {
+        if (typeof item === 'string' && item) details.push(item)
+      }
+    }
+  }
+
+  const failedReason = lastTaskFailed.value?.data?.reason
+  if (typeof failedReason === 'string' && failedReason) {
+    details.push(`runtime: ${failedReason}`)
+  }
+
+  if (details.length) return [...new Set(details)].join('\n')
+  if (result.value?.available) {
+    return '结果记录已经生成，但没有可渲染的最终文本。请检查 result.json / claims.json。'
+  }
+  return '当前终态没有 result.json。请检查 TASK_FAILED 事件、worker-error.json 或 investigation-error.json。'
+})
 
 function eventSummary(event: ProgressEvent): string {
   const data = event.data ?? {}
@@ -118,9 +153,11 @@ onBeforeUnmount(() => timer && window.clearInterval(timer))
             </div>
           </div>
           <pre v-if="result?.available && result.rendered" class="result-text">{{ result.rendered }}</pre>
-          <div v-else class="empty-state">
-            {{ isTerminal ? '任务已结束，但当前没有可展示结果。' : '调查完成并通过证据校准后显示最终结果。' }}
+          <div v-else-if="isTerminal" class="empty-state">
+            <strong>{{ task?.state === 'FAILED' ? '任务失败，未生成可展示诊断结果。' : '任务已结束，但没有可展示诊断结果。' }}</strong>
+            <pre v-if="resultProblem" class="result-text">{{ resultProblem }}</pre>
           </div>
+          <div v-else class="empty-state">调查完成并通过证据校准后显示最终结果。</div>
         </section>
       </div>
 
