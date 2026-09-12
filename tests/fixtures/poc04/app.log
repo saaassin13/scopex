@@ -1,0 +1,8 @@
+2026-09-12 10:14:58.901 [INFO] task=milk-prep cycle=781 start
+2026-09-12 10:14:59.102 [INFO] vision request submitted frame=9912
+2026-09-12 10:15:00.486 [WARN] vision target quality low score=0.31 threshold=0.55
+2026-09-12 10:15:00.721 [ERROR] target pose unavailable after vision request frame=9912
+2026-09-12 10:15:00.722 [ERROR] task execution failed reason=target_pose_unavailable cycle=781
+2026-09-12 10:15:01.104 [INFO] retry scheduled cycle=781 attempt=2
+2026-09-12 10:15:01.845 [WARN] vision response delayed latency_ms=731
+2026-09-12 10:15:02.013 [ERROR] retry failed reason=target_pose_unavailable cycle=781
