@@ -89,6 +89,19 @@ class Poc06EvidenceCalibrationTests(unittest.TestCase):
         errors = MOD.validate_claims(obj, catalog())
         self.assertIn("claims[4].unknown_confidence", errors)
 
+    def test_validator_does_not_crash_on_non_string_evidence_ref(self):
+        obj = good_obj()
+        obj["claims"][0]["evidence_refs"] = [{"bad": "shape"}]
+        errors = MOD.validate_claims(obj, catalog())
+        self.assertIn("claims[0].evidence_refs", errors)
+        self.assertIn("claims[0].fact_requires_evidence", errors)
+
+    def test_validator_does_not_crash_on_non_string_summary_id(self):
+        obj = good_obj()
+        obj["summary_claim_ids"] = [{"bad": "shape"}]
+        errors = MOD.validate_claims(obj, catalog())
+        self.assertIn("summary_claim_ids", errors)
+
     def test_poc06_grader_accepts_fact_temporal_unknown_split(self):
         grade = MOD.grade_poc06(good_obj(), catalog())
         self.assertTrue(grade["passed"], grade["errors"])
