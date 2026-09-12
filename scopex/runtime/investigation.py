@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import json
 from pathlib import Path
+import threading
 import time
 
 from scopex.agent.runtime import OpenClawTaskRuntime, OpenClawTaskSpec, OpenClawTurnResult
@@ -47,6 +48,7 @@ class InvestigationCoordinator:
         catalog: EvidenceCatalog,
         collector: EvidenceCollector,
         convergence_policy: ConvergencePolicy,
+        control_lock=None,
     ) -> None:
         self.task = task
         self.session = session
@@ -56,6 +58,8 @@ class InvestigationCoordinator:
         self.catalog = catalog
         self.collector = collector
         self.convergence_policy = convergence_policy
+        self._control_lock = control_lock or threading.RLock()
+        self._turn_lock = threading.RLock()
         self._started_at: float | None = None
         self._turns = 0
         self._forwarded_model_requests = 0
@@ -77,12 +81,14 @@ class InvestigationCoordinator:
         stop_gate = SafeStopGate()
         catalog = EvidenceCatalog(task.id, task.session_key)
         collector = EvidenceCollector(catalog, events)
+        control_lock = threading.RLock()
 
         def on_safe_stop(boundary: StopBoundary) -> None:
-            controller.safe_stop_if_pausing(
-                before_model_request=boundary.request_index,
-                running_tool_cancelled=False,
-            )
+            with control_lock:
+                controller.safe_stop_if_pausing(
+                    before_model_request=boundary.request_index,
+                    running_tool_cancelled=False,
+                )
 
         agent = OpenClawTaskRuntime(
             task_id=task.id,
@@ -101,6 +107,7 @@ class InvestigationCoordinator:
             catalog=catalog,
             collector=collector,
             convergence_policy=convergence_policy or ConvergencePolicy(),
+            control_lock=control_lock,
         )
 
     def start(self, message: str, *, turn_name: str = "turn-001") -> OpenClawTurnResult:
@@ -113,15 +120,22 @@ class InvestigationCoordinator:
         return self._run_turn(message, turn_name=turn_name)
 
     def request_stop(self, message: str = "") -> None:
-        self.controller.request_stop(message)
-        self.stop_gate.request("user_stop")
+        """Arm the proxy gate before exposing PAUSING, without a forwarding race."""
+        with self._control_lock:
+            if self.controller.state is not TaskState.RUNNING:
+                raise ValueError("stop requires RUNNING task")
+            self.stop_gate.request("user_stop")
+            self.controller.request_stop(message)
 
     def resume(self, message: str, *, turn_name: str) -> OpenClawTurnResult:
-        if self.controller.state is not TaskState.PAUSED:
-            raise ValueError("resume requires PAUSED task")
-        self.stop_gate.reset_for_resume()
-        self.controller.resume(message)
-        return self._run_turn(message, turn_name=turn_name)
+        """Resume only after the stopped OpenClaw turn has fully unwound."""
+        with self._turn_lock:
+            with self._control_lock:
+                if self.controller.state is not TaskState.PAUSED:
+                    raise ValueError("resume requires PAUSED task")
+                self.stop_gate.reset_for_resume()
+                self.controller.resume(message)
+            return self._run_turn(message, turn_name=turn_name)
 
     def add_evidence(
         self,
@@ -224,18 +238,19 @@ class InvestigationCoordinator:
         return self.agent.close()
 
     def _run_turn(self, message: str, *, turn_name: str) -> OpenClawTurnResult:
-        if self.controller.state is not TaskState.RUNNING:
-            raise ValueError("agent turn requires RUNNING task")
-        result = self.agent.run_turn(message, turn_name=turn_name)
-        self._turns += 1
-        self._forwarded_model_requests += sum(
-            1 for record in result.proxy_records if record.get("forwarded") is True
-        )
-        self._max_context_chars = max(
-            self._max_context_chars,
-            self._context_chars(result.audit_dir),
-        )
-        return result
+        with self._turn_lock:
+            if self.controller.state is not TaskState.RUNNING:
+                raise ValueError("agent turn requires RUNNING task")
+            result = self.agent.run_turn(message, turn_name=turn_name)
+            self._turns += 1
+            self._forwarded_model_requests += sum(
+                1 for record in result.proxy_records if record.get("forwarded") is True
+            )
+            self._max_context_chars = max(
+                self._max_context_chars,
+                self._context_chars(result.audit_dir),
+            )
+            return result
 
     @staticmethod
     def _context_chars(audit_dir: Path) -> int:
