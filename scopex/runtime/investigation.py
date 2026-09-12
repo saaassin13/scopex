@@ -259,13 +259,17 @@ class InvestigationCoordinator:
         if self.audit is not None:
             self.audit.persist_claims(payload)
         if not result.valid:
+            self._persist_result(result, published_state=TaskState.FAILED)
             self.controller.fail("structured_finalizer_validation_failed")
-            self._persist_result(result)
             self._snapshot()
             return result
+
+        # Publish the result before exposing FINALIZATION_COMPLETED/COMPLETED.
+        # API/UI readers may treat terminal state as a guarantee that result.json
+        # and final.txt are already available.
+        self._persist_result(result, published_state=TaskState.COMPLETED)
         self.controller.finalization_completed()
         self.controller.complete()
-        self._persist_result(result)
         self._snapshot()
         return result
 
@@ -281,13 +285,16 @@ class InvestigationCoordinator:
         if self.audit is not None and result.payload is not None:
             self.audit.persist_claims(result.payload)
         if not result.valid:
+            self._persist_structured_result(result, published_state=TaskState.FAILED)
             self.controller.fail("fresh_structured_finalizer_failed")
-            self._persist_structured_result(result)
             self._snapshot()
             return result
+
+        # Same publication rule as the non-fresh path: result first, terminal
+        # lifecycle events/state second.
+        self._persist_structured_result(result, published_state=TaskState.COMPLETED)
         self.controller.finalization_completed()
         self.controller.complete()
-        self._persist_structured_result(result)
         self._snapshot()
         return result
 
@@ -345,19 +352,29 @@ class InvestigationCoordinator:
         if self.audit is not None:
             self.audit.snapshot_control(self.task, self.session, self.catalog)
 
-    def _persist_result(self, result: FinalizationResult) -> None:
+    def _persist_result(
+        self,
+        result: FinalizationResult,
+        *,
+        published_state: TaskState,
+    ) -> None:
         if self.audit is None:
             return
         self.audit.persist_result(
             {
                 "valid": result.valid,
                 "errors": list(result.errors),
-                "task_state": self.task.state.value,
+                "task_state": published_state.value,
             },
             rendered=result.rendered,
         )
 
-    def _persist_structured_result(self, result: StructuredFinalizerResult) -> None:
+    def _persist_structured_result(
+        self,
+        result: StructuredFinalizerResult,
+        *,
+        published_state: TaskState,
+    ) -> None:
         if self.audit is None:
             return
         rendered = result.finalization.rendered if result.finalization is not None else None
@@ -371,7 +388,7 @@ class InvestigationCoordinator:
                 "errors": errors,
                 "parse_error": result.parse_error,
                 "finish_reasons": list(result.transport.finish_reasons),
-                "task_state": self.task.state.value,
+                "task_state": published_state.value,
             },
             rendered=rendered,
         )
