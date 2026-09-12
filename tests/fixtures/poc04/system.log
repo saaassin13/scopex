@@ -1,0 +1,7 @@
+2026-09-12 10:14:58.700 [INFO] host load1=2.1 mem_used_pct=74 gpu_mem_used_pct=88
+2026-09-12 10:14:59.940 [WARN] inference-worker watchdog heartbeat missed count=2
+2026-09-12 10:15:00.180 [ERROR] inference-worker exited status=137
+2026-09-12 10:15:00.240 [INFO] systemd restart scheduled service=inference-worker
+2026-09-12 10:15:00.930 [INFO] inference-worker started pid=4412
+2026-09-12 10:15:01.310 [INFO] inference-worker health=ready
+2026-09-12 10:15:02.100 [INFO] host load1=2.3 mem_used_pct=75 gpu_mem_used_pct=79
