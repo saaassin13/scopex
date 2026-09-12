@@ -86,13 +86,16 @@ class RuntimeEndToEndSmokeTests(unittest.TestCase):
                     "relation": "unknown",
                 },
             ],
-            "summary_claim_ids": ["C1", "C2", "C3", "C4", "C5"],
+            # Summary is intentionally bounded to the four most important claims;
+            # detailed claims such as C5 remain present in the full result.
+            "summary_claim_ids": ["C1", "C2", "C3", "C4"],
         }
 
         final = FinalizationService().finalize(payload, catalog)
         self.assertTrue(final.valid, final.errors)
         self.assertIn("inference-worker exited status=137", final.rendered)
         self.assertIn("该结构不表示已证明因果", final.rendered)
+        self.assertIn("status 137 trigger mechanism", final.rendered)
         self.assertNotIn("model prose must not replace exact evidence", final.rendered)
 
         controller.finalization_completed()
