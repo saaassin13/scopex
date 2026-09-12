@@ -14,7 +14,14 @@ validation, or automatic-retry policy.
 """
 from __future__ import annotations
 
+from pathlib import Path
 import sys
+
+# Keep direct execution (python3 scripts/poc03_run_v2.py) and importlib-based
+# unit tests equivalent: both must resolve sibling runner modules from scripts/.
+SCRIPTS_DIR = Path(__file__).resolve().parent
+if str(SCRIPTS_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPTS_DIR))
 
 import poc02_run as p2
 import poc03_run as p3
