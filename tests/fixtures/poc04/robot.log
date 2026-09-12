@@ -1,0 +1,7 @@
+2026-09-12 10:14:58.950 [INFO] controller state=READY
+2026-09-12 10:14:59.310 [INFO] servo enable=true
+2026-09-12 10:15:00.100 [INFO] motion state=IDLE protective_stop=false
+2026-09-12 10:15:00.800 [INFO] joint_fault_code=0 emergency_stop=false
+2026-09-12 10:15:01.500 [INFO] controller heartbeat=ok
+2026-09-12 10:15:02.200 [INFO] motion command queue_depth=0 state=READY
+2026-09-12 10:15:03.000 [INFO] controller heartbeat=ok
