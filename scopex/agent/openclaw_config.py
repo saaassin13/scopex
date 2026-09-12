@@ -43,6 +43,7 @@ class OpenClawConfigSpec:
     limits: SandboxLimits = field(default_factory=SandboxLimits)
     skills: tuple[str, ...] = ()
     tools: tuple[str, ...] = ("read", "exec", "process")
+    sandbox_binds: tuple[str, ...] = ()
     container_prefix: str = "scopex-"
 
 
@@ -67,6 +68,21 @@ def _require_loopback_v1(url: str) -> None:
         raise ValueError("OpenClaw provider must use a credential-free loopback /v1 proxy URL")
 
 
+def _validate_bind(value: str) -> None:
+    if not isinstance(value, str) or not value:
+        raise ValueError("sandbox bind must be a non-empty string")
+    parts = value.rsplit(":", 2)
+    if len(parts) != 3:
+        raise ValueError("sandbox bind must use host:container:mode format")
+    host, target, mode = parts
+    if not host or not Path(host).is_absolute():
+        raise ValueError("sandbox bind host path must be absolute")
+    if not target.startswith("/") or target == "/":
+        raise ValueError("sandbox bind target must be an absolute non-root path")
+    if mode != "ro":
+        raise ValueError("ScopeX data binds are read-only during POC07")
+
+
 def build_openclaw_config(spec: OpenClawConfigSpec) -> dict:
     """Build the product OpenClaw config from POC02-validated security defaults."""
 
@@ -86,6 +102,8 @@ def build_openclaw_config(spec: OpenClawConfigSpec) -> dict:
     unknown_tools = set(spec.tools) - APPROVED_TOOLS
     if unknown_tools:
         raise ValueError("unapproved OpenClaw tools: " + ", ".join(sorted(unknown_tools)))
+    for bind in spec.sandbox_binds:
+        _validate_bind(bind)
 
     model_ref = "vllm/" + spec.model_id
     extra_body = {
@@ -96,6 +114,25 @@ def build_openclaw_config(spec: OpenClawConfigSpec) -> dict:
     skills = list(spec.skills)
     tools = list(spec.tools)
     prefix = spec.container_prefix + spec.agent_id + "-"
+    docker = {
+        "image": spec.image,
+        "containerPrefix": prefix,
+        "workdir": "/workspace",
+        "readOnlyRoot": True,
+        "tmpfs": ["/tmp", "/var/tmp", "/run"],
+        "network": "none",
+        "user": f"{spec.uid}:{spec.gid}",
+        "capDrop": ["ALL"],
+        "pidsLimit": spec.limits.pids_limit,
+        "memory": spec.limits.memory,
+        "memorySwap": spec.limits.memory_swap,
+        "cpus": spec.limits.cpus,
+    }
+    if spec.sandbox_binds:
+        docker["binds"] = list(spec.sandbox_binds)
+        # POC07 intentionally allows explicitly configured data roots outside the
+        # agent workspace. OpenClaw still applies its blocked-source checks.
+        docker["dangerouslyAllowExternalBindSources"] = True
 
     return {
         "logging": {"file": str(spec.audit_log), "level": "info"},
@@ -153,20 +190,7 @@ def build_openclaw_config(spec: OpenClawConfigSpec) -> dict:
                     "scope": "session",
                     "workspaceAccess": "ro",
                     "workspaceRoot": str(spec.sandbox_root),
-                    "docker": {
-                        "image": spec.image,
-                        "containerPrefix": prefix,
-                        "workdir": "/workspace",
-                        "readOnlyRoot": True,
-                        "tmpfs": ["/tmp", "/var/tmp", "/run"],
-                        "network": "none",
-                        "user": f"{spec.uid}:{spec.gid}",
-                        "capDrop": ["ALL"],
-                        "pidsLimit": spec.limits.pids_limit,
-                        "memory": spec.limits.memory,
-                        "memorySwap": spec.limits.memory_swap,
-                        "cpus": spec.limits.cpus,
-                    },
+                    "docker": docker,
                     "browser": {"enabled": False},
                 },
             },
