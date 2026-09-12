@@ -7,6 +7,8 @@ import threading
 import time
 import unittest
 
+from scopex.agent.outcome import CliOutcome
+from scopex.agent.runtime import OpenClawTurnResult
 from scopex.api.service import TaskBusyError, TaskConflictError, TaskService
 from scopex.evidence.catalog import EvidenceCatalog
 from scopex.runtime.controller import TaskController
@@ -31,6 +33,7 @@ class FakeCoordinator:
         *,
         block_initial=False,
         block_finalizer=False,
+        normal_turn=True,
     ):
         self.task = task
         self.session = session
@@ -41,10 +44,35 @@ class FakeCoordinator:
         self.steering = PendingSteeringQueue()
         self.block_initial = block_initial
         self.block_finalizer = block_finalizer
+        self.normal_turn = normal_turn
         self.release = threading.Event()
         self.finalizer_release = threading.Event()
         self.closed = False
         self.messages = []
+
+    def _turn_result(self, turn_name):
+        root = self.audit.store.task_dir(self.task.id)
+        stdout = root / f"{turn_name}.stdout"
+        stderr = root / f"{turn_name}.stderr"
+        message = root / f"{turn_name}.message"
+        for path in (stdout, stderr, message):
+            path.write_text("", encoding="utf-8")
+        process = type("Process", (), {
+            "returncode": 0 if self.normal_turn else 1,
+            "stop_reason": None,
+            "wall_s": 0.01,
+            "stdout_path": stdout,
+            "stderr_path": stderr,
+            "message_path": message,
+        })()
+        outcome = CliOutcome((), (), "done", 1, {}) if self.normal_turn else None
+        return OpenClawTurnResult(
+            turn_name=turn_name,
+            process=process,
+            cli_outcome=outcome,
+            proxy_records=(),
+            audit_dir=root,
+        )
 
     def start(self, message, *, turn_name):
         self.messages.append((turn_name, message))
@@ -61,6 +89,7 @@ class FakeCoordinator:
                 metadata={"line_number": 1},
             )
             self.audit.persist_evidence(self.catalog)
+        return self._turn_result(turn_name)
 
     def request_stop(self, message=""):
         self.controller.request_stop(message)
@@ -84,6 +113,7 @@ class FakeCoordinator:
             metadata={"line_number": 3},
         )
         self.audit.persist_evidence(self.catalog)
+        return self._turn_result(turn_name)
 
     def resume(self, message, *, turn_name):
         self.messages.append((turn_name, message))
@@ -94,6 +124,13 @@ class FakeCoordinator:
             metadata={"line_number": 4},
         )
         self.audit.persist_evidence(self.catalog)
+        return self._turn_result(turn_name)
+
+    def convergence(self, *, goal_satisfied=False):
+        return type("Decision", (), {
+            "should_finalize": bool(goal_satisfied),
+            "reasons": ("goal_satisfied",) if goal_satisfied else (),
+        })()
 
     def begin_finalization(self, *, goal_satisfied=False):
         self.controller.begin_finalization(
@@ -124,9 +161,16 @@ class FakeCoordinator:
 
 
 class FakeFactory:
-    def __init__(self, *, block_initial=False, block_finalizer=False):
+    def __init__(
+        self,
+        *,
+        block_initial=False,
+        block_finalizer=False,
+        normal_turn=True,
+    ):
         self.block_initial = block_initial
         self.block_finalizer = block_finalizer
+        self.normal_turn = normal_turn
         self.coordinators = []
 
     def __call__(self, task, session, events, audit):
@@ -137,6 +181,7 @@ class FakeFactory:
             audit,
             block_initial=self.block_initial,
             block_finalizer=self.block_finalizer,
+            normal_turn=self.normal_turn,
         )
         self.coordinators.append(coordinator)
         return coordinator
@@ -172,6 +217,21 @@ class RuntimeApiServiceTests(unittest.TestCase):
             events = service.get_events(task_id)
             self.assertEqual(events[-1]["type"], "TASK_COMPLETED")
             self.assertIsNone(service.active_task_id)
+
+    def test_abnormal_turn_with_evidence_does_not_auto_finalize(self):
+        with tempfile.TemporaryDirectory() as td:
+            service = TaskService(
+                audit_root=Path(td),
+                coordinator_factory=FakeFactory(normal_turn=False),
+                finalizer_factory=lambda: object(),
+            )
+            task = service.create_task("diagnose")
+            wait_state(service, task["id"], "FAILED")
+            result = service.get_result(task["id"])
+            self.assertFalse(result["available"])
+            error = service.store.read_json(task["id"], "investigation-error.json")
+            self.assertEqual(error["returncode"], 1)
+            self.assertIn("missing_cli_outcome", error["cli_blockers"])
 
     def test_paused_task_keeps_single_task_slot_until_resume_completes(self):
         with tempfile.TemporaryDirectory() as td:
