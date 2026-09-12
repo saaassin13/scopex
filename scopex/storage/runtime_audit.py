@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import threading
 from typing import Any
 
 from scopex.evidence.catalog import EvidenceCatalog
@@ -17,20 +18,22 @@ class AuditEventSink:
         self.store = store
         self.downstream = downstream
         self._seq_by_task: dict[str, int] = {}
+        self._lock = threading.Lock()
 
     def emit(self, task_id: str, event_type: EventType, **data: Any) -> ProgressEvent:
         if not isinstance(event_type, EventType):
             event_type = EventType(event_type)
-        if self.downstream is not None:
-            event = self.downstream.emit(task_id, event_type, **data)
-        else:
-            from scopex.events.progress import utcnow
+        with self._lock:
+            if self.downstream is not None:
+                event = self.downstream.emit(task_id, event_type, **data)
+            else:
+                from scopex.events.progress import utcnow
 
-            seq = self._seq_by_task.get(task_id, 0) + 1
-            self._seq_by_task[task_id] = seq
-            event = ProgressEvent(seq, task_id, event_type, utcnow(), dict(data))
-        self.store.append_jsonl(task_id, "events.jsonl", event.to_dict())
-        return event
+                seq = self._seq_by_task.get(task_id, 0) + 1
+                self._seq_by_task[task_id] = seq
+                event = ProgressEvent(seq, task_id, event_type, utcnow(), dict(data))
+            self.store.append_jsonl(task_id, "events.jsonl", event.to_dict())
+            return event
 
 
 @dataclass(slots=True)
