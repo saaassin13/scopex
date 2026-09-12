@@ -6,9 +6,10 @@ One fresh no-tool local-model call converts observed evidence into structured
 claims. A generic runtime validator enforces epistemic type, evidence refs,
 relation, confidence and scope before deterministic rendering.
 
-The POC-specific grader is separate from the generic validator. It checks that
-this fixture is represented as observed facts + temporal association + unknown
-cause, rather than an unsupported causal/root-cause conclusion.
+Important: model text does NOT define fact or temporal-inference wording. For
+those claim types, runtime renders directly from evidence refs + structural
+fields. This prevents a free-form sentence from silently upgrading correlation
+into causation while still declaring itself as a fact.
 """
 from __future__ import annotations
 
@@ -49,7 +50,6 @@ def save(path: Path, obj):
 
 
 def extract_log_lines(text: str) -> list[str]:
-    """Extract timestamped source lines from a recorded tool result."""
     rows = []
     seen = set()
     for raw in (text or "").splitlines():
@@ -100,6 +100,7 @@ def prompts(catalog: list[dict]) -> tuple[str, str]:
 - scope: event | time_window | component | global | unknown
 - confidence: high | medium | low | unknown
 - evidence_refs: 只能引用目录中的 E 编号
+- topic: 仅用于标识该 claim 的主题；runtime 不会把 fact/temporal 的 topic 当作事实文案
 
 规则：
 1. fact 只能表示证据直接观察到的内容，relation 必须是 observed，必须有证据。
@@ -110,7 +111,7 @@ def prompts(catalog: list[dict]) -> tuple[str, str]:
 6. status=137 的具体触发机制没有直接证据；不要对 OOM、显存不足、资源竞争、内部错误做可能性排序。
 7. 时间先后或相邻只能表达 temporal_association，不能自动升级成因果事实。
 
-只输出一个 JSON 对象，可有或没有 Markdown json fence。statement 控制简短。"""
+只输出一个 JSON 对象，可有或没有 Markdown json fence。topic 控制在短语级。"""
     user = f"""【证据目录】
 {evidence}
 
@@ -127,7 +128,7 @@ def prompts(catalog: list[dict]) -> tuple[str, str]:
     {{
       "id": "C1",
       "kind": "fact|inference|unknown",
-      "statement": "简短命题",
+      "topic": "短主题标签",
       "evidence_refs": ["E1"],
       "confidence": "high|medium|low|unknown",
       "scope": "event|time_window|component|global|unknown",
@@ -170,7 +171,7 @@ def validate_claims(obj: dict, catalog: list[dict]) -> list[str]:
             errors.append(prefix)
             continue
         if set(claim) != {
-            "id", "kind", "statement", "evidence_refs", "confidence", "scope", "relation"
+            "id", "kind", "topic", "evidence_refs", "confidence", "scope", "relation"
         }:
             errors.append(prefix + ".fields")
 
@@ -184,7 +185,7 @@ def validate_claims(obj: dict, catalog: list[dict]) -> list[str]:
         relation = claim.get("relation")
         scope = claim.get("scope")
         confidence = claim.get("confidence")
-        statement = claim.get("statement")
+        topic = claim.get("topic")
         refs = claim.get("evidence_refs")
 
         if kind not in KINDS:
@@ -195,8 +196,8 @@ def validate_claims(obj: dict, catalog: list[dict]) -> list[str]:
             errors.append(prefix + ".scope")
         if confidence not in CONFIDENCE:
             errors.append(prefix + ".confidence")
-        if not isinstance(statement, str) or not statement.strip() or len(statement) > 240:
-            errors.append(prefix + ".statement")
+        if not isinstance(topic, str) or not topic.strip() or len(topic) > 120:
+            errors.append(prefix + ".topic")
 
         refs_valid = (
             isinstance(refs, list)
@@ -317,7 +318,11 @@ def grade_poc06(obj: dict, catalog: list[dict]) -> dict:
 
 
 def render_claims(obj: dict, catalog: list[dict]) -> str:
-    """Deterministic renderer. Epistemic labels come from structure, not prose parsing."""
+    """Render epistemic strength deterministically from structure.
+
+    Fact and temporal-association prose is runtime-owned. The model's `topic`
+    cannot turn either into a stronger causal statement.
+    """
     by_ref = {row["ref"]: row for row in catalog}
     scope_labels = {
         "event": "单事件",
@@ -331,15 +336,25 @@ def render_claims(obj: dict, catalog: list[dict]) -> str:
         refs = claim.get("evidence_refs") or []
         evidence = ", ".join(refs) if refs else "无直接证据"
         scope = scope_labels.get(claim.get("scope"), claim.get("scope", ""))
+
         if claim.get("kind") == "fact":
-            label = f"事实｜{scope}"
+            observations = "；".join(
+                f"[{by_ref[ref]['source']}] {by_ref[ref]['raw_line']}"
+                for ref in refs if ref in by_ref
+            )
+            lines.append(f"- 事实｜{scope}：{observations}（证据：{evidence}）")
         elif claim.get("relation") == "temporal_association":
-            label = f"推断｜时间关联｜{claim.get('confidence')}"
+            lines.append(
+                f"- 推断｜时间关联｜{claim.get('confidence')}："
+                f"{evidence} 所指事件在当前调查窗口存在时间关联；该结构不表示已证明因果。"
+            )
         elif claim.get("relation") == "causal_hypothesis":
-            label = f"假设｜因果未证实｜{claim.get('confidence')}"
+            lines.append(
+                f"- 假设｜因果未证实｜{claim.get('confidence')}：{claim.get('topic')}"
+                f"（相关证据：{evidence}）"
+            )
         else:
-            label = "未知"
-        lines.append(f"- {label}：{claim.get('statement')}（证据：{evidence}）")
+            lines.append(f"- 未知：{claim.get('topic')}（相关证据：{evidence}）")
 
     used = []
     for claim in obj.get("claims", []):
