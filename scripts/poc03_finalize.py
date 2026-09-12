@@ -146,13 +146,38 @@ def build_catalog(source_text: str, results: dict[str, str], focus: str,
 
 
 def finalizer_prompts(focus: str, knowledge: str, catalog: list[dict]):
-    system = """你是设备故障诊断结果整理器。调查阶段已经结束。\n\n只能根据提供的业务背景和证据目录完成最终结论；禁止继续调查、调用工具、请求额外信息或编造根因。业务背景只能帮助解释，事件事实必须由 E 编号证据支持。\n\n输出必须简短：evidence 最多4条，facts最多3条，inferences最多1条，unknowns最多2条。只输出一个 JSON 对象，可以有或没有 Markdown json fence。"""
+    system = """你是设备故障诊断结果整理器。调查阶段已经结束。
+
+只能根据提供的业务背景和证据目录完成最终结论；禁止继续调查、调用工具、请求额外信息或编造根因。业务背景只能帮助解释，事件事实必须由 E 编号证据支持。
+
+输出必须简短：evidence 最多4条，facts最多3条，inferences最多1条，unknowns必须1到2条。evidence 必须优先包含直接 trigger、明确 failure 和后续 recovery；若目录中存在直接相关的上游 invalid/exception，再补1条 upstream。只输出一个 JSON 对象，可以有或没有 Markdown json fence。"""
 
     evidence_text = "\n".join(
         f"{row['ref']} | source line {row['source_line']} | {row['raw_line']}"
         for row in catalog
     )
-    user = f"""诊断目标：{focus}\n\n【业务背景】\n{knowledge}\n\n【证据目录】\n{evidence_text}\n\n只输出以下结构：\n{{\n  \"direct_trigger\": \"简短描述\",\n  \"persistence\": \"transient|persistent|unknown\",\n  \"recovery\": {{\"observed\": true|false|null, \"evidence_ref\": \"E编号或空字符串\"}},\n  \"evidence\": [{{\"role\": \"upstream|trigger|failure|recovery\", \"ref\": \"E编号\"}}],\n  \"facts\": [\"最多3条\"],\n  \"inferences\": [\"最多1条\"],\n  \"unknowns\": [\"最多2条\"],\n  \"conclusion\": \"一句话\",\n  \"confidence\": \"high|medium|low\"\n}}\n\n不要复制原始日志全文；只引用 E 编号。"""
+    user = f"""诊断目标：{focus}
+
+【业务背景】
+{knowledge}
+
+【证据目录】
+{evidence_text}
+
+只输出以下结构：
+{{
+  \"direct_trigger\": \"简短描述\",
+  \"persistence\": \"transient|persistent|unknown\",
+  \"recovery\": {{\"observed\": true|false|null, \"evidence_ref\": \"E编号或空字符串\"}},
+  \"evidence\": [{{\"role\": \"upstream|trigger|failure|recovery\", \"ref\": \"E编号\"}}],
+  \"facts\": [\"最多3条\"],
+  \"inferences\": [\"最多1条\"],
+  \"unknowns\": [\"至少1条，最多2条；写现有证据无法证明的深层原因\"],
+  \"conclusion\": \"一句话\",
+  \"confidence\": \"high|medium|low\"
+}}
+
+不要复制原始日志全文；只引用 E 编号。"""
     return system, user
 
 
@@ -194,11 +219,20 @@ def validate_compact(obj: dict, catalog: list[dict]) -> list[str]:
             } or item.get("ref") not in valid_refs:
                 errors.append("evidence.item")
                 break
+        roles = {item.get("role") for item in evidence if isinstance(item, dict)}
+        for required in ("trigger", "failure", "recovery"):
+            if required not in roles:
+                errors.append("evidence.missing_" + required)
 
-    for key, limit in (("facts", 3), ("inferences", 1), ("unknowns", 2)):
+    for key, limit in (("facts", 3), ("inferences", 1)):
         value = obj.get(key)
         if not isinstance(value, list) or len(value) > limit or not all(isinstance(x, str) for x in value):
             errors.append(key)
+    unknowns = obj.get("unknowns")
+    if not isinstance(unknowns, list) or not 1 <= len(unknowns) <= 2 or not all(
+        isinstance(x, str) for x in unknowns
+    ):
+        errors.append("unknowns")
     if not isinstance(obj.get("conclusion"), str):
         errors.append("conclusion")
     if obj.get("confidence") not in {"high", "medium", "low"}:
