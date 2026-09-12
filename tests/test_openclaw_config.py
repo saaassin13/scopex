@@ -41,6 +41,7 @@ class OpenClawConfigTests(unittest.TestCase):
         self.assertFalse(sandbox["browser"]["enabled"])
         self.assertFalse(cfg["tools"]["elevated"]["enabled"])
         self.assertEqual(cfg["tools"]["exec"]["host"], "sandbox")
+        self.assertEqual(cfg["tools"]["exec"]["mode"], "full")
         extra = defaults["models"]["vllm/qwen-local"]["params"]["extra_body"]
         self.assertEqual(extra["chat_template_kwargs"]["enable_thinking"], False)
         self.assertEqual(defaults["skills"], ["camera-diagnosis"])
@@ -65,6 +66,14 @@ class OpenClawConfigTests(unittest.TestCase):
         )
         self.assertTrue(docker["dangerouslyAllowExternalBindSources"])
 
+    def test_gateway_exec_uses_openclaw_native_exec_host(self):
+        cfg = build_openclaw_config(
+            replace(self.spec(), exec_host="gateway", exec_mode="full")
+        )
+        self.assertEqual(cfg["tools"]["exec"]["host"], "gateway")
+        self.assertEqual(cfg["tools"]["exec"]["mode"], "full")
+        self.assertFalse(cfg["tools"]["elevated"]["enabled"])
+
     def test_data_bind_must_be_read_only(self):
         with self.assertRaises(ValueError):
             build_openclaw_config(
@@ -73,6 +82,14 @@ class OpenClawConfigTests(unittest.TestCase):
                     sandbox_binds=("/srv/logs:/agent-data/logs:rw",),
                 )
             )
+
+    def test_invalid_exec_host_is_rejected(self):
+        with self.assertRaises(ValueError):
+            build_openclaw_config(replace(self.spec(), exec_host="host"))
+
+    def test_invalid_exec_mode_is_rejected(self):
+        with self.assertRaises(ValueError):
+            build_openclaw_config(replace(self.spec(), exec_mode="permissive"))
 
     def test_provider_must_be_loopback(self):
         bad = replace(self.spec(), proxy_base_url="http://example.com/v1")
