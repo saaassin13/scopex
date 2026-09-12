@@ -41,68 +41,52 @@ def parse_structured_payload(text: str) -> dict[str, Any]:
 
 
 def build_structured_prompts(user_request: str, catalog: EvidenceCatalog) -> tuple[str, str]:
-    """Build the generic product prompt; contains no device-specific expected answer."""
+    """Build a compact generic finalizer prompt with bounded output size."""
 
     evidence = "\n".join(
         f"{item.ref} | source={item.source} | {item.raw}"
         for item in catalog.items
     )
-    system = """你是 ScopeX 的证据校准器。调查阶段已经结束，不存在任何工具。
-只能依据证据目录输出结构化 claims；不要继续调查、请求额外信息或输出自然语言报告。
+    system = """你是 ScopeX 证据校准器。调查已结束，没有工具。
+只能依据证据目录输出一个紧凑 JSON；不要继续调查，不要输出自然语言报告。
 
-每个 claim 字段固定：
-- id: C1, C2 ...
+claim 字段固定：id, kind, topic, evidence_refs, confidence, scope, relation。
+取值：
 - kind: fact | inference | unknown
-- topic: 简短主题标签，不用于替代原始事实证据
-- evidence_refs: 只能引用目录中的 E 编号
 - confidence: high | medium | low | unknown
 - scope: event | time_window | component | global | unknown
 - relation: observed | temporal_association | causal_hypothesis | unknown
 
-约束：
-1. fact 必须是证据直接观察到的内容，relation=observed，并引用直接证据。
-2. temporal_association 只表示时间关联，至少引用两个证据；不能自动升级成因果。
-3. causal_hypothesis 必须明确为未证实假设，只能 medium/low。
-4. unknown 的 confidence 必须是 unknown；可引用相关证据说明未知事项的上下文。
-5. 证据只覆盖其 source/scope 所能支持的范围，不把局部观察扩大成全局结论。
-6. 不得把常识、典型原因或概率经验写成已经观察到的事实。
+规则：
+1. 只输出 3-6 个最重要 claim；topic 最多 24 个中文字符或约 48 个 ASCII 字符。
+2. fact 必须 relation=observed 且引用直接证据。
+3. temporal_association 至少引用两个证据，只表示时间关联，不表示因果。
+4. causal_hypothesis 只能 medium/low，明确是未证实假设。
+5. unknown 的 confidence=unknown；可引用相关证据作为上下文。
+6. 不把局部观察扩大成全局结论，不把常识/典型原因写成已观察事实。
+7. summary_claim_ids 最多 4 个，只列最重要 claim。
+8. 不复制日志全文到 topic，不增加额外字段。
 
-只输出一个 JSON 对象，可有或没有 Markdown json fence，不要额外解释。"""
-    user = f"""【原任务】
-{user_request}
+只输出 JSON 对象，可有或没有 json fence。"""
+    user = f"""原任务：{user_request}
 
-【调查证据目录】
+证据目录：
 {evidence or '(empty)'}
 
-输出结构：
-{{
-  "claims": [
-    {{
-      "id": "C1",
-      "kind": "fact|inference|unknown",
-      "topic": "short topic",
-      "evidence_refs": ["E1"],
-      "confidence": "high|medium|low|unknown",
-      "scope": "event|time_window|component|global|unknown",
-      "relation": "observed|temporal_association|causal_hypothesis|unknown"
-    }}
-  ],
-  "summary_claim_ids": ["C1"]
-}}
-
-只包含对原任务有用的 claims。"""
+严格输出：
+{{"claims":[{{"id":"C1","kind":"fact|inference|unknown","topic":"短标签","evidence_refs":["E1"],"confidence":"high|medium|low|unknown","scope":"event|time_window|component|global|unknown","relation":"observed|temporal_association|causal_hypothesis|unknown"}}],"summary_claim_ids":["C1"]}}"""
     return system, user
 
 
 class StructuredFinalizer:
-    """One fresh no-tool model call followed by deterministic runtime validation/rendering."""
+    """One fresh no-tool model call followed by deterministic validation/rendering."""
 
     def __init__(
         self,
         client: StreamingFinalizerClient,
         *,
         model: str,
-        max_tokens: int = 512,
+        max_tokens: int = 768,
         service: FinalizationService | None = None,
     ) -> None:
         self.client = client
@@ -119,6 +103,27 @@ class StructuredFinalizer:
             max_tokens=self.max_tokens,
             temperature=0,
         )
+
+        if not transport.done_seen:
+            return StructuredFinalizerResult(
+                transport, None, "structured_finalizer_stream_incomplete", None
+            )
+        if not transport.finish_reasons:
+            return StructuredFinalizerResult(
+                transport, None, "structured_finalizer_missing_finish_reason", None
+            )
+        if transport.finish_reasons[-1] == "length":
+            return StructuredFinalizerResult(
+                transport, None, "structured_finalizer_truncated", None
+            )
+        if transport.finish_reasons[-1] != "stop":
+            return StructuredFinalizerResult(
+                transport,
+                None,
+                "structured_finalizer_finish_reason:" + transport.finish_reasons[-1],
+                None,
+            )
+
         try:
             payload = parse_structured_payload(transport.content)
         except (ValueError, json.JSONDecodeError) as exc:
