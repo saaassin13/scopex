@@ -49,12 +49,7 @@ def save(path: Path, obj):
 
 
 def extract_log_lines(text: str) -> list[str]:
-    """Extract timestamped source lines from a recorded tool result.
-
-    OpenClaw read output may prefix source lines with display line numbers. The
-    catalog keeps the timestamped log line itself, which is the evidence payload
-    actually observed by the Agent.
-    """
+    """Extract timestamped source lines from a recorded tool result."""
     rows = []
     seen = set()
     for raw in (text or "").splitlines():
@@ -110,7 +105,7 @@ def prompts(catalog: list[dict]) -> tuple[str, str]:
 1. fact 只能表示证据直接观察到的内容，relation 必须是 observed，必须有证据。
 2. inference 不能冒充事实；temporal_association 至少引用两个事件证据。
 3. causal_hypothesis 只能是低/中置信度假设，不能写成已证明根因。
-4. unknown 必须明确为 unknown；可以引用相关事件证据作为上下文。
+4. unknown 必须明确为 unknown；可以引用相关事件证据作为上下文。若 unknown 是某个已观察事件的触发机制未知，应引用该事件证据作为上下文。
 5. 当前证据只支持机器人“当前日志窗口”的观察，不支持全局健康结论。
 6. status=137 的具体触发机制没有直接证据；不要对 OOM、显存不足、资源竞争、内部错误做可能性排序。
 7. 时间先后或相邻只能表达 temporal_association，不能自动升级成因果事实。
@@ -124,7 +119,7 @@ def prompts(catalog: list[dict]) -> tuple[str, str]:
 - app 层 target_pose_unavailable / 任务失败事件；
 - 两者的时间关联（只能作为 inference）；
 - robot 当前日志窗口的观察；
-- status=137 触发机制仍未知。
+- status=137 触发机制仍未知，并引用 status=137 事件证据作为上下文。
 
 结构固定为：
 {{
@@ -202,9 +197,13 @@ def validate_claims(obj: dict, catalog: list[dict]) -> list[str]:
             errors.append(prefix + ".confidence")
         if not isinstance(statement, str) or not statement.strip() or len(statement) > 240:
             errors.append(prefix + ".statement")
-        if not isinstance(refs, list) or len(refs) != len(set(refs)) or any(
-            not isinstance(ref, str) or ref not in valid_refs for ref in refs
-        ):
+
+        refs_valid = (
+            isinstance(refs, list)
+            and all(isinstance(ref, str) and ref in valid_refs for ref in refs)
+            and len(refs) == len(set(refs))
+        )
+        if not refs_valid:
             errors.append(prefix + ".evidence_refs")
             refs = []
 
@@ -237,9 +236,13 @@ def validate_claims(obj: dict, catalog: list[dict]) -> list[str]:
                 errors.append(prefix + ".unknown_scope")
 
     summary = obj.get("summary_claim_ids")
-    if not isinstance(summary, list) or not summary or len(summary) != len(set(summary)) or any(
-        not isinstance(cid, str) or cid not in seen_ids for cid in summary
-    ):
+    summary_valid = (
+        isinstance(summary, list)
+        and bool(summary)
+        and all(isinstance(cid, str) and cid in seen_ids for cid in summary)
+        and len(summary) == len(set(summary))
+    )
+    if not summary_valid:
         errors.append("summary_claim_ids")
     return errors
 
@@ -264,7 +267,9 @@ def grade_poc06(obj: dict, catalog: list[dict]) -> dict:
 
     def refs(claim):
         value = claim.get("evidence_refs") if isinstance(claim, dict) else []
-        return set(value) if isinstance(value, list) else set()
+        if not isinstance(value, list) or not all(isinstance(ref, str) for ref in value):
+            return set()
+        return set(value)
 
     status_fact = any(
         c.get("kind") == "fact" and c.get("relation") == "observed" and refs(c) & status_refs
@@ -336,7 +341,6 @@ def render_claims(obj: dict, catalog: list[dict]) -> str:
             label = "未知"
         lines.append(f"- {label}：{claim.get('statement')}（证据：{evidence}）")
 
-    # Evidence appendix is runtime-owned and exact.
     used = []
     for claim in obj.get("claims", []):
         for ref in claim.get("evidence_refs") or []:
@@ -357,7 +361,7 @@ def main(argv=None):
     ap.add_argument("--model", required=True)
     ap.add_argument("--base-url", required=True)
     ap.add_argument("--timeout", type=int, default=120)
-    ap.add_argument("--max-tokens", type=int, default=512)
+    ap.add_argument("--max-tokens", type=int, default=640)
     args = ap.parse_args(argv)
 
     run = args.run.resolve()
