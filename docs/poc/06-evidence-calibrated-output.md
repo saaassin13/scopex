@@ -68,7 +68,7 @@ Deterministic Runtime Renderer
 
 ### Generic validation rules
 
-These are runtime rules and contain no CowDisinfect / POC06 fixture answer:
+These are runtime rules and contain no POC06 fixture answer:
 
 - `fact`
   - requires at least one valid evidence ref;
@@ -77,11 +77,14 @@ These are runtime rules and contain no CowDisinfect / POC06 fixture answer:
 - `inference`
   - requires evidence;
   - relation must be `temporal_association|causal_hypothesis`;
-  - confidence must be `medium|low`;
-  - temporal association requires at least two evidence refs.
+  - temporal association requires at least two evidence refs and may use
+    `high|medium|low` confidence;
+  - causal hypothesis is restricted to `medium|low` confidence.
 - `unknown`
   - relation must be `unknown`;
-  - confidence and scope must be `unknown`.
+  - confidence must be `unknown`;
+  - scope is independent of epistemic status. An unknown cause of one observed
+    event may correctly use `scope=event`.
 - evidence refs must exist in the runtime-owned catalog.
 - malformed model output returns validation errors; it must not crash the
   validator.
@@ -108,7 +111,7 @@ This prevents a model from producing:
 and smuggling that unsupported causal statement into the final user-visible
 fact. Runtime ignores that topic for fact rendering and expands E9 exactly.
 
-`topic` is only user-visible for `unknown` and `causal_hypothesis`, where the
+`topic` is user-visible only for `unknown` and `causal_hypothesis`, where the
 renderer already labels the epistemic status explicitly.
 
 ## POC-specific grade
@@ -120,7 +123,8 @@ validator. For the current stored POC05 evidence it requires:
 - the app failure represented as an observed fact;
 - their relationship represented only as `temporal_association` inference;
 - robot evidence scoped to `time_window`;
-- the status-137 trigger mechanism represented as `unknown`;
+- the status-137 trigger mechanism represented as `unknown` scoped to the
+  observed exit event;
 - no `global` claim;
 - no `causal_hypothesis` for this fixture.
 
