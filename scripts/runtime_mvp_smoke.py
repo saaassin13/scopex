@@ -22,7 +22,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from scopex.agent.runtime import OpenClawTaskSpec
-from scopex.evidence.extractor import ReadResultExtractor
+from scopex.evidence.extractor import ReadLineExtractor
 from scopex.events.progress import InMemoryEventSink
 from scopex.finalizer.client import StreamingFinalizerClient
 from scopex.finalizer.structured import StructuredFinalizer
@@ -181,7 +181,7 @@ def main(argv=None):
         session=session,
         spec=spec,
         events=events,
-        extractors=(ReadResultExtractor(max_chars=32768),),
+        extractors=(ReadLineExtractor(max_lines=256, max_line_chars=4096),),
         audit=audit,
     )
 
