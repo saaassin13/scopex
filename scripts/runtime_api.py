@@ -30,21 +30,15 @@ def loopback_host(host: str) -> bool:
 
 
 def parse_data_dir(value: str) -> str:
-    """Parse HOST_DIR:AGENT_DIR into an OpenClaw read-only bind string."""
-
     try:
         host_text, agent_dir = value.rsplit(":", 1)
     except ValueError as exc:
-        raise argparse.ArgumentTypeError(
-            "--data-dir must use HOST_DIR:AGENT_DIR"
-        ) from exc
+        raise argparse.ArgumentTypeError("--data-dir must use HOST_DIR:AGENT_DIR") from exc
     host_dir = Path(host_text).expanduser().resolve()
     if not host_dir.is_dir():
         raise argparse.ArgumentTypeError(f"data directory does not exist: {host_dir}")
     if not agent_dir.startswith("/") or agent_dir == "/" or ":" in agent_dir:
-        raise argparse.ArgumentTypeError(
-            "agent data directory must be an absolute non-root path"
-        )
+        raise argparse.ArgumentTypeError("agent data directory must be an absolute non-root path")
     return f"{host_dir}:{agent_dir}:ro"
 
 
@@ -83,6 +77,11 @@ def main(argv=None) -> int:
         choices=("deny", "allowlist", "ask", "auto", "full"),
         default="full",
         help="OpenClaw native exec policy; POC07 uses full for permissive validation",
+    )
+    parser.add_argument(
+        "--enable-view-image",
+        action="store_true",
+        help="allow OpenClaw's native view_image tool for local image inspection",
     )
     parser.add_argument(
         "--web-dist",
@@ -130,6 +129,7 @@ def main(argv=None) -> int:
         data_binds=tuple(args.data_dir),
         exec_host=args.exec_host,
         exec_mode=args.exec_mode,
+        enable_view_image=args.enable_view_image,
     )
     factory = OpenClawRuntimeFactory(config)
     service = TaskService(
@@ -148,6 +148,7 @@ def main(argv=None) -> int:
     print(f"workspace: {config.workspace}", flush=True)
     print(f"audit root: {data_root / 'tasks'}", flush=True)
     print(f"exec: host={config.exec_host} mode={config.exec_mode}", flush=True)
+    print(f"view_image: {'enabled' if config.enable_view_image else 'disabled'}", flush=True)
     if config.data_binds:
         print("data binds:", flush=True)
         for bind in config.data_binds:
