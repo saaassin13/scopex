@@ -4,8 +4,10 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import http.client
 import ipaddress
 import json
+import os
 from pathlib import Path
 import socket
+import tempfile
 import threading
 import time
 from typing import Any, Callable
@@ -65,10 +67,28 @@ def loopback_v1(url: str) -> tuple[str, str, int]:
 
 
 def _save_json(path: Path, value: Any) -> None:
-    path.write_text(
-        json.dumps(value, ensure_ascii=False, indent=2, allow_nan=False) + "\n",
-        encoding="utf-8",
-    )
+    """Atomically publish one complete JSON audit snapshot.
+
+    Audit readers must never observe a target file after truncation but before
+    its JSON payload is complete. Write and fsync a sibling temporary file,
+    then atomically replace the target name.
+    """
+
+    data = json.dumps(value, ensure_ascii=False, indent=2, allow_nan=False) + "\n"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent, text=True)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp_name, path)
+    except BaseException:
+        try:
+            os.unlink(tmp_name)
+        except FileNotFoundError:
+            pass
+        raise
 
 
 RequestHook = Callable[[int, dict[str, Any]], None]
@@ -161,8 +181,18 @@ class _ProxyHandler(BaseHTTPRequestHandler):
             return
 
         record: dict[str, Any] | None = None
+        record_persisted = False
         upstream: http.client.HTTPConnection | None = None
         response_started = False
+
+        def persist_record() -> None:
+            nonlocal record_persisted
+            if record is None or record_persisted:
+                return
+            record["end_s"] = round(time.monotonic() - proxy.started, 4)
+            _save_json(proxy.audit_dir / f"wire-{record['index']:02d}-meta.json", record)
+            record_persisted = True
+
         try:
             if self.headers.get("Transfer-Encoding"):
                 raise RequestRejected("transfer encoding is not accepted")
@@ -245,6 +275,9 @@ class _ProxyHandler(BaseHTTPRequestHandler):
                 record["error_type"] = type(exc).__name__
                 record["error_message"] = str(exc)[:300]
             if not response_started:
+                # Commit the authoritative decision before a Content-Length
+                # error response lets the client return to its caller.
+                persist_record()
                 self._json_error(409, "request stopped before model forwarding")
         except RequestRejected as exc:
             if record is not None:
@@ -252,6 +285,7 @@ class _ProxyHandler(BaseHTTPRequestHandler):
                 record["error_type"] = type(exc).__name__
                 record["error_message"] = str(exc)[:300]
             if not response_started:
+                persist_record()
                 self._json_error(422, str(exc)[:300])
         except Exception as exc:
             if record is not None:
@@ -260,13 +294,12 @@ class _ProxyHandler(BaseHTTPRequestHandler):
                 record["error_message"] = str(exc)[:300]
             if not response_started:
                 try:
+                    persist_record()
                     self._json_error(502, "local model proxy failed; inspect audit")
                 except OSError:
                     pass
         finally:
-            if record is not None:
-                record["end_s"] = round(time.monotonic() - proxy.started, 4)
-                _save_json(proxy.audit_dir / f"wire-{record['index']:02d}-meta.json", record)
+            persist_record()
             if upstream is not None:
                 with proxy.lock:
                     proxy.connections.discard(upstream)
