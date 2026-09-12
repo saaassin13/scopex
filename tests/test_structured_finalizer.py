@@ -74,6 +74,7 @@ class StructuredFinalizerTests(unittest.TestCase):
         self.assertIn("该结构不表示已证明因果", result.finalization.rendered)
         self.assertEqual(len(client.calls), 1)
         self.assertEqual(client.calls[0]["temperature"], 0)
+        self.assertEqual(client.calls[0]["max_tokens"], 768)
 
     def test_invalid_claim_structure_does_not_render(self):
         client = FakeClient('''{
@@ -96,19 +97,23 @@ class StructuredFinalizerTests(unittest.TestCase):
         self.assertIn("claims[0].fact_requires_evidence", result.finalization.errors)
         self.assertIsNone(result.finalization.rendered)
 
-    def test_transport_must_finish_normally(self):
-        content = '''{
-          "claims": [{
-            "id": "C1", "kind": "unknown", "topic": "cause",
-            "evidence_refs": ["E1"], "confidence": "unknown",
-            "scope": "event", "relation": "unknown"
-          }],
-          "summary_claim_ids": ["C1"]
-        }'''
-        result = StructuredFinalizer(FakeClient(content, finish="length"), model="m").run(
-            user_request="diagnose", catalog=self.catalog()
-        )
+    def test_transport_length_is_reported_as_truncation_before_json_parse(self):
+        result = StructuredFinalizer(
+            FakeClient('{"claims":[{"id":"C1"', finish="length"),
+            model="m",
+        ).run(user_request="diagnose", catalog=self.catalog())
         self.assertFalse(result.valid)
+        self.assertEqual(result.parse_error, "structured_finalizer_truncated")
+        self.assertIsNone(result.payload)
+        self.assertIsNone(result.finalization)
+
+    def test_incomplete_stream_is_reported_without_parse_attempt(self):
+        result = StructuredFinalizer(
+            FakeClient('{"claims":[]}', finish="stop", done=False),
+            model="m",
+        ).run(user_request="diagnose", catalog=self.catalog())
+        self.assertFalse(result.valid)
+        self.assertEqual(result.parse_error, "structured_finalizer_stream_incomplete")
 
 
 if __name__ == "__main__":
