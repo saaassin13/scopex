@@ -34,6 +34,7 @@ class FakeCoordinator:
         block_initial=False,
         block_finalizer=False,
         normal_turn=True,
+        force_convergence=False,
     ):
         self.task = task
         self.session = session
@@ -45,6 +46,7 @@ class FakeCoordinator:
         self.block_initial = block_initial
         self.block_finalizer = block_finalizer
         self.normal_turn = normal_turn
+        self.force_convergence = force_convergence
         self.release = threading.Event()
         self.finalizer_release = threading.Event()
         self.closed = False
@@ -59,7 +61,7 @@ class FakeCoordinator:
             path.write_text("", encoding="utf-8")
         process = type("Process", (), {
             "returncode": 0 if self.normal_turn else 1,
-            "stop_reason": None,
+            "stop_reason": None if self.normal_turn else "timeout",
             "wall_s": 0.01,
             "stdout_path": stdout,
             "stderr_path": stderr,
@@ -127,15 +129,22 @@ class FakeCoordinator:
         return self._turn_result(turn_name)
 
     def convergence(self, *, goal_satisfied=False):
+        should_finalize = bool(goal_satisfied or self.force_convergence)
+        reasons = (
+            ("goal_satisfied",)
+            if goal_satisfied
+            else (("elapsed_budget",) if self.force_convergence else ())
+        )
         return type("Decision", (), {
-            "should_finalize": bool(goal_satisfied),
-            "reasons": ("goal_satisfied",) if goal_satisfied else (),
+            "should_finalize": should_finalize,
+            "reasons": reasons,
         })()
 
     def begin_finalization(self, *, goal_satisfied=False):
-        self.controller.begin_finalization(
-            reasons=("goal_satisfied",) if goal_satisfied else ()
-        )
+        decision = self.convergence(goal_satisfied=goal_satisfied)
+        if not decision.should_finalize:
+            raise ValueError("convergence policy does not allow finalization yet")
+        self.controller.begin_finalization(reasons=decision.reasons)
 
     def finish_fresh_finalization(self, _finalizer):
         if self.controller.state is not TaskState.FINALIZING:
@@ -170,10 +179,12 @@ class FakeFactory:
         block_initial=False,
         block_finalizer=False,
         normal_turn=True,
+        force_convergence=False,
     ):
         self.block_initial = block_initial
         self.block_finalizer = block_finalizer
         self.normal_turn = normal_turn
+        self.force_convergence = force_convergence
         self.coordinators = []
 
     def __call__(self, task, session, events, audit):
@@ -185,6 +196,7 @@ class FakeFactory:
             block_initial=self.block_initial,
             block_finalizer=self.block_finalizer,
             normal_turn=self.normal_turn,
+            force_convergence=self.force_convergence,
         )
         self.coordinators.append(coordinator)
         return coordinator
@@ -243,7 +255,32 @@ class RuntimeApiServiceTests(unittest.TestCase):
             self.assertFalse(result["available"])
             error = service.store.read_json(task["id"], "investigation-error.json")
             self.assertEqual(error["returncode"], 1)
+            self.assertEqual(error["stop_reason"], "timeout")
             self.assertIn("missing_cli_outcome", error["cli_blockers"])
+
+    def test_abnormal_turn_with_evidence_finalizes_when_budget_converged(self):
+        with tempfile.TemporaryDirectory() as td:
+            service = TaskService(
+                audit_root=Path(td),
+                coordinator_factory=FakeFactory(
+                    normal_turn=False,
+                    force_convergence=True,
+                ),
+                finalizer_factory=lambda: object(),
+            )
+            task = service.create_task("diagnose")
+            wait_state(service, task["id"], "COMPLETED")
+            result = service.get_result(task["id"])
+            self.assertTrue(result["available"])
+            self.assertEqual(result["rendered"], "final result")
+            events = service.get_events(task["id"])
+            self.assertTrue(
+                any(
+                    row["type"] == "INVESTIGATION_COMPLETED"
+                    and "elapsed_budget" in row.get("data", {}).get("reasons", [])
+                    for row in events
+                )
+            )
 
     def test_paused_task_keeps_single_task_slot_until_resume_completes(self):
         with tempfile.TemporaryDirectory() as td:
