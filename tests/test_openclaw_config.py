@@ -37,12 +37,42 @@ class OpenClawConfigTests(unittest.TestCase):
         self.assertTrue(docker["readOnlyRoot"])
         self.assertEqual(docker["capDrop"], ["ALL"])
         self.assertEqual(docker["user"], "1000:1000")
+        self.assertNotIn("binds", docker)
         self.assertFalse(sandbox["browser"]["enabled"])
         self.assertFalse(cfg["tools"]["elevated"]["enabled"])
         self.assertEqual(cfg["tools"]["exec"]["host"], "sandbox")
         extra = defaults["models"]["vllm/qwen-local"]["params"]["extra_body"]
         self.assertEqual(extra["chat_template_kwargs"]["enable_thinking"], False)
         self.assertEqual(defaults["skills"], ["camera-diagnosis"])
+
+    def test_read_only_data_binds_use_openclaw_docker_binds(self):
+        cfg = build_openclaw_config(
+            replace(
+                self.spec(),
+                sandbox_binds=(
+                    "/srv/logs:/agent-data/logs:ro",
+                    "/srv/images:/agent-data/images:ro",
+                ),
+            )
+        )
+        docker = cfg["agents"]["defaults"]["sandbox"]["docker"]
+        self.assertEqual(
+            docker["binds"],
+            [
+                "/srv/logs:/agent-data/logs:ro",
+                "/srv/images:/agent-data/images:ro",
+            ],
+        )
+        self.assertTrue(docker["dangerouslyAllowExternalBindSources"])
+
+    def test_data_bind_must_be_read_only(self):
+        with self.assertRaises(ValueError):
+            build_openclaw_config(
+                replace(
+                    self.spec(),
+                    sandbox_binds=("/srv/logs:/agent-data/logs:rw",),
+                )
+            )
 
     def test_provider_must_be_loopback(self):
         bad = replace(self.spec(), proxy_base_url="http://example.com/v1")
