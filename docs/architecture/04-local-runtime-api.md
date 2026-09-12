@@ -2,15 +2,15 @@
 
 ScopeX Runtime MVP has passed real OpenClaw + local-vLLM integration and the
 line-level stored-trace refinalization. The product boundary is now a
-loopback-only HTTP API over the frozen runtime core.
+loopback-only **FastAPI + Uvicorn** HTTP service over the frozen runtime core.
 
 ## Product boundary
 
-The API is deliberately thin:
-
 ```text
-Web UI / local client
+Vue 3 Web UI / local client
         ↓ HTTP on loopback
+FastAPI transport
+        ↓
 TaskService
         ↓
 InvestigationCoordinator
@@ -20,9 +20,13 @@ OpenClaw + local model + sandbox
 AuditStore
 ```
 
-The HTTP layer does not implement diagnosis logic, tool routing, evidence rules
-or model prompts. HTTP handlers call `TaskService`; they never call OpenClaw or
-`InvestigationCoordinator` directly.
+FastAPI only owns request validation, status/error mapping, OpenAPI and static
+frontend serving. It does not implement diagnosis logic, tool routing, evidence
+rules, task lifecycle or model prompts. Route handlers call `TaskService`; they
+never call OpenClaw or `InvestigationCoordinator` directly.
+
+`scopex/api/http.py` is retained temporarily as a standard-library regression
+reference. The product entrypoint no longer uses it.
 
 Current constraints:
 
@@ -34,6 +38,22 @@ Current constraints:
 - events use incremental polling, not SSE/WebSocket yet;
 - historical tasks remain readable after restart but are not resumable after the
   ScopeX process is restarted.
+
+## Dependencies
+
+Pinned product transport dependencies live in `requirements-api.txt`:
+
+```text
+fastapi==0.141.1
+uvicorn==0.52.4
+httpx==0.28.1
+```
+
+`httpx` is included for FastAPI transport tests. Install once on Spark:
+
+```bash
+python3 -m pip install -r requirements-api.txt
+```
 
 ## Endpoints
 
@@ -85,8 +105,9 @@ OpenClaw session after the interrupted turn unwinds.
 GET /tasks/{task_id}/events?after=0
 ```
 
-Response includes `next_after`. A UI polls again using that sequence number.
-Only observable runtime actions are exposed; hidden reasoning is never exposed.
+Response includes `next_after`. The first Vue MVP polls using that sequence
+number. Only observable runtime actions are exposed; hidden reasoning is never
+exposed.
 
 ### Evidence and result
 
@@ -95,8 +116,53 @@ GET /tasks/{task_id}/evidence
 GET /tasks/{task_id}/result
 ```
 
-Evidence uses runtime-owned exact refs such as `E11 system.log:L3`. Result is
-unavailable until finalization completes.
+Evidence uses runtime-owned exact refs such as `E11 system.log:L3`.
+
+Publication invariant:
+
+> Once a Task is externally visible as `COMPLETED`, `result.json` and the final
+> rendered result have already been atomically persisted and are immediately
+> readable.
+
+Sandbox cleanup may finish just after the business terminal state. Process
+shutdown therefore waits for all known worker threads to quiesce before the
+audit directory can be removed/unmounted.
+
+## Request/error invariants
+
+Migration to FastAPI does not weaken the previous transport guards:
+
+- JSON bodies are limited to 64 KiB;
+- duplicate JSON keys are rejected;
+- Pydantic request models reject unexpected fields;
+- query/body validation is normalized to `400 invalid_request`;
+- lifecycle conflicts remain `409`;
+- unknown API routes remain machine readable.
+
+Error shape:
+
+```json
+{
+  "error": {
+    "code": "task_busy",
+    "message": "active task ... is RUNNING"
+  }
+}
+```
+
+Main status codes:
+
+- `400 invalid_request`
+- `404 task_not_found` / `route_not_found`
+- `409 task_busy` / `task_conflict`
+- `413 request_too_large`
+- `500 internal_error`
+
+FastAPI OpenAPI UI:
+
+```text
+http://127.0.0.1:8787/docs
+```
 
 ## Investigation completion rule
 
@@ -127,33 +193,12 @@ user Stop / Steering
 control path only; never auto-finalize
 ```
 
-This keeps completion control generic while preventing a partial failed Agent
-turn from being presented as a successful product diagnosis.
-
-## Error shape
-
-```json
-{
-  "error": {
-    "code": "task_busy",
-    "message": "active task ... is RUNNING"
-  }
-}
-```
-
-Main status codes:
-
-- `400 invalid_request`
-- `404 task_not_found` / `route_not_found`
-- `409 task_busy` / `task_conflict`
-- `500 internal_error`
-
-## Start the API on Spark
+## Start on Spark
 
 The product path does not import POC code. `--sandbox-image` is supplied
 explicitly. For the first integration run it is acceptable to read the already
-validated image reference from the passed POC02 audit, but the server itself
-has no POC dependency.
+validated image reference from the passed POC02 audit; the server itself has no
+POC dependency.
 
 ```bash
 cd /home/yanlan/workspaces/code/scopex
@@ -184,40 +229,21 @@ Default endpoint:
 http://127.0.0.1:8787
 ```
 
-The entrypoint handles both SIGINT and SIGTERM through `TaskService.shutdown()`
-so service managers do not bypass task Stop/cleanup semantics.
+Uvicorn handles process signals and FastAPI lifespan invokes
+`TaskService.shutdown()` so shutdown waits for Runtime workers and sandbox/audit
+cleanup.
 
-## First real API verification
-
-Create a task:
-
-```bash
-curl -sS -X POST http://127.0.0.1:8787/tasks \
-  -H 'Content-Type: application/json' \
-  -d '{"message":"分析 2026-09-12 10:15 左右任务执行失败。请实际读取 /agent/app.log、/agent/system.log、/agent/robot.log；不要把 status=137 自动等同于 OOM，也不要把当前窗口未见机器人异常扩大成全局健康结论。"}'
-```
-
-Copy the returned `id`, then poll:
-
-```bash
-TASK_ID=<returned-id>
-curl -sS "http://127.0.0.1:8787/tasks/$TASK_ID"
-curl -sS "http://127.0.0.1:8787/tasks/$TASK_ID/events?after=0"
-curl -sS "http://127.0.0.1:8787/tasks/$TASK_ID/evidence"
-curl -sS "http://127.0.0.1:8787/tasks/$TASK_ID/result"
-```
-
-Expected terminal state is `COMPLETED`, with line-level evidence and the same
-evidence-calibrated output shape already validated by Runtime MVP refinalize.
+If `frontend/dist/` exists, it is mounted at `/`; otherwise the server starts in
+API-only mode.
 
 ## Regression gate
 
-Before the first real API task run:
+After installing `requirements-api.txt`:
 
 ```bash
 python3 -m unittest \
   tests.test_runtime_api_service \
-  tests.test_runtime_api_http \
+  tests.test_fastapi_app \
   -v
 
 python3 -m unittest discover -s tests -v
