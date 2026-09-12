@@ -11,11 +11,12 @@ class StopBoundary:
 
 
 class SafeStopGate:
-    """Controller-side stop flag applied before the next model request.
+    """Controller-side boundary flag applied before the next model request.
 
     v0.1 semantics are deliberately cooperative at the step boundary: an
     already-running model/tool step is allowed to finish; the next model request
-    is blocked. Hard cancellation of an in-flight process is a separate feature.
+    is blocked. The same primitive is used for user stop and mid-task steering.
+    Hard cancellation of an in-flight process is a separate feature.
     """
 
     def __init__(self) -> None:
@@ -40,12 +41,16 @@ class SafeStopGate:
             self._reached = StopBoundary(request_index=request_index, reason=self._reason)
             return self._reached
 
-    def reset_for_resume(self) -> None:
-        """Clear the previous stop generation before a user resumes the task."""
+    def reset_for_next_turn(self) -> None:
+        """Clear the previous boundary generation before the next agent turn."""
         with self._lock:
             self._requested = False
             self._reason = "user_stop"
             self._reached = None
+
+    def reset_for_resume(self) -> None:
+        """Backward-compatible semantic alias for Resume."""
+        self.reset_for_next_turn()
 
     @property
     def requested(self) -> bool:
