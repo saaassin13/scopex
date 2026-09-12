@@ -1,7 +1,7 @@
 # Runtime MVP Implementation Status
 
 This is the engineering checkpoint after POC01-POC06 were frozen as regression
-baselines and production code began moving under `scopex/`.
+baselines and production code moved under `scopex/`.
 
 ## Implemented
 
@@ -13,7 +13,7 @@ baselines and production code began moving under `scopex/`.
 - runtime Progress events;
 - generic ConvergencePolicy;
 - permission policy;
-- deterministic SafeStopGate with resume reset;
+- deterministic safe-boundary gate with next-turn reset;
 - local AuditStore.
 
 ### M2 — OpenClaw execution boundary
@@ -26,36 +26,47 @@ baselines and production code began moving under `scopex/`.
 - wire request/response/meta audit;
 - request policy validation before forwarding;
 - Progress observer from real assistant/tool transcript state;
-- deterministic stop before model forwarding;
+- deterministic boundary before model forwarding;
 - CLI process-group timeout termination;
 - CLI outcome parser and no-auto-replay warning;
 - task-scope sandbox cleanup;
 - `OpenClawTaskRuntime` preserving HOME/STATE/session-key across turns.
 
-### M3 — Investigation coordinator (initial)
+### M3 — Investigation coordinator
 
-`scopex.runtime.investigation.InvestigationCoordinator` currently wires:
+`scopex.runtime.investigation.InvestigationCoordinator` now wires:
 
 ```text
 TaskController
 + OpenClawTaskRuntime
 + SafeStopGate
-+ EvidenceCatalog/Collector
++ Pending Steering
++ Evidence Extraction/Catalog
 + ConvergencePolicy
 + Structured Finalization
++ Runtime Audit
 ```
 
-Important control semantics already implemented:
+Implemented control semantics:
 
 - stop gate is armed before `PAUSING` is exposed, removing a model-forward race;
-- safe-stop callback and API control share a control lock;
-- Resume waits for the stopped OpenClaw turn to fully unwind before resetting the
-  stop gate and starting the next turn;
-- evidence stale-round accounting happens only at an explicit evidence
-  checkpoint after extractors run, not prematurely at turn return.
+- safe-boundary callback and API controls share a control lock;
+- Resume waits for the stopped OpenClaw turn to unwind before resetting the gate;
+- mid-turn Steering interrupts at the same model-request boundary but keeps the
+  Task RUNNING, then injects accumulated steering in the same session;
+- explicit Stop clears stale pending Steering;
+- multiple Steering instructions are preserved in order and newer instructions
+  are declared authoritative on conflict;
+- evidence stale-round accounting happens only after extraction completes;
+- configured evidence extractors run automatically against the turn wire audit;
+- no extractor is installed implicitly, avoiding hidden business Handler logic.
 
-### M4 — Structured finalization core
+### M4 — Evidence + structured finalization
 
+- stable E1/E2/... EvidenceCatalog with exact provenance;
+- generic `EvidenceExtractor` protocol;
+- deterministic `EvidenceExtractionPipeline` preserving tool-call order;
+- bounded opt-in `ReadResultExtractor` for smoke/basic file workflows;
 - loopback streaming Fresh Finalizer client;
 - generic evidence-calibration prompt;
 - strict JSON/fence parser;
@@ -65,57 +76,58 @@ Important control semantics already implemented:
 - one-call `StructuredFinalizer` orchestrator;
 - no automatic retry.
 
-## Deliberately not implemented yet
+### M5 — Audit
 
-### Automatic evidence extraction
+One task directory can now contain:
 
-The runtime can assign stable evidence refs, but it does not yet decide which
-arbitrary bytes from a tool result are meaningful evidence.
+```text
+task.json
+session.json
+events.jsonl
+evidence.json
+claims.json
+result.json
+final.txt
+```
 
-This is deliberate: putting log/business heuristics in `EvidenceCollector`
-would recreate hard-coded Handlers.
+`RuntimeAudit` owns task/session/evidence/claim/result snapshots and
+`AuditEventSink` persists progress events while optionally forwarding them to a
+live UI sink.
 
-Next design step is an extractor interface that can use source/tool metadata and
-Skill/domain adapters while keeping `EvidenceCatalog` generic.
+## Important engineering boundaries
 
-### Pending-steer queue
+- production `scopex/` modules must not import `scripts/poc*.py`;
+- Skills/domain adapters may decide what evidence is meaningful;
+- Runtime owns evidence identity/provenance and epistemic validation;
+- no automatic retry after ambiguous OpenClaw/model failures;
+- fact prose is rendered from runtime-owned evidence, not model free text;
+- no business-specific error strings or CowDisinfect logic in generic Runtime.
 
-POC04 proves same-session steering. The current production coordinator covers
-Start/Stop/Resume/Finalize. Mid-turn Steering needs the same safe-boundary
-mechanism plus a pending control-message queue. It should be added after the
-current control path passes Spark tests rather than mixing another concurrency
-feature into the first extraction.
-
-### Local API / Web UI
-
-Not started. The UI should be built only after the runtime path passes a real
-OpenClaw + local-vLLM integration run.
-
-## Regression tests added
+## Regression coverage
 
 Production modules now have tests for:
 
 - task/session/controller transitions;
-- progress events;
-- stop reset and resume semantics;
+- Progress, Stop and Resume semantics;
+- pending Steering and same-task next-turn continuation;
+- safe-boundary reset and control races;
 - convergence and permissions;
-- evidence identity/deduplication;
+- OpenClaw private environment and sandbox config;
+- exact-body model proxy and request policy;
+- CLI process/outcome handling;
+- same-session multi-turn OpenClaw task runtime with fake CLI/model;
+- sandbox cleanup;
+- generic evidence extraction, dedupe and deterministic E ordering;
+- turn-audit trace aggregation;
+- unified Runtime audit persistence;
+- coordinator extraction + audit + convergence;
 - malformed claim payload handling;
 - deterministic rendering;
 - Fresh Finalizer SSE transport;
-- OpenClaw sandbox config invariants;
-- private process environment;
-- exact-body model proxy;
-- request policy and safe-stop hook;
-- CLI process/outcome handling;
-- same-session multi-turn task runtime using fake OpenClaw/model;
-- sandbox cleanup;
-- coordinator evidence checkpoints/convergence;
-- in-memory end-to-end runtime smoke flow.
+- structured finalizer orchestration;
+- in-memory end-to-end runtime flow.
 
-## Required Spark checkpoint
-
-Before extracting more functionality, run on the Spark checkout:
+## Current checkpoint: run Spark regression
 
 ```bash
 cd /home/yanlan/workspaces/code/scopex
@@ -135,23 +147,44 @@ python3 -m unittest \
   tests/test_investigation_coordinator.py \
   tests/test_structured_finalizer.py \
   tests/test_runtime_end_to_end_smoke.py \
+  tests/test_evidence_extractor.py \
+  tests/test_runtime_audit.py \
+  tests/test_investigation_audit_extraction.py \
+  tests/test_steering_queue.py \
   -v
-```
 
-Then run the full historical regression suite:
-
-```bash
 python3 -m unittest discover -s tests -v
 ```
 
-Do not start a live OpenClaw/vLLM Runtime MVP run until these are clean.
+Do not run the real Runtime MVP smoke until both are clean.
 
-## Next after tests pass
+## Real Runtime MVP smoke
 
-1. Fix any extraction regressions exposed by the full suite.
-2. Add the generic EvidenceExtractor boundary.
-3. Add pending Steering at the same safe boundary used by Stop.
-4. Persist Task/Session/Events/Evidence/Claims/Result through AuditStore.
-5. Run one real integrated Runtime MVP task against the existing local vLLM and
-   OpenClaw using the known three-log fixture.
-6. Only after that, start the local API/Web UI.
+A real integration runner now exists:
+
+```text
+scripts/runtime_mvp_smoke.py
+```
+
+It uses only production `scopex/` runtime modules for execution. It stages the
+known app/system/robot fixture, runs real OpenClaw against the existing local
+vLLM, extracts read evidence, invokes one fresh structured finalizer and writes a
+complete audit directory.
+
+The POC02 preflight is used only to retrieve the already-validated sandbox image
+reference; no POC runner/grader is imported.
+
+Expected pass status:
+
+```text
+PASS_RUNTIME_MVP_SMOKE
+```
+
+## After the real smoke passes
+
+1. replace the smoke-only `ReadResultExtractor` with domain/Skill extractor
+   adapters for real device tasks;
+2. add the local Runtime API (task create/control/events/result);
+3. build the minimal local Web UI over that API;
+4. then validate a real CowDisinfect task through the product surface, not
+   through POC scripts.
