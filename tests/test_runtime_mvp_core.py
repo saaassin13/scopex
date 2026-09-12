@@ -181,6 +181,32 @@ class RuntimeMvpCoreTests(unittest.TestCase):
         errors = validate_claim_payload(payload, catalog)
         self.assertIn("claims[1].duplicate_claim", errors)
 
+    def test_validator_limits_summary_to_four_claims(self):
+        catalog, payload = self.make_claim_fixture()
+        payload["claims"].extend([
+            {
+                "id": "C4",
+                "kind": "fact",
+                "topic": "robot evidence",
+                "evidence_refs": ["E3"],
+                "confidence": "high",
+                "scope": "time_window",
+                "relation": "observed",
+            },
+            {
+                "id": "C5",
+                "kind": "unknown",
+                "topic": "another unresolved mechanism",
+                "evidence_refs": ["E2"],
+                "confidence": "unknown",
+                "scope": "event",
+                "relation": "unknown",
+            },
+        ])
+        payload["summary_claim_ids"] = ["C1", "C2", "C3", "C4", "C5"]
+        errors = validate_claim_payload(payload, catalog)
+        self.assertIn("summary_claim_ids", errors)
+
     def test_audit_store_writes_task_files(self):
         with tempfile.TemporaryDirectory() as td:
             store = AuditStore(Path(td))
