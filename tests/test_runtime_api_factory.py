@@ -35,6 +35,8 @@ class RuntimeApiFactoryTests(unittest.TestCase):
                 timeout_s=181,
                 max_requests=6,
                 data_binds=("/srv/logs:/agent-data/logs:ro",),
+                exec_host="gateway",
+                exec_mode="full",
             )
             factory = OpenClawRuntimeFactory(config)
 
@@ -59,6 +61,8 @@ class RuntimeApiFactoryTests(unittest.TestCase):
                 coordinator.agent.spec.sandbox_binds,
                 ("/srv/logs:/agent-data/logs:ro",),
             )
+            self.assertEqual(coordinator.agent.spec.exec_host, "gateway")
+            self.assertEqual(coordinator.agent.spec.exec_mode, "full")
             self.assertEqual(coordinator.convergence_policy.max_elapsed_s, 181.0)
             self.assertEqual(coordinator.convergence_policy.max_model_requests, 6)
 
