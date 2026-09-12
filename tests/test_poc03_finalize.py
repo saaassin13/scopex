@@ -28,15 +28,17 @@ class Poc03FinalizeTests(unittest.TestCase):
         self.assertEqual(MOD.observed_line_indices(SOURCE, results), [3, 4])
 
     def test_catalog_keeps_trigger_failure_and_recovery(self):
-        results = {"a": SOURCE}
         catalog = MOD.build_catalog(
-            SOURCE, results, "CalLeftCamStartFollowPt failed", max_evidence=5
+            SOURCE, {"a": SOURCE}, "CalLeftCamStartFollowPt failed", max_evidence=5
         )
         raw = [row["raw_line"] for row in catalog]
         self.assertTrue(any("Cal StartFollowPt failed" in line for line in raw))
         self.assertTrue(any("CalLeftCamStartFollowPt failed" in line for line in raw))
         self.assertTrue(any("CalLeftCamStartFollowPt succeeded" in line for line in raw))
-        self.assertEqual([row["ref"] for row in catalog], [f"E{i}" for i in range(1, 6)])
+        refs = MOD._required_refs(catalog)
+        self.assertIn("direct_trigger_candidate", refs)
+        self.assertIn("focus_failure", refs)
+        self.assertIn("post_focus_recovery", refs)
 
     def test_catalog_reserves_recovery_when_errors_crowd_top_n(self):
         rows = [
@@ -102,32 +104,42 @@ class Poc03FinalizeTests(unittest.TestCase):
         }
         self.assertEqual(MOD.validate_compact(obj, catalog), [])
 
-    def test_expand_restores_exact_raw_lines(self):
+    def test_expand_binds_critical_refs_even_if_model_picks_wrong_refs(self):
         lines = SOURCE.splitlines()
         catalog = [
-            {"ref": "E1", "source_line": 3, "raw_line": lines[2]},
-            {"ref": "E2", "source_line": 4, "raw_line": lines[3]},
-            {"ref": "E3", "source_line": 5, "raw_line": lines[4]},
+            {
+                "ref": "E1", "source_line": 3, "raw_line": lines[2],
+                "selection_reason": ["direct_trigger_candidate"],
+            },
+            {
+                "ref": "E2", "source_line": 4, "raw_line": lines[3],
+                "selection_reason": ["focus_failure"],
+            },
+            {
+                "ref": "E3", "source_line": 5, "raw_line": lines[4],
+                "selection_reason": ["post_focus_recovery"],
+            },
         ]
         compact = {
             "direct_trigger": "左膝和左腿未检测到",
             "persistence": "transient",
-            "recovery": {"observed": True, "evidence_ref": "E3"},
-            "evidence": [
-                {"role": "trigger", "ref": "E1"},
-                {"role": "failure", "ref": "E2"},
-                {"role": "recovery", "ref": "E3"},
-            ],
+            "recovery": {"observed": True, "evidence_ref": "E1"},
+            "evidence": [{"role": "failure", "ref": "E2"}],
             "facts": ["失败后恢复"],
             "inferences": ["当前窗口为瞬时异常"],
             "unknowns": ["深层原因未知"],
             "conclusion": "瞬时检测失败后恢复",
             "confidence": "high",
         }
-        self.assertEqual(MOD.validate_compact(compact, catalog), [])
         expanded = MOD.expand_compact(compact, catalog)
         self.assertEqual(expanded["recovery"]["raw_line"], lines[4])
+        self.assertEqual(
+            [item["role"] for item in expanded["evidence"][:3]],
+            ["trigger", "failure", "recovery"],
+        )
+        self.assertEqual(expanded["evidence"][0]["raw_line"], lines[2])
         self.assertEqual(expanded["evidence"][1]["raw_line"], lines[3])
+        self.assertEqual(expanded["evidence"][2]["raw_line"], lines[4])
 
     def test_parse_compact_accepts_json_fence(self):
         value = {"a": 1}
