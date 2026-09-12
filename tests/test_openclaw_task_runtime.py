@@ -103,28 +103,31 @@ class OpenClawTaskRuntimeTests(unittest.TestCase):
         self.model_thread.join(timeout=2)
         self.tmp.cleanup()
 
+    def spec(self):
+        return OpenClawTaskSpec(
+            cli_path=self.cli,
+            model_id="qwen-local",
+            upstream_base_url=f"http://127.0.0.1:{self.model.server_port}/v1",
+            upstream_api_key="",
+            workspace=self.root / "workspace",
+            runtime_root=self.root / "runtime",
+            audit_root=self.root / "audit",
+            image="fake-image",
+            docker_host="unix:///var/run/docker.sock",
+            agent_id="sx1",
+            uid=os.getuid(),
+            gid=os.getgid(),
+            timeout_s=10,
+            max_requests=4,
+            max_tokens=256,
+        )
+
     def make_runtime(self, stop=None, safe=None):
         events = InMemoryEventSink()
         runtime = OpenClawTaskRuntime(
             task_id="task-1",
-            session_key="agent:sx:task-1",
-            spec=OpenClawTaskSpec(
-                cli_path=self.cli,
-                model_id="qwen-local",
-                upstream_base_url=f"http://127.0.0.1:{self.model.server_port}/v1",
-                upstream_api_key="",
-                workspace=self.root / "workspace",
-                runtime_root=self.root / "runtime",
-                audit_root=self.root / "audit",
-                image="fake-image",
-                docker_host="unix:///var/run/docker.sock",
-                agent_id="sx1",
-                uid=os.getuid(),
-                gid=os.getgid(),
-                timeout_s=10,
-                max_requests=4,
-                max_tokens=256,
-            ),
+            session_key="agent:sx1:task-1",
+            spec=self.spec(),
             events=events,
             stop_gate=stop or SafeStopGate(),
             on_safe_stop=safe,
@@ -140,7 +143,7 @@ class OpenClawTaskRuntimeTests(unittest.TestCase):
         self.assertEqual(first.cli_outcome.answer, "model says: first")
         self.assertEqual(second.cli_outcome.answer, "model says: second")
         keys = (self.root / "runtime" / "session-keys.txt").read_text().splitlines()
-        self.assertEqual(keys, ["agent:sx:task-1", "agent:sx:task-1"])
+        self.assertEqual(keys, ["agent:sx1:task-1", "agent:sx1:task-1"])
         self.assertEqual(len(ModelHandler.bodies), 2)
         self.assertEqual(
             [event.type for event in events.events].count(EventType.MODEL_REQUEST),
@@ -161,6 +164,17 @@ class OpenClawTaskRuntimeTests(unittest.TestCase):
         self.assertEqual(len(boundaries), 1)
         self.assertEqual(boundaries[0].request_index, 1)
         self.assertFalse(result.proxy_records[0]["forwarded"])
+
+    def test_session_key_agent_must_match_configured_agent(self):
+        events = InMemoryEventSink()
+        with self.assertRaisesRegex(ValueError, "session_key agent mismatch"):
+            OpenClawTaskRuntime(
+                task_id="task-1",
+                session_key="agent:wrong:task-1",
+                spec=self.spec(),
+                events=events,
+                stop_gate=SafeStopGate(),
+            )
 
 
 if __name__ == "__main__":
