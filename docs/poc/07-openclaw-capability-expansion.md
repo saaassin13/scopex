@@ -62,6 +62,8 @@ Agent 自主执行了资源概况与进程排序命令，并观察到 Spark 上�
 --data-dir /host/poc07:/agent-data/poc07
 ```
 
+**Step 3 使用 `--exec-host sandbox`。** `/agent-data/...` 是 sandbox 内的 bind 目标路径；如果继续使用 Step 2 的 `--exec-host gateway`，`find /agent-data/...` 会在 Spark 主机执行，而主机上不存在该容器路径。混合“主机调查 + sandbox 数据调查”的 per-call host 路由留到后续单独验证，不在本步骤提前处理。
+
 测试目录应同时包含日志和多张带时间信息的图片。只给自然语言任务，例如：
 
 > 分析 10:15 左右发生的问题。请自己在 `/agent-data/poc07` 中查找与该时间段相关的日志和图片，根据问题选择需要查看的图片并分析；不要假定具体图片文件名。
