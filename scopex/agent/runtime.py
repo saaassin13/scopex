@@ -4,6 +4,7 @@ from dataclasses import dataclass
 import json
 import os
 from pathlib import Path
+import re
 import secrets
 import threading
 from typing import Callable
@@ -20,10 +21,12 @@ from scopex.agent.openclaw_runner import OpenClawProcessResult, OpenClawTurnRunn
 from scopex.agent.outcome import CliOutcome, parse_cli_outcome
 from scopex.agent.proxy_control import RuntimeRequestHook
 from scopex.agent.request_policy import OpenClawRequestPolicy
-from scopex.agent.sandbox import SandboxCleanupResult, SandboxManager
 from scopex.events.observer import AgentProgressObserver
 from scopex.events.progress import EventSink
 from scopex.runtime.stop import SafeStopGate, StopBoundary
+
+
+_SESSION_KEY = re.compile(r"^agent:([^:]+):(.+)$")
 
 
 @dataclass(frozen=True, slots=True)
@@ -44,7 +47,6 @@ class OpenClawTaskSpec:
     max_requests: int = 12
     max_tokens: int = 2048
     skills: tuple[str, ...] = ()
-    docker_bin: str = "docker"
 
 
 @dataclass(frozen=True, slots=True)
@@ -56,12 +58,32 @@ class OpenClawTurnResult:
     audit_dir: Path
 
 
-class OpenClawTaskRuntime:
-    """One ScopeX task's persistent OpenClaw runtime/session environment.
+def validate_session_key_agent(session_key: str, agent_id: str) -> None:
+    """Require OpenClaw's session routing identity to match the configured agent.
 
-    Sandbox containers are preserved across turns in the same task/session and
-    are cleaned only when ``close()`` is called at task termination.
+    OpenClaw session keys use ``agent:<agent-id>:<session-suffix>``. POC04/05
+    proved same-session steering/resume only when the key's agent segment matched
+    the configured ``agents.entries`` ID. A mismatch exits before the first model
+    request, so fail synchronously at ScopeX setup instead of surfacing a vague
+    CLI return code.
     """
+
+    if not isinstance(agent_id, str) or not agent_id:
+        raise ValueError("agent_id is required")
+    match = _SESSION_KEY.fullmatch(session_key or "")
+    if match is None:
+        raise ValueError("session_key must use agent:<agent_id>:<suffix> format")
+    routed_agent, suffix = match.groups()
+    if routed_agent != agent_id:
+        raise ValueError(
+            f"session_key agent mismatch: routed={routed_agent!r}, configured={agent_id!r}"
+        )
+    if not suffix.strip():
+        raise ValueError("session_key suffix is required")
+
+
+class OpenClawTaskRuntime:
+    """One ScopeX task's persistent OpenClaw runtime/session environment."""
 
     def __init__(
         self,
@@ -73,6 +95,7 @@ class OpenClawTaskRuntime:
         stop_gate: SafeStopGate,
         on_safe_stop: Callable[[StopBoundary], None] | None = None,
     ) -> None:
+        validate_session_key_agent(session_key, spec.agent_id)
         self.task_id = task_id
         self.session_key = session_key
         self.spec = spec
@@ -83,13 +106,8 @@ class OpenClawTaskRuntime:
         self.spec.runtime_root.mkdir(parents=True, exist_ok=True)
         self.spec.audit_root.mkdir(parents=True, exist_ok=True)
         self.config_path = self.spec.runtime_root / "openclaw.json"
-        self.container_prefix = "scopex-" + self.spec.agent_id + "-"
-        self._closed = False
-        self._cleanup_result: SandboxCleanupResult | None = None
 
     def run_turn(self, message: str, *, turn_name: str) -> OpenClawTurnResult:
-        if self._closed:
-            raise RuntimeError("OpenClaw task runtime is closed")
         if not turn_name or "/" in turn_name or "\\" in turn_name:
             raise ValueError("turn_name must be a simple directory name")
         audit = self.spec.audit_root / turn_name
@@ -180,24 +198,3 @@ class OpenClawTaskRuntime:
             proxy.shutdown()
             proxy.server_close()
             thread.join(timeout=3)
-
-    def close(self) -> SandboxCleanupResult:
-        if self._cleanup_result is not None:
-            return self._cleanup_result
-        env = {
-            "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
-            "DOCKER_HOST": self.spec.docker_host,
-        }
-        self._cleanup_result = SandboxManager(
-            docker_bin=self.spec.docker_bin,
-            env=env,
-            container_prefix=self.container_prefix,
-        ).cleanup()
-        self._closed = True
-        return self._cleanup_result
-
-    def __enter__(self) -> "OpenClawTaskRuntime":
-        return self
-
-    def __exit__(self, _exc_type, _exc, _tb) -> None:
-        self.close()
