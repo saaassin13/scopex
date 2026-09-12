@@ -22,7 +22,16 @@ class FakeCleanup:
 
 
 class FakeCoordinator:
-    def __init__(self, task, session, events, audit, *, block_initial=False):
+    def __init__(
+        self,
+        task,
+        session,
+        events,
+        audit,
+        *,
+        block_initial=False,
+        block_finalizer=False,
+    ):
         self.task = task
         self.session = session
         self.events = events
@@ -31,7 +40,9 @@ class FakeCoordinator:
         self.catalog = EvidenceCatalog(task.id, task.session_key)
         self.steering = PendingSteeringQueue()
         self.block_initial = block_initial
+        self.block_finalizer = block_finalizer
         self.release = threading.Event()
+        self.finalizer_release = threading.Event()
         self.closed = False
         self.messages = []
 
@@ -92,6 +103,8 @@ class FakeCoordinator:
     def finish_fresh_finalization(self, _finalizer):
         if self.controller.state is not TaskState.FINALIZING:
             raise ValueError("task must be FINALIZING")
+        if self.block_finalizer:
+            self.finalizer_release.wait(timeout=2)
         self.controller.finalization_completed()
         self.controller.complete()
         self.audit.persist_result(
@@ -111,8 +124,9 @@ class FakeCoordinator:
 
 
 class FakeFactory:
-    def __init__(self, *, block_initial=False):
+    def __init__(self, *, block_initial=False, block_finalizer=False):
         self.block_initial = block_initial
+        self.block_finalizer = block_finalizer
         self.coordinators = []
 
     def __call__(self, task, session, events, audit):
@@ -122,6 +136,7 @@ class FakeFactory:
             events,
             audit,
             block_initial=self.block_initial,
+            block_finalizer=self.block_finalizer,
         )
         self.coordinators.append(coordinator)
         return coordinator
@@ -206,6 +221,24 @@ class RuntimeApiServiceTests(unittest.TestCase):
             self.assertIn("先查 system.log", coordinator.messages[1][1])
             events = service.get_events(task_id)
             self.assertTrue(any(row["type"] == "USER_STEER" for row in events))
+
+    def test_controls_are_rejected_after_finalization_claims_state(self):
+        with tempfile.TemporaryDirectory() as td:
+            factory = FakeFactory(block_finalizer=True)
+            service = TaskService(
+                audit_root=Path(td),
+                coordinator_factory=factory,
+                finalizer_factory=lambda: object(),
+            )
+            task = service.create_task("diagnose")
+            task_id = task["id"]
+            wait_state(service, task_id, "FINALIZING")
+            with self.assertRaises(TaskConflictError):
+                service.steer(task_id, "too late")
+            with self.assertRaises(TaskConflictError):
+                service.stop(task_id, "too late")
+            factory.coordinators[0].finalizer_release.set()
+            wait_state(service, task_id, "COMPLETED")
 
     def test_historical_task_is_read_only_after_service_restart(self):
         with tempfile.TemporaryDirectory() as td:
