@@ -76,6 +76,54 @@ class StructuredFinalizerTests(unittest.TestCase):
         self.assertEqual(client.calls[0]["temperature"], 0)
         self.assertEqual(client.calls[0]["max_tokens"], 768)
 
+    def test_causal_hypothesis_kind_alias_is_safely_normalized_to_inference(self):
+        content = '''{
+          "claims": [
+            {
+              "id": "C1",
+              "kind": "hypothesis",
+              "topic": "worker exit may contribute to app failure",
+              "evidence_refs": ["E1", "E2"],
+              "confidence": "medium",
+              "scope": "time_window",
+              "relation": "causal_hypothesis"
+            }
+          ],
+          "summary_claim_ids": ["C1"]
+        }'''
+        result = StructuredFinalizer(FakeClient(content), model="m").run(
+            user_request="diagnose",
+            catalog=self.catalog(),
+        )
+        self.assertTrue(result.valid, result.finalization.errors if result.finalization else None)
+        self.assertEqual(result.payload["claims"][0]["kind"], "inference")
+        self.assertEqual(
+            result.normalizations,
+            ("claims[0].kind:hypothesis->inference",),
+        )
+        self.assertIn("因果未证实", result.finalization.rendered)
+
+    def test_observed_relation_is_never_upgraded_to_fact_by_normalization(self):
+        content = '''{
+          "claims": [{
+            "id": "C1",
+            "kind": "inference",
+            "topic": "worker exit",
+            "evidence_refs": ["E1"],
+            "confidence": "medium",
+            "scope": "event",
+            "relation": "observed"
+          }],
+          "summary_claim_ids": ["C1"]
+        }'''
+        result = StructuredFinalizer(FakeClient(content), model="m").run(
+            user_request="diagnose",
+            catalog=self.catalog(),
+        )
+        self.assertFalse(result.valid)
+        self.assertEqual(result.normalizations, ())
+        self.assertIn("claims[0].inference_relation", result.finalization.errors)
+
     def test_invalid_claim_structure_does_not_render(self):
         client = FakeClient('''{
           "claims": [{
