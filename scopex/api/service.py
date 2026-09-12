@@ -251,29 +251,14 @@ class TaskService:
     def _drive_after_turn(self, handle: TaskHandle) -> None:
         coordinator = handle.coordinator
         while True:
-            state = coordinator.controller.state
-            if state is TaskState.PAUSING:
-                coordinator.controller.safe_stop(
-                    at_turn_end=True,
-                    running_tool_cancelled=False,
-                )
-                handle.audit.snapshot_control(
-                    handle.task,
-                    handle.session,
-                    coordinator.catalog,
-                )
-                return
-            if state is TaskState.PAUSED:
-                return
-            if state is TaskState.RUNNING and coordinator.steering.pending:
-                coordinator.continue_pending_steering(
-                    turn_name=handle.next_turn_name()
-                )
-                continue
-            if state is TaskState.RUNNING:
-                if not coordinator.catalog.items:
-                    coordinator.controller.fail(
-                        "investigation_completed_without_evidence"
+            action = None
+            turn_name = None
+            with self._lock:
+                state = coordinator.controller.state
+                if state is TaskState.PAUSING:
+                    coordinator.controller.safe_stop(
+                        at_turn_end=True,
+                        running_tool_cancelled=False,
                     )
                     handle.audit.snapshot_control(
                         handle.task,
@@ -281,12 +266,43 @@ class TaskService:
                         coordinator.catalog,
                     )
                     return
-                coordinator.finalize_fresh(
-                    self.finalizer_factory(),
-                    goal_satisfied=True,
-                )
+                if state is TaskState.PAUSED:
+                    return
+                if state is TaskState.RUNNING and coordinator.steering.pending:
+                    action = "steer"
+                    turn_name = handle.next_turn_name()
+                elif state is TaskState.RUNNING:
+                    if not coordinator.catalog.items:
+                        coordinator.controller.fail(
+                            "investigation_completed_without_evidence"
+                        )
+                        handle.audit.snapshot_control(
+                            handle.task,
+                            handle.session,
+                            coordinator.catalog,
+                        )
+                        return
+                    coordinator.begin_finalization(goal_satisfied=True)
+                    action = "finalize"
+                else:
+                    return
+
+            if action == "steer":
+                try:
+                    coordinator.continue_pending_steering(turn_name=turn_name)
+                except ValueError:
+                    with self._lock:
+                        if coordinator.controller.state in {
+                            TaskState.PAUSING,
+                            TaskState.PAUSED,
+                        }:
+                            continue
+                    raise
+                continue
+
+            if action == "finalize":
+                coordinator.finish_fresh_finalization(self.finalizer_factory())
                 return
-            return
 
     def _start_worker_locked(
         self,
