@@ -3,7 +3,11 @@ import unittest
 from scopex.agent.trace import AgentTrace, ToolCall, ToolResult
 from scopex.evidence.catalog import EvidenceCatalog
 from scopex.evidence.collector import EvidenceCollector
-from scopex.evidence.extractor import EvidenceExtractionPipeline, ReadResultExtractor
+from scopex.evidence.extractor import (
+    EvidenceExtractionPipeline,
+    ReadLineExtractor,
+    ReadResultExtractor,
+)
 from scopex.events.progress import EventType, InMemoryEventSink
 
 
@@ -82,6 +86,45 @@ class EvidenceExtractorTests(unittest.TestCase):
         pipeline.process_trace(trace)
         self.assertEqual(catalog.get("E1").source, "/agent/first.log")
         self.assertEqual(catalog.get("E2").source, "/agent/second.log")
+
+    def test_read_line_extractor_creates_exact_line_evidence(self):
+        events = InMemoryEventSink()
+        catalog = EvidenceCatalog("t1", "agent:sx:t1")
+        pipeline = EvidenceExtractionPipeline(
+            EvidenceCollector(catalog, events),
+            [ReadLineExtractor()],
+        )
+        trace = AgentTrace(
+            calls=(ToolCall("c1", "read", {"path": "/agent/system.log"}),),
+            results=(ToolResult("c1", "first line\n\nworker exited status=137\nready\n"),),
+        )
+        added = pipeline.process_trace(trace)
+        self.assertEqual([item.raw for item in added], [
+            "first line",
+            "worker exited status=137",
+            "ready",
+        ])
+        self.assertEqual([item.ref for item in added], ["E1", "E2", "E3"])
+        self.assertEqual([item.metadata["line_number"] for item in added], [1, 3, 4])
+        self.assertTrue(all(item.source == "/agent/system.log" for item in added))
+
+    def test_read_line_extractor_bounds_lines_and_line_length(self):
+        events = InMemoryEventSink()
+        catalog = EvidenceCatalog("t1", "agent:sx:t1")
+        pipeline = EvidenceExtractionPipeline(
+            EvidenceCollector(catalog, events),
+            [ReadLineExtractor(max_lines=2, max_line_chars=4)],
+        )
+        trace = AgentTrace(
+            calls=(ToolCall("c1", "read", {"path": "/agent/a.log"}),),
+            results=(ToolResult("c1", "123456\nsecond\nthird"),),
+        )
+        pipeline.process_trace(trace)
+        self.assertEqual(len(catalog.items), 2)
+        self.assertEqual(catalog.get("E1").raw, "1234")
+        self.assertTrue(catalog.get("E1").metadata["line_truncated"])
+        self.assertEqual(catalog.get("E2").raw, "seco")
+        self.assertTrue(catalog.get("E2").metadata["line_truncated"])
 
 
 if __name__ == "__main__":
