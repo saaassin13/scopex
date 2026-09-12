@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 import json
 from pathlib import Path
 import threading
+import time
 import uuid
 from typing import Callable, Protocol
 
@@ -212,28 +213,45 @@ class TaskService:
         }
 
     def shutdown(self, timeout_s: float = 10.0) -> None:
-        with self._lock:
-            task_id = self._active_task_id
-            handle = self._handles.get(task_id) if task_id is not None else None
-            if handle is not None and handle.task.state is TaskState.RUNNING:
-                try:
-                    handle.coordinator.request_stop("server_shutdown")
-                except Exception:
-                    pass
-            thread = handle.thread if handle is not None else None
+        """Stop active work and wait for every worker to finish touching local state.
 
-        if thread is not None and thread.is_alive():
-            thread.join(timeout=max(0.0, timeout_s))
+        A task can become terminal before its worker finishes sandbox cleanup and
+        cleanup.json persistence. Shutdown therefore joins all known workers,
+        not only the current active task. This gives callers a quiescence
+        boundary before unmounting/removing the audit directory or exiting the
+        process.
+        """
+
+        timeout_s = max(0.0, float(timeout_s))
+        deadline = time.monotonic() + timeout_s
+        with self._lock:
+            handles = list(self._handles.values())
+            for handle in handles:
+                if handle.task.state is TaskState.RUNNING:
+                    try:
+                        handle.coordinator.request_stop("server_shutdown")
+                    except Exception:
+                        pass
+
+        for handle in handles:
+            thread = handle.thread
+            if thread is None or not thread.is_alive():
+                continue
+            remaining = max(0.0, deadline - time.monotonic())
+            thread.join(timeout=remaining)
 
         with self._lock:
-            if handle is not None and not handle.worker_alive and not handle.task.terminal:
-                handle.coordinator.controller.cancel("server_shutdown")
-                handle.audit.snapshot_control(
-                    handle.task,
-                    handle.session,
-                    handle.coordinator.catalog,
-                )
-                self._cleanup_terminal_locked(handle)
+            for handle in handles:
+                if handle.worker_alive:
+                    continue
+                if not handle.task.terminal:
+                    handle.coordinator.controller.cancel("server_shutdown")
+                    handle.audit.snapshot_control(
+                        handle.task,
+                        handle.session,
+                        handle.coordinator.catalog,
+                    )
+                    self._cleanup_terminal_locked(handle)
 
     def _run_initial(self, handle: TaskHandle, _unused: str) -> None:
         turn = handle.coordinator.start(
