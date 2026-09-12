@@ -10,6 +10,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from scopex.api.service import (
     TaskBusyError,
@@ -115,6 +116,16 @@ def create_app(
     @app.exception_handler(ValueError)
     async def invalid_value(_request: Request, exc: ValueError):
         return _error(400, "invalid_request", str(exc))
+
+    @app.exception_handler(StarletteHTTPException)
+    async def http_error(_request: Request, exc: StarletteHTTPException):
+        if exc.status_code == 404:
+            return _error(404, "route_not_found", "route not found")
+        return _error(exc.status_code, "http_error", str(exc.detail))
+
+    @app.exception_handler(Exception)
+    async def internal_error(_request: Request, exc: Exception):
+        return _error(500, "internal_error", type(exc).__name__)
 
     @app.get("/health")
     def health() -> dict[str, Any]:
