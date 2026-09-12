@@ -192,9 +192,18 @@ class FakeFactory:
 
 def wait_state(service, task_id, state, timeout=2.0):
     deadline = time.monotonic() + timeout
+    terminal_states = {"COMPLETED", "FAILED", "CANCELLED"}
     while time.monotonic() < deadline:
         current = service.get_task(task_id)["state"]
         if current == state:
+            if state in terminal_states:
+                handle = service._handles.get(task_id)
+                while handle is not None and handle.worker_alive:
+                    if time.monotonic() >= deadline:
+                        raise AssertionError(
+                            f"task {task_id} reached {state} but worker did not quiesce"
+                        )
+                    time.sleep(0.01)
             return
         time.sleep(0.01)
     raise AssertionError(f"task {task_id} did not reach {state}")
@@ -314,6 +323,7 @@ class RuntimeApiServiceTests(unittest.TestCase):
             )
             task = first.create_task("diagnose")
             wait_state(first, task["id"], "COMPLETED")
+            first.shutdown()
 
             restarted = TaskService(
                 audit_root=root,
@@ -323,6 +333,7 @@ class RuntimeApiServiceTests(unittest.TestCase):
             self.assertEqual(restarted.get_task(task["id"])["state"], "COMPLETED")
             with self.assertRaises(TaskConflictError):
                 restarted.stop(task["id"])
+            restarted.shutdown()
 
     def test_events_after_filter_is_incremental(self):
         with tempfile.TemporaryDirectory() as td:
