@@ -104,12 +104,13 @@ def prompts(catalog: list[dict]) -> tuple[str, str]:
 
 规则：
 1. fact 只能表示证据直接观察到的内容，relation 必须是 observed，必须有证据。
-2. inference 不能冒充事实；temporal_association 至少引用两个事件证据。
-3. causal_hypothesis 只能是低/中置信度假设，不能写成已证明根因。
-4. unknown 必须明确为 unknown；可以引用相关事件证据作为上下文。若 unknown 是某个已观察事件的触发机制未知，应引用该事件证据作为上下文。
-5. 当前证据只支持机器人“当前日志窗口”的观察，不支持全局健康结论。
-6. status=137 的具体触发机制没有直接证据；不要对 OOM、显存不足、资源竞争、内部错误做可能性排序。
-7. 时间先后或相邻只能表达 temporal_association，不能自动升级成因果事实。
+2. temporal_association 至少引用两个事件证据；其置信度可以 high/medium/low，但仍然只是时间关联。
+3. causal_hypothesis 只能是 medium/low 置信度假设，不能写成已证明根因。
+4. unknown 必须使用 kind=unknown、relation=unknown、confidence=unknown；scope 仍按未知事项实际适用范围填写。例如某个退出事件的触发机制未知可使用 scope=event。
+5. unknown 可以引用相关事件证据作为上下文；若 unknown 是某个已观察事件的触发机制未知，应引用该事件证据。
+6. 当前证据只支持机器人“当前日志窗口”的观察，不支持全局健康结论。
+7. status=137 的具体触发机制没有直接证据；不要对 OOM、显存不足、资源竞争、内部错误做可能性排序。
+8. 时间先后或相邻只能表达 temporal_association，不能自动升级成因果事实。
 
 只输出一个 JSON 对象，可有或没有 Markdown json fence。topic 控制在短语级。"""
     user = f"""【证据目录】
@@ -120,7 +121,7 @@ def prompts(catalog: list[dict]) -> tuple[str, str]:
 - app 层 target_pose_unavailable / 任务失败事件；
 - 两者的时间关联（只能作为 inference）；
 - robot 当前日志窗口的观察；
-- status=137 触发机制仍未知，并引用 status=137 事件证据作为上下文。
+- status=137 触发机制仍未知，scope=event，并引用 status=137 事件证据作为上下文。
 
 结构固定为：
 {{
@@ -223,18 +224,19 @@ def validate_claims(obj: dict, catalog: list[dict]) -> list[str]:
                 errors.append(prefix + ".inference_requires_evidence")
             if relation not in {"temporal_association", "causal_hypothesis"}:
                 errors.append(prefix + ".inference_relation")
-            if confidence not in {"medium", "low"}:
-                errors.append(prefix + ".inference_confidence")
-            if relation == "temporal_association" and len(refs) < 2:
-                errors.append(prefix + ".temporal_requires_two_refs")
+            if relation == "temporal_association":
+                if confidence not in {"high", "medium", "low"}:
+                    errors.append(prefix + ".temporal_confidence")
+                if len(refs) < 2:
+                    errors.append(prefix + ".temporal_requires_two_refs")
+            elif relation == "causal_hypothesis" and confidence not in {"medium", "low"}:
+                errors.append(prefix + ".causal_confidence")
 
         elif kind == "unknown":
             if relation != "unknown":
                 errors.append(prefix + ".unknown_relation")
             if confidence != "unknown":
                 errors.append(prefix + ".unknown_confidence")
-            if scope != "unknown":
-                errors.append(prefix + ".unknown_scope")
 
     summary = obj.get("summary_claim_ids")
     summary_valid = (
@@ -296,6 +298,7 @@ def grade_poc06(obj: dict, catalog: list[dict]) -> dict:
     unknown_137 = any(
         c.get("kind") == "unknown"
         and c.get("relation") == "unknown"
+        and c.get("scope") == "event"
         and bool(refs(c) & status_refs)
         for c in claims if isinstance(c, dict)
     )
@@ -318,11 +321,7 @@ def grade_poc06(obj: dict, catalog: list[dict]) -> dict:
 
 
 def render_claims(obj: dict, catalog: list[dict]) -> str:
-    """Render epistemic strength deterministically from structure.
-
-    Fact and temporal-association prose is runtime-owned. The model's `topic`
-    cannot turn either into a stronger causal statement.
-    """
+    """Render epistemic strength deterministically from structure."""
     by_ref = {row["ref"]: row for row in catalog}
     scope_labels = {
         "event": "单事件",
@@ -354,7 +353,7 @@ def render_claims(obj: dict, catalog: list[dict]) -> str:
                 f"（相关证据：{evidence}）"
             )
         else:
-            lines.append(f"- 未知：{claim.get('topic')}（相关证据：{evidence}）")
+            lines.append(f"- 未知｜{scope}：{claim.get('topic')}（相关证据：{evidence}）")
 
     used = []
     for claim in obj.get("claims", []):
