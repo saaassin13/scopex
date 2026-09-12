@@ -48,6 +48,7 @@ class OpenClawTaskSpec:
     max_requests: int = 12
     max_tokens: int = 2048
     skills: tuple[str, ...] = ()
+    tools: tuple[str, ...] = ("read", "exec", "process")
     sandbox_binds: tuple[str, ...] = ()
     exec_host: str = "sandbox"
     exec_mode: str = "full"
@@ -64,15 +65,6 @@ class OpenClawTurnResult:
 
 
 def validate_session_key_agent(session_key: str, agent_id: str) -> None:
-    """Require OpenClaw's session routing identity to match the configured agent.
-
-    OpenClaw session keys use ``agent:<agent-id>:<session-suffix>``. POC04/05
-    proved same-session steering/resume only when the key's agent segment matched
-    the configured ``agents.entries`` ID. A mismatch exits before the first model
-    request, so fail synchronously at ScopeX setup instead of surfacing a vague
-    CLI return code.
-    """
-
     if not isinstance(agent_id, str) or not agent_id:
         raise ValueError("agent_id is required")
     match = _SESSION_KEY.fullmatch(session_key or "")
@@ -157,6 +149,7 @@ class OpenClawTaskRuntime:
                         enable_thinking=False,
                     ),
                     skills=self.spec.skills,
+                    tools=self.spec.tools,
                     sandbox_binds=self.spec.sandbox_binds,
                     exec_host=self.spec.exec_host,
                     exec_mode=self.spec.exec_mode,
@@ -208,12 +201,6 @@ class OpenClawTaskRuntime:
             thread.join(timeout=3)
 
     def close(self) -> SandboxCleanupResult:
-        """Remove only Docker sandboxes owned by this task's configured agent.
-
-        Session-scoped sandboxes must survive across turns for Stop/Resume and
-        Steering. Cleanup therefore happens only when the ScopeX task closes.
-        """
-
         manager = SandboxManager(
             docker_bin=self.spec.docker_bin,
             env={
