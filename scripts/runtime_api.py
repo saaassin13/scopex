@@ -92,7 +92,7 @@ def main(argv=None) -> int:
         print("\nScopeX Runtime API stopping...", flush=True)
     finally:
         server.server_close()
-        service.shutdown(timeout_s=10)
+        service.shutdown(timeout_s=max(args.timeout, 120) + 10)
     return 0
 
 
