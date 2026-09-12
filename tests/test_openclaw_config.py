@@ -2,7 +2,11 @@ from dataclasses import replace
 from pathlib import Path
 import unittest
 
-from scopex.agent.openclaw_config import OpenClawConfigSpec, build_openclaw_config
+from scopex.agent.openclaw_config import (
+    ModelRequestSettings,
+    OpenClawConfigSpec,
+    build_openclaw_config,
+)
 
 
 class OpenClawConfigTests(unittest.TestCase):
@@ -44,6 +48,19 @@ class OpenClawConfigTests(unittest.TestCase):
         bad = replace(self.spec(), proxy_base_url="http://example.com/v1")
         with self.assertRaises(ValueError):
             build_openclaw_config(bad)
+
+    def test_proxy_token_is_required(self):
+        with self.assertRaises(ValueError):
+            build_openclaw_config(replace(self.spec(), proxy_api_key=""))
+
+    def test_thinking_cannot_be_reenabled(self):
+        bad_request = ModelRequestSettings(enable_thinking=True)
+        with self.assertRaises(ValueError):
+            build_openclaw_config(replace(self.spec(), request=bad_request))
+
+    def test_unapproved_tool_is_rejected(self):
+        with self.assertRaises(ValueError):
+            build_openclaw_config(replace(self.spec(), tools=("read", "browser")))
 
 
 if __name__ == "__main__":
