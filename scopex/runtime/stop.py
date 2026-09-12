@@ -40,6 +40,13 @@ class SafeStopGate:
             self._reached = StopBoundary(request_index=request_index, reason=self._reason)
             return self._reached
 
+    def reset_for_resume(self) -> None:
+        """Clear the previous stop generation before a user resumes the task."""
+        with self._lock:
+            self._requested = False
+            self._reason = "user_stop"
+            self._reached = None
+
     @property
     def requested(self) -> bool:
         with self._lock:
