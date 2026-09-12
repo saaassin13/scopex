@@ -46,7 +46,7 @@ Agent 自主执行了资源概况与进程排序命令，并观察到 Spark 上�
 
 当前最终任务出现 `investigation_completed_without_evidence` 是预期的独立缺口：现有 Evidence Pipeline 仅覆盖 read，尚未把 exec Tool Result 纳入 Evidence。该问题留到 Step 5，不回退 Step 2 结论。
 
-## Step 3 — 图片自主调查 — IN PROGRESS
+## Step 3 — 图片自主调查 — PARTIAL PASS
 
 启用 OpenClaw 原生 `view_image`，不实现 ScopeX 图片查看工具。当前本地模型已经声明 `input=["text","image"]`，因此 `view_image` 直接使用当前模型；无需额外 image model fallback。
 
@@ -64,17 +64,24 @@ Agent 自主执行了资源概况与进程排序命令，并观察到 Spark 上�
 
 **Step 3 使用 `--exec-host sandbox`。** `/agent-data/...` 是 sandbox 内的 bind 目标路径；如果继续使用 Step 2 的 `--exec-host gateway`，`find /agent-data/...` 会在 Spark 主机执行，而主机上不存在该容器路径。混合“主机调查 + sandbox 数据调查”的 per-call host 路由留到后续单独验证，不在本步骤提前处理。
 
-测试目录应同时包含日志和多张带时间信息的图片。只给自然语言任务，例如：
+已实机证明：
 
-> 分析 10:15 左右发生的问题。请自己在 `/agent-data/poc07` 中查找与该时间段相关的日志和图片，根据问题选择需要查看的图片并分析；不要假定具体图片文件名。
+- Prompt 未给具体图片文件名；
+- Agent 自主 `ls/cat` 查找日志和图片目录；
+- Agent 找到三张图片后调用 OpenClaw 原生 `view_image`；
+- 一次多图调用提示有 1 张图片未进入 context 后，Agent 又单独打开了最后一张图片，说明它能根据工具反馈继续补充调查；
+- ScopeX 没有实现图片搜索器或图片查看 Tool。
 
-通过条件：
+但尚不能判完整 PASS：
 
-- Prompt 不提供具体图片文件名；
-- Agent 自己用 OpenClaw read/exec 搜索时间窗口内文件；
-- trace 中出现真实 `view_image`；
-- `view_image` 参数指向 Agent 自己找到的图片；
-- 模型看到图片后继续自主调查或形成图片观察；
+1. 日志故障时间为 `20:15:00`，候选图片文件名时间约为 `20:00:02 / 20:00:53 / 20:01:31`，相差约 13–15 分钟。Agent 没有指出“目标时间窗口缺少匹配图片”，而是直接查看目录中全部图片。因此“按时间语义正确筛选相关图片”尚未证明。
+2. `view_image` Tool Result 只证明图片已经进入模型私有上下文；还需要检查 OpenClaw 最终可见 answer，确认模型确实基于图片内容形成了具体视觉描述，而不是只完成了工具调用。
+
+补充通过条件：
+
+- 测试数据中至少包含目标时间窗口内图片和窗口外干扰图片；
+- Agent 能从日志确定时间，再优先选择窗口内图片，并对没有匹配图片的情况明确说明；
+- OpenClaw 最终可见 answer 包含只有查看图片后才能得到的具体视觉观察；
 - 不创建固定“先日志后图片”的业务流程。
 
 注意：Step 3 只验证 OpenClaw 原生视觉调查能力。图片 Tool Result 是否进入 Evidence Catalog 留到 Step 5。
