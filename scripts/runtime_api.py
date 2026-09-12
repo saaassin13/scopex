@@ -29,6 +29,25 @@ def loopback_host(host: str) -> bool:
         return False
 
 
+def parse_data_dir(value: str) -> str:
+    """Parse HOST_DIR:AGENT_DIR into an OpenClaw read-only bind string."""
+
+    try:
+        host_text, agent_dir = value.rsplit(":", 1)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(
+            "--data-dir must use HOST_DIR:AGENT_DIR"
+        ) from exc
+    host_dir = Path(host_text).expanduser().resolve()
+    if not host_dir.is_dir():
+        raise argparse.ArgumentTypeError(f"data directory does not exist: {host_dir}")
+    if not agent_dir.startswith("/") or agent_dir == "/" or ":" in agent_dir:
+        raise argparse.ArgumentTypeError(
+            "agent data directory must be an absolute non-root path"
+        )
+    return f"{host_dir}:{agent_dir}:ro"
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--model", required=True)
@@ -44,6 +63,14 @@ def main(argv=None) -> int:
         "--data-root",
         type=Path,
         default=ROOT / ".local" / "runtime-api",
+    )
+    parser.add_argument(
+        "--data-dir",
+        action="append",
+        type=parse_data_dir,
+        default=[],
+        metavar="HOST_DIR:AGENT_DIR",
+        help="read-only host directory exposed to the OpenClaw sandbox; repeatable",
     )
     parser.add_argument(
         "--web-dist",
@@ -88,6 +115,7 @@ def main(argv=None) -> int:
         max_tokens=args.max_tokens,
         finalizer_max_tokens=args.finalizer_max_tokens,
         skills=tuple(args.skill),
+        data_binds=tuple(args.data_dir),
     )
     factory = OpenClawRuntimeFactory(config)
     service = TaskService(
@@ -105,6 +133,10 @@ def main(argv=None) -> int:
     print(f"ScopeX FastAPI: http://{args.host}:{args.port}", flush=True)
     print(f"workspace: {config.workspace}", flush=True)
     print(f"audit root: {data_root / 'tasks'}", flush=True)
+    if config.data_binds:
+        print("data binds:", flush=True)
+        for bind in config.data_binds:
+            print(f"  {bind}", flush=True)
     print(
         f"web: {static_dir if static_dir.is_dir() else 'not built; API-only mode'}",
         flush=True,
