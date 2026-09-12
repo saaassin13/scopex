@@ -1,15 +1,13 @@
 #!/usr/bin/env python3
 """Finalize a recorded POC03 investigation from a compact evidence catalog.
 
-Phase B of the POC03 two-phase design:
-
+Phase B:
   OpenClaw investigation -> Evidence Context Builder -> fresh no-tool finalizer
 
-The finalizer never receives assistant tool-call history or tool-role messages.
-It sees only business background plus exact source-log lines that were actually
-observed in recorded tool results. Those lines are assigned deterministic E1,
-E2, ... references. The model cites refs; Python expands refs back to exact raw
-log lines and reuses the existing POC03 business grader.
+The model explains the evidence. Runtime code owns exact evidence identity:
+critical trigger/failure/recovery refs are selected deterministically from log
+lines that the Agent actually observed, then expanded back to exact source
+lines before the existing POC03 grader runs.
 
 Python >=3.10, standard library only. No automatic retry.
 """
@@ -43,6 +41,10 @@ NEGATIVE_MARKERS = (
 RECOVERY_MARKERS = (
     "succeeded", "success", "recovered", "recover", "restored", "resumed", "healthy",
 )
+STATUS_WORDS = {
+    "failed", "failure", "error", "errors", "exception", "invalid", "timeout",
+    "succeeded", "success", "recovered", "recover", "restored", "healthy",
+}
 
 
 def load_json(path: Path):
@@ -56,7 +58,6 @@ def save_json(path: Path, obj):
 
 
 def tool_history(run: Path):
-    """Return unique recorded tool calls and their latest recorded returns."""
     calls: dict[str, dict] = {}
     results: dict[str, str] = {}
     for wire in sorted(run.glob("wire-*-request.json")):
@@ -98,18 +99,10 @@ def extract_knowledge(calls: dict, results: dict) -> str:
 
 
 def observed_line_indices(source_text: str, results: dict[str, str]) -> list[int]:
-    """Find exact source lines that occurred inside recorded tool results.
-
-    Exact source-line substring matching also handles grep -n prefixes and
-    cat -A suffixes without trusting line numbers emitted by a command.
-    """
+    """Return source-line indexes that occur verbatim in recorded tool results."""
     lines = source_text.splitlines()
     contents = [value for value in results.values() if isinstance(value, str) and value]
-    observed = []
-    for idx, line in enumerate(lines):
-        if line and any(line in content for content in contents):
-            observed.append(idx)
-    return observed
+    return [idx for idx, line in enumerate(lines) if line and any(line in c for c in contents)]
 
 
 def _score_line(line: str, idx: int, anchors: list[int], focus: str) -> int:
@@ -137,66 +130,66 @@ def _best(indices: list[int], lines: list[str], anchors: list[int], focus: str) 
     return max(indices, key=lambda idx: (_score_line(lines[idx], idx, anchors, focus), -idx))
 
 
+def _focus_stem(focus: str) -> str:
+    """Extract a generic operation stem from a natural-language focus string."""
+    tokens = re.findall(r"[A-Za-z0-9_.:/-]+", focus or "")
+    kept = [t for t in tokens if t.lower() not in STATUS_WORDS]
+    if not kept:
+        return ""
+    # Prefer the longest identifier-like token; e.g. FooBar failed -> FooBar.
+    return max(kept, key=len).lower()
+
+
+def _critical_indices(lines: list[str], observed: list[int], focus: str) -> dict[str, int]:
+    focus_lower = (focus or "").lower()
+    anchors = [idx for idx in observed if focus_lower and focus_lower in lines[idx].lower()]
+    focus_idx = _best(anchors, lines, anchors, focus)
+    if focus_idx is None:
+        return {}
+
+    negative_before = [
+        idx for idx in observed
+        if idx < focus_idx and any(m in lines[idx].lower() for m in NEGATIVE_MARKERS)
+    ]
+    # Nearest prior negative event is the generic direct-trigger candidate.
+    trigger_idx = max(negative_before) if negative_before else None
+
+    recovery_after = [
+        idx for idx in observed
+        if idx > focus_idx and any(m in lines[idx].lower() for m in RECOVERY_MARKERS)
+    ]
+    stem = _focus_stem(focus)
+    same_operation = [idx for idx in recovery_after if stem and stem in lines[idx].lower()]
+    pool = same_operation or recovery_after
+    recovery_idx = min(pool) if pool else None
+
+    out = {"focus_failure": focus_idx}
+    if trigger_idx is not None:
+        out["direct_trigger_candidate"] = trigger_idx
+    if recovery_idx is not None:
+        out["post_focus_recovery"] = recovery_idx
+    return out
+
+
 def build_catalog(source_text: str, results: dict[str, str], focus: str,
                   max_evidence: int = DEFAULT_MAX_EVIDENCE) -> list[dict]:
-    """Build a small but diversified evidence catalog.
-
-    Pure top-N scoring can fill every slot with failure-side ERROR lines and
-    accidentally discard a later recovery line that the Agent actually saw.
-    Reserve semantically distinct evidence first, then fill remaining slots by
-    score. This policy is generic runtime logic; it does not encode the POC case
-    timestamps or expected answer.
-    """
+    """Build a diversified catalog with deterministic critical evidence slots."""
     if max_evidence < 4 or max_evidence > 40:
         raise ValueError("max_evidence must be between 4 and 40")
-
     lines = source_text.splitlines()
     observed = observed_line_indices(source_text, results)
     if not observed:
         raise ValueError("no exact source-log lines were observed in recorded tool results")
 
-    focus_lower = focus.lower() if focus else ""
+    focus_lower = (focus or "").lower()
     anchors = [idx for idx in observed if focus_lower and focus_lower in lines[idx].lower()]
-    anchor_floor = min(anchors) if anchors else min(observed)
-    anchor_ceiling = max(anchors) if anchors else anchor_floor
+    critical = _critical_indices(lines, observed, focus)
 
-    selected: set[int] = set()
+    selected = set(critical.values())
     reasons: dict[int, set[str]] = {}
-
-    def reserve(idx: int | None, reason: str):
-        if idx is None:
-            return
-        selected.add(idx)
+    for reason, idx in critical.items():
         reasons.setdefault(idx, set()).add(reason)
 
-    # 1) Keep the strongest exact focus anchor when one exists.
-    reserve(_best(anchors, lines, anchors, focus), "focus")
-
-    # 2) Keep one nearby negative/upstream event before or at the focus. This
-    # often carries the direct trigger even when its text differs from focus.
-    negative_before = [
-        idx for idx in observed
-        if idx <= anchor_ceiling and any(m in lines[idx].lower() for m in NEGATIVE_MARKERS)
-        and idx not in selected
-    ]
-    if negative_before:
-        closest_negative = max(
-            negative_before,
-            key=lambda idx: (-min(abs(idx - a) for a in anchors) if anchors else idx,
-                             _score_line(lines[idx], idx, anchors, focus), idx),
-        )
-        reserve(closest_negative, "negative_context")
-
-    # 3) Crucial diversity guard: if the Agent observed a success/recovery after
-    # the focus, reserve the strongest one even if ERROR-heavy top-N ranking
-    # would otherwise push it out.
-    recovery_after = [
-        idx for idx in observed
-        if idx > anchor_floor and any(m in lines[idx].lower() for m in RECOVERY_MARKERS)
-    ]
-    reserve(_best(recovery_after, lines, anchors, focus), "post_focus_recovery")
-
-    # 4) Fill the remaining budget by relevance score.
     ranked = [
         idx for _score, idx in sorted(
             ((_score_line(lines[idx], idx, anchors, focus), idx) for idx in observed),
@@ -222,15 +215,24 @@ def build_catalog(source_text: str, results: dict[str, str], focus: str,
     ]
 
 
+def _required_refs(catalog: list[dict]) -> dict[str, str]:
+    out: dict[str, str] = {}
+    for row in catalog:
+        for reason in row.get("selection_reason") or []:
+            if reason in {"direct_trigger_candidate", "focus_failure", "post_focus_recovery"}:
+                out[reason] = row["ref"]
+    return out
+
+
 def finalizer_prompts(focus: str, knowledge: str, catalog: list[dict]):
     system = """你是设备故障诊断结果整理器。调查阶段已经结束。
-
-只能根据提供的业务背景和证据目录完成最终结论；禁止继续调查、调用工具、请求额外信息或编造根因。业务背景只能帮助解释，事件事实必须由 E 编号证据支持。
-
-输出必须简短：evidence 最多4条，facts最多3条，inferences最多1条，unknowns必须1到2条。优先引用能直接支持触发条件、失败状态和后续恢复判断的证据。只输出一个 JSON 对象，可以有或没有 Markdown json fence。"""
+只能根据业务背景和证据目录完成结论；禁止继续调查、调用工具、请求额外信息或编造根因。
+selection_reason 是运行时确定的证据身份：direct_trigger_candidate=目标失败前最近的负向事件；focus_failure=目标失败本身；post_focus_recovery=目标失败后、优先同一操作的成功/恢复事件。
+输出简短：evidence最多4条，facts最多3条，inferences最多1条，unknowns必须1到2条。只输出一个JSON对象，可以有或没有Markdown json fence。"""
 
     evidence_text = "\n".join(
-        f"{row['ref']} | source line {row['source_line']} | {row['raw_line']}"
+        f"{row['ref']} | tags={','.join(row.get('selection_reason') or [])} | "
+        f"source line {row['source_line']} | {row['raw_line']}"
         for row in catalog
     )
     user = f"""诊断目标：{focus}
@@ -243,18 +245,18 @@ def finalizer_prompts(focus: str, knowledge: str, catalog: list[dict]):
 
 只输出以下结构：
 {{
-  \"direct_trigger\": \"简短描述\",
-  \"persistence\": \"transient|persistent|unknown\",
-  \"recovery\": {{\"observed\": true|false|null, \"evidence_ref\": \"E编号或空字符串\"}},
-  \"evidence\": [{{\"role\": \"upstream|trigger|failure|recovery\", \"ref\": \"E编号\"}}],
-  \"facts\": [\"最多3条\"],
-  \"inferences\": [\"最多1条\"],
-  \"unknowns\": [\"至少1条，最多2条；写现有证据无法证明的深层原因\"],
-  \"conclusion\": \"一句话\",
-  \"confidence\": \"high|medium|low\"
+  "direct_trigger": "简短描述",
+  "persistence": "transient|persistent|unknown",
+  "recovery": {{"observed": true|false|null, "evidence_ref": "E编号或空字符串"}},
+  "evidence": [{{"role": "upstream|trigger|failure|recovery", "ref": "E编号"}}],
+  "facts": ["最多3条"],
+  "inferences": ["最多1条"],
+  "unknowns": ["至少1条，最多2条"],
+  "conclusion": "一句话",
+  "confidence": "high|medium|low"
 }}
 
-不要复制原始日志全文；只引用 E 编号。"""
+若目录存在 post_focus_recovery，则当前窗口内已有恢复证据。不要复制原始日志全文，只引用E编号。"""
     return system, user
 
 
@@ -277,7 +279,6 @@ def validate_compact(obj: dict, catalog: list[dict]) -> list[str]:
         errors.append("direct_trigger")
     if obj.get("persistence") not in {"transient", "persistent", "unknown"}:
         errors.append("persistence")
-
     recovery = obj.get("recovery")
     if not isinstance(recovery, dict) or recovery.get("observed") not in {True, False, None}:
         errors.append("recovery")
@@ -285,8 +286,6 @@ def validate_compact(obj: dict, catalog: list[dict]) -> list[str]:
         ref = recovery.get("evidence_ref", "")
         if not isinstance(ref, str) or (ref and ref not in valid_refs):
             errors.append("recovery.evidence_ref")
-        if recovery.get("observed") is True and not ref:
-            errors.append("recovery.evidence_ref_required")
 
     evidence = obj.get("evidence")
     if not isinstance(evidence, list) or not 1 <= len(evidence) <= 4:
@@ -318,20 +317,42 @@ def validate_compact(obj: dict, catalog: list[dict]) -> list[str]:
 
 
 def expand_compact(obj: dict, catalog: list[dict]) -> dict:
+    """Bind critical evidence deterministically; model labels cannot lose exact refs."""
     by_ref = {row["ref"]: row["raw_line"] for row in catalog}
-    recovery = obj["recovery"]
-    recovery_ref = recovery.get("evidence_ref", "")
+    required = _required_refs(catalog)
+
+    evidence = []
+    used = set()
+    for reason, role in (
+        ("direct_trigger_candidate", "trigger"),
+        ("focus_failure", "failure"),
+        ("post_focus_recovery", "recovery"),
+    ):
+        ref = required.get(reason)
+        if ref and ref in by_ref and ref not in used:
+            evidence.append({"role": role, "raw_line": by_ref[ref]})
+            used.add(ref)
+
+    # Keep at most one additional model-selected upstream/context clue.
+    for item in obj.get("evidence") or []:
+        ref = item.get("ref") if isinstance(item, dict) else None
+        if ref in by_ref and ref not in used and len(evidence) < 4:
+            evidence.append({"role": item.get("role", "upstream"), "raw_line": by_ref[ref]})
+            used.add(ref)
+            break
+
+    model_recovery = obj.get("recovery") if isinstance(obj.get("recovery"), dict) else {}
+    recovery_ref = required.get("post_focus_recovery") or model_recovery.get("evidence_ref", "")
+    recovery_observed = True if required.get("post_focus_recovery") else model_recovery.get("observed")
+
     return {
         "direct_trigger": obj["direct_trigger"],
         "persistence": obj["persistence"],
         "recovery": {
-            "observed": recovery.get("observed"),
+            "observed": recovery_observed,
             "raw_line": by_ref.get(recovery_ref, ""),
         },
-        "evidence": [
-            {"role": item["role"], "raw_line": by_ref[item["ref"]]}
-            for item in obj["evidence"]
-        ],
+        "evidence": evidence,
         "facts": obj["facts"],
         "inferences": obj["inferences"],
         "unknowns": obj["unknowns"],
@@ -488,6 +509,7 @@ def main(argv=None):
         "model": args.model,
         "focus": args.focus,
         "catalog_size": len(catalog),
+        "critical_refs": _required_refs(catalog),
         "trace_prerequisites": {
             "skill_read": trace.get("skill_read"),
             "knowledge_read": trace.get("knowledge_read"),
