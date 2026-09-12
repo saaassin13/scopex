@@ -27,27 +27,27 @@ def good_obj():
     return {
         "claims": [
             {
-                "id": "C1", "kind": "fact", "statement": "inference-worker 以 status=137 退出",
+                "id": "C1", "kind": "fact", "topic": "inference-worker 退出",
                 "evidence_refs": ["E2"], "confidence": "high", "scope": "event",
                 "relation": "observed",
             },
             {
-                "id": "C2", "kind": "fact", "statement": "应用任务因 target_pose_unavailable 失败",
+                "id": "C2", "kind": "fact", "topic": "应用任务失败",
                 "evidence_refs": ["E1"], "confidence": "high", "scope": "event",
                 "relation": "observed",
             },
             {
-                "id": "C3", "kind": "inference", "statement": "两事件在时间上相邻",
+                "id": "C3", "kind": "inference", "topic": "退出事件与应用失败的时间关系",
                 "evidence_refs": ["E2", "E1"], "confidence": "medium", "scope": "time_window",
                 "relation": "temporal_association",
             },
             {
-                "id": "C4", "kind": "fact", "statement": "当前窗口未见机器人故障码或心跳异常",
+                "id": "C4", "kind": "fact", "topic": "机器人当前窗口状态",
                 "evidence_refs": ["E3", "E4"], "confidence": "high", "scope": "time_window",
                 "relation": "observed",
             },
             {
-                "id": "C5", "kind": "unknown", "statement": "status=137 的具体触发机制",
+                "id": "C5", "kind": "unknown", "topic": "status=137 的具体触发机制",
                 "evidence_refs": ["E2"], "confidence": "unknown", "scope": "unknown",
                 "relation": "unknown",
             },
@@ -117,7 +117,7 @@ class Poc06EvidenceCalibrationTests(unittest.TestCase):
     def test_poc06_grader_rejects_causal_hypothesis_for_fixture(self):
         obj = good_obj()
         obj["claims"].append({
-            "id": "C6", "kind": "inference", "statement": "OOM 可能导致进程退出",
+            "id": "C6", "kind": "inference", "topic": "OOM 导致进程退出",
             "evidence_refs": ["E2"], "confidence": "low", "scope": "event",
             "relation": "causal_hypothesis",
         })
@@ -131,8 +131,17 @@ class Poc06EvidenceCalibrationTests(unittest.TestCase):
         text = MOD.render_claims(good_obj(), catalog())
         self.assertIn("事实｜单事件", text)
         self.assertIn("推断｜时间关联｜medium", text)
-        self.assertIn("未知", text)
+        self.assertIn("该结构不表示已证明因果", text)
+        self.assertIn("未知：status=137 的具体触发机制", text)
         self.assertIn("E2 [system.log] 2026-09-12 10:15:00.180", text)
+
+    def test_fact_topic_cannot_smuggle_causal_wording_into_rendered_fact(self):
+        obj = good_obj()
+        obj["claims"][0]["topic"] = "GPU OOM 导致 inference-worker 退出"
+        self.assertEqual(MOD.validate_claims(obj, catalog()), [])
+        text = MOD.render_claims(obj, catalog())
+        self.assertNotIn("GPU OOM 导致", text)
+        self.assertIn("inference-worker exited status=137", text)
 
 
 if __name__ == "__main__":
