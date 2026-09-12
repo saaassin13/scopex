@@ -1,27 +1,32 @@
 #!/usr/bin/env python3
-"""Run the loopback-only ScopeX Local Runtime API.
-
-This is the product entrypoint for the current single-user/single-major-task MVP.
-It imports only production modules under ``scopex/`` and does not depend on POC
-runners or graders.
-"""
+"""Run the loopback-only ScopeX FastAPI product server."""
 from __future__ import annotations
 
 import argparse
+import ipaddress
 import os
 from pathlib import Path
-import signal
 import sys
-import threading
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+import uvicorn
+
 from scopex.agent.docker_host import resolve_local_docker_host
 from scopex.api.factory import LocalRuntimeConfig, OpenClawRuntimeFactory
-from scopex.api.http import RuntimeApiServer
+from scopex.api.fastapi_app import create_app
 from scopex.api.service import TaskService
+
+
+def loopback_host(host: str) -> bool:
+    if host == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
 
 
 def main(argv=None) -> int:
@@ -40,6 +45,12 @@ def main(argv=None) -> int:
         type=Path,
         default=ROOT / ".local" / "runtime-api",
     )
+    parser.add_argument(
+        "--web-dist",
+        type=Path,
+        default=ROOT / "frontend" / "dist",
+        help="Vue build directory; ignored until it exists",
+    )
     parser.add_argument("--api-key-env", default="SCOPEX_API_KEY")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8787)
@@ -52,8 +63,10 @@ def main(argv=None) -> int:
 
     if not sys.platform.startswith("linux") or os.geteuid() == 0:
         raise ValueError("run Runtime API on Spark Linux as the ordinary user, not sudo")
-    if not 0 <= args.port <= 65535:
-        raise ValueError("port must be between 0 and 65535")
+    if not loopback_host(args.host):
+        raise ValueError("Runtime API may bind only to loopback")
+    if not 1 <= args.port <= 65535:
+        raise ValueError("port must be between 1 and 65535")
 
     os.umask(0o077)
     api_key = os.environ.get(args.api_key_env, "")
@@ -82,29 +95,28 @@ def main(argv=None) -> int:
         coordinator_factory=factory.coordinator,
         finalizer_factory=factory.finalizer,
     )
-    server = RuntimeApiServer((args.host, args.port), service)
-    server.timeout = 0.5
-    host, port = server.server_address[:2]
-    print(f"ScopeX Runtime API: http://{host}:{port}", flush=True)
+    static_dir = args.web_dist.expanduser().resolve()
+    app = create_app(
+        service,
+        static_dir=static_dir if static_dir.is_dir() else None,
+        shutdown_timeout_s=max(args.timeout, 120) + 10,
+    )
+
+    print(f"ScopeX FastAPI: http://{args.host}:{args.port}", flush=True)
     print(f"workspace: {config.workspace}", flush=True)
     print(f"audit root: {data_root / 'tasks'}", flush=True)
+    print(
+        f"web: {static_dir if static_dir.is_dir() else 'not built; API-only mode'}",
+        flush=True,
+    )
 
-    stopping = threading.Event()
-
-    def request_stop(_signum, _frame):
-        stopping.set()
-
-    old_term = signal.signal(signal.SIGTERM, request_stop)
-    old_int = signal.signal(signal.SIGINT, request_stop)
-    try:
-        while not stopping.is_set():
-            server.handle_request()
-    finally:
-        signal.signal(signal.SIGTERM, old_term)
-        signal.signal(signal.SIGINT, old_int)
-        print("ScopeX Runtime API stopping...", flush=True)
-        service.shutdown(timeout_s=max(args.timeout, 120) + 10)
-        server.server_close()
+    uvicorn.run(
+        app,
+        host=args.host,
+        port=args.port,
+        log_level="info",
+        access_log=False,
+    )
     return 0
 
 
