@@ -8,6 +8,7 @@ from typing import Any
 from scopex.evidence.catalog import EvidenceCatalog
 from scopex.finalizer.client import FinalizerResponse, StreamingFinalizerClient
 from scopex.finalizer.service import FinalizationResult, FinalizationService
+from scopex.finalizer.validator import normalize_claim_payload
 
 
 @dataclass(frozen=True, slots=True)
@@ -16,6 +17,7 @@ class StructuredFinalizerResult:
     payload: dict[str, Any] | None
     parse_error: str | None
     finalization: FinalizationResult | None
+    normalizations: tuple[str, ...] = ()
 
     @property
     def valid(self) -> bool:
@@ -56,6 +58,13 @@ claim 字段固定：id, kind, topic, evidence_refs, confidence, scope, relation
 - confidence: high | medium | low | unknown
 - scope: event | time_window | component | global | unknown
 - relation: observed | temporal_association | causal_hypothesis | unknown
+
+kind 与 relation 必须严格匹配：
+- observed -> fact
+- temporal_association -> inference
+- causal_hypothesis -> inference
+- unknown -> unknown
+不要输出 hypothesis、causal、observation 等其他 kind 值。
 
 规则：
 1. 只输出 3-6 个最重要 claim；topic 最多 24 个中文字符或约 48 个 ASCII 字符。
@@ -126,8 +135,24 @@ class StructuredFinalizer:
             )
 
         try:
-            payload = parse_structured_payload(transport.content)
+            raw_payload = parse_structured_payload(transport.content)
         except (ValueError, json.JSONDecodeError) as exc:
             return StructuredFinalizerResult(transport, None, str(exc), None)
-        finalization = self.service.finalize(payload, catalog)
-        return StructuredFinalizerResult(transport, payload, None, finalization)
+
+        normalized, normalizations = normalize_claim_payload(raw_payload)
+        if not isinstance(normalized, dict):
+            return StructuredFinalizerResult(
+                transport,
+                None,
+                "structured finalizer normalized payload must be one JSON object",
+                None,
+                normalizations,
+            )
+        finalization = self.service.finalize(normalized, catalog)
+        return StructuredFinalizerResult(
+            transport,
+            normalized,
+            None,
+            finalization,
+            normalizations,
+        )
