@@ -21,6 +21,52 @@ _CLAIM_FIELDS = {
 }
 
 
+def normalize_claim_payload(payload: Any) -> tuple[Any, tuple[str, ...]]:
+    """Normalize only epistemically safe redundant claim fields.
+
+    ``relation`` is more specific than ``kind`` for non-observed claims. Runtime
+    may therefore deterministically map temporal/causal relations to inference
+    and unknown relations to unknown. These mappings preserve or weaken claim
+    strength; they never upgrade a claim to an observed fact.
+
+    Observed claims are intentionally not repaired: ``relation=observed`` still
+    requires the model to emit ``kind=fact`` and pass the normal fact evidence
+    checks. The input object is never mutated.
+    """
+
+    if not isinstance(payload, Mapping):
+        return payload, ()
+
+    normalized = dict(payload)
+    claims = payload.get("claims")
+    if not isinstance(claims, list):
+        return normalized, ()
+
+    rows: list[Any] = []
+    changes: list[str] = []
+    for index, claim in enumerate(claims):
+        if not isinstance(claim, Mapping):
+            rows.append(claim)
+            continue
+        row = dict(claim)
+        relation = row.get("relation")
+        current = row.get("kind")
+        expected: str | None = None
+        if relation in {"temporal_association", "causal_hypothesis"}:
+            expected = "inference"
+        elif relation == "unknown":
+            expected = "unknown"
+
+        if expected is not None and current != expected:
+            before = "<missing>" if current is None else str(current)
+            row["kind"] = expected
+            changes.append(f"claims[{index}].kind:{before}->{expected}")
+        rows.append(row)
+
+    normalized["claims"] = rows
+    return normalized, tuple(changes)
+
+
 def _unique_strings(value: Any) -> tuple[bool, list[str]]:
     if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
         return False, []
