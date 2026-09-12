@@ -110,7 +110,11 @@ class OpenClawTaskRuntime:
         audit = self.spec.audit_root / turn_name
         audit.mkdir(parents=True, exist_ok=False)
         token = secrets.token_urlsafe(24)
-        policy = OpenClawRequestPolicy(self.spec.model_id, self.spec.max_tokens)
+        policy = OpenClawRequestPolicy(
+            self.spec.model_id,
+            self.spec.max_tokens,
+            frozenset(self.spec.tools),
+        )
         hook = RuntimeRequestHook(
             self.observer,
             self.stop_gate,
