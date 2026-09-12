@@ -34,6 +34,7 @@ class LocalRuntimeConfig:
     data_binds: tuple[str, ...] = ()
     exec_host: str = "sandbox"
     exec_mode: str = "full"
+    enable_view_image: bool = False
 
 
 class OpenClawRuntimeFactory:
@@ -70,6 +71,9 @@ class OpenClawRuntimeFactory:
         if not isinstance(agent_id, str) or not agent_id:
             raise ValueError("task metadata is missing agent_id")
         task_root = self.config.work_root / task.id
+        tools = ["read", "exec", "process"]
+        if self.config.enable_view_image:
+            tools.append("view_image")
         spec = OpenClawTaskSpec(
             cli_path=self.config.cli_path,
             model_id=self.config.model_id,
@@ -87,6 +91,7 @@ class OpenClawRuntimeFactory:
             max_requests=self.config.max_requests,
             max_tokens=self.config.max_tokens,
             skills=self.config.skills,
+            tools=tuple(tools),
             sandbox_binds=self.config.data_binds,
             exec_host=self.config.exec_host,
             exec_mode=self.config.exec_mode,
