@@ -31,6 +31,7 @@ class LocalRuntimeConfig:
     max_tokens: int = 2048
     finalizer_max_tokens: int = 768
     skills: tuple[str, ...] = ()
+    data_binds: tuple[str, ...] = ()
 
 
 class OpenClawRuntimeFactory:
@@ -84,6 +85,7 @@ class OpenClawRuntimeFactory:
             max_requests=self.config.max_requests,
             max_tokens=self.config.max_tokens,
             skills=self.config.skills,
+            sandbox_binds=self.config.data_binds,
         )
         return InvestigationCoordinator.for_openclaw(
             task=task,
