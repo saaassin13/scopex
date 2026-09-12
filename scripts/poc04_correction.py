@@ -102,12 +102,31 @@ def answer_signals(answer: str | None) -> dict:
             "previous hypothesis", "earlier hypothesis", "revise", "revised", "downgrade",
         )
     )
-    # Reject only strong positive assertions that visual itself is the proven
-    # root cause. Negated phrases such as "不能证明视觉是根因" are not matched.
-    unsupported_visual_root = bool(re.search(
-        r"(?:视觉|vision).{0,18}(?:是|为|就是|is|was).{0,10}(?:根因|root cause)",
-        text, re.I,
-    ))
+
+    # Detect only an affirmative claim that visual itself is a proven root
+    # cause. A regex alone falsely classifies phrases such as
+    # "视觉低质量不能证明是根因" because the substring "是根因" still exists.
+    # Inspect a small local window around each positive-looking candidate and
+    # discard it when the same clause contains explicit negation/uncertainty.
+    unsupported_visual_root = False
+    positive = re.compile(
+        r"(?:视觉|vision).{0,24}(?:是|为|就是|is|was).{0,12}(?:根因|root cause)",
+        re.I,
+    )
+    negated = re.compile(
+        r"(?:不能证明|无法证明|不足以证明|未能证明|没有证据(?:能够)?证明|证据不足|"
+        r"不是|并非|不应(?:当作|视为)?|不要(?:当作|视为)?|"
+        r"cannot(?:\s+prove)?|can't(?:\s+prove)?|not\s+(?:the\s+)?|"
+        r"no\s+evidence|insufficient\s+evidence|unproven)",
+        re.I,
+    )
+    for match in positive.finditer(text):
+        window = text[max(0, match.start() - 28): min(len(text), match.end() + 8)]
+        if negated.search(window):
+            continue
+        unsupported_visual_root = True
+        break
+
     return {
         "robot_ok": robot_ok,
         "system_crash": system_crash,
