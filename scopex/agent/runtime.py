@@ -48,6 +48,7 @@ class OpenClawTaskSpec:
     max_requests: int = 12
     max_tokens: int = 2048
     skills: tuple[str, ...] = ()
+    sandbox_binds: tuple[str, ...] = ()
     docker_bin: str = "docker"
 
 
@@ -154,6 +155,7 @@ class OpenClawTaskRuntime:
                         enable_thinking=False,
                     ),
                     skills=self.spec.skills,
+                    sandbox_binds=self.spec.sandbox_binds,
                     container_prefix="scopex-",
                 )
             )
