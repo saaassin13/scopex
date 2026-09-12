@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+import json
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -16,6 +17,9 @@ from scopex.api.service import (
     TaskNotFoundError,
     TaskService,
 )
+
+
+MAX_BODY = 64 * 1024
 
 
 class MessageRequest(BaseModel):
@@ -36,6 +40,20 @@ def _error(status_code: int, code: str, message: str) -> JSONResponse:
         content={"error": {"code": code, "message": message}},
         headers={"Cache-Control": "no-store"},
     )
+
+
+def _strict_object(raw: bytes) -> None:
+    def pairs(items):
+        value = {}
+        for key, item in items:
+            if key in value:
+                raise ValueError(f"duplicate JSON key: {key}")
+            value[key] = item
+        return value
+
+    value = json.loads(raw, object_pairs_hook=pairs)
+    if not isinstance(value, dict):
+        raise ValueError("JSON body must be an object")
 
 
 def create_app(
@@ -59,6 +77,19 @@ def create_app(
         openapi_url="/openapi.json",
         lifespan=lifespan,
     )
+
+    @app.middleware("http")
+    async def strict_json_guard(request: Request, call_next):
+        if request.method in {"POST", "PUT", "PATCH"}:
+            raw = await request.body()
+            if len(raw) > MAX_BODY:
+                return _error(413, "request_too_large", "JSON body exceeds 65536 bytes")
+            if raw:
+                try:
+                    _strict_object(raw)
+                except (ValueError, json.JSONDecodeError) as exc:
+                    return _error(400, "invalid_request", str(exc))
+        return await call_next(request)
 
     @app.exception_handler(TaskNotFoundError)
     async def task_not_found(_request: Request, exc: TaskNotFoundError):
