@@ -41,7 +41,6 @@ class AgentRuntimeBridgeTests(unittest.TestCase):
         self.assertEqual(set(trace.result_map), {"c1"})
         self.assertEqual(trace.completed_call_ids, frozenset({"c1"}))
         self.assertEqual(tool_target(trace.call_map["c1"]), "/agent/system.log")
-        # Shell command bodies are intentionally not surfaced as UI targets.
         self.assertIsNone(tool_target(trace.call_map["c2"]))
 
     def test_progress_observer_emits_only_new_tool_events(self):
@@ -70,7 +69,7 @@ class AgentRuntimeBridgeTests(unittest.TestCase):
         self.assertEqual([e.data["tool_call_id"] for e in calls], ["c2"])
         self.assertEqual(results, [])
 
-    def test_safe_stop_gate_blocks_next_model_boundary(self):
+    def test_safe_stop_gate_blocks_next_model_boundary_and_resets_for_resume(self):
         gate = SafeStopGate()
         self.assertIsNone(gate.before_model_request(1))
         gate.request("user_clicked_stop")
@@ -79,6 +78,10 @@ class AgentRuntimeBridgeTests(unittest.TestCase):
         self.assertEqual(boundary.request_index, 2)
         self.assertEqual(boundary.reason, "user_clicked_stop")
         self.assertIs(gate.before_model_request(3), boundary)
+        gate.reset_for_resume()
+        self.assertFalse(gate.requested)
+        self.assertIsNone(gate.reached)
+        self.assertIsNone(gate.before_model_request(4))
 
 
 if __name__ == "__main__":
