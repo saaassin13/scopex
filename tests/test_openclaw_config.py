@@ -1,3 +1,4 @@
+from dataclasses import replace
 from pathlib import Path
 import unittest
 
@@ -40,10 +41,7 @@ class OpenClawConfigTests(unittest.TestCase):
         self.assertEqual(defaults["skills"], ["camera-diagnosis"])
 
     def test_provider_must_be_loopback(self):
-        spec = self.spec()
-        bad = OpenClawConfigSpec(
-            **{**spec.__dict__, "proxy_base_url": "http://example.com/v1"}
-        )
+        bad = replace(self.spec(), proxy_base_url="http://example.com/v1")
         with self.assertRaises(ValueError):
             build_openclaw_config(bad)
 
