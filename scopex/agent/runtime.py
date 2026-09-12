@@ -20,6 +20,7 @@ from scopex.agent.openclaw_runner import OpenClawProcessResult, OpenClawTurnRunn
 from scopex.agent.outcome import CliOutcome, parse_cli_outcome
 from scopex.agent.proxy_control import RuntimeRequestHook
 from scopex.agent.request_policy import OpenClawRequestPolicy
+from scopex.agent.sandbox import SandboxCleanupResult, SandboxManager
 from scopex.events.observer import AgentProgressObserver
 from scopex.events.progress import EventSink
 from scopex.runtime.stop import SafeStopGate, StopBoundary
@@ -43,6 +44,7 @@ class OpenClawTaskSpec:
     max_requests: int = 12
     max_tokens: int = 2048
     skills: tuple[str, ...] = ()
+    docker_bin: str = "docker"
 
 
 @dataclass(frozen=True, slots=True)
@@ -55,7 +57,11 @@ class OpenClawTurnResult:
 
 
 class OpenClawTaskRuntime:
-    """One ScopeX task's persistent OpenClaw runtime/session environment."""
+    """One ScopeX task's persistent OpenClaw runtime/session environment.
+
+    Sandbox containers are preserved across turns in the same task/session and
+    are cleaned only when ``close()`` is called at task termination.
+    """
 
     def __init__(
         self,
@@ -77,8 +83,13 @@ class OpenClawTaskRuntime:
         self.spec.runtime_root.mkdir(parents=True, exist_ok=True)
         self.spec.audit_root.mkdir(parents=True, exist_ok=True)
         self.config_path = self.spec.runtime_root / "openclaw.json"
+        self.container_prefix = "scopex-" + self.spec.agent_id + "-"
+        self._closed = False
+        self._cleanup_result: SandboxCleanupResult | None = None
 
     def run_turn(self, message: str, *, turn_name: str) -> OpenClawTurnResult:
+        if self._closed:
+            raise RuntimeError("OpenClaw task runtime is closed")
         if not turn_name or "/" in turn_name or "\\" in turn_name:
             raise ValueError("turn_name must be a simple directory name")
         audit = self.spec.audit_root / turn_name
@@ -169,3 +180,24 @@ class OpenClawTaskRuntime:
             proxy.shutdown()
             proxy.server_close()
             thread.join(timeout=3)
+
+    def close(self) -> SandboxCleanupResult:
+        if self._cleanup_result is not None:
+            return self._cleanup_result
+        env = {
+            "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+            "DOCKER_HOST": self.spec.docker_host,
+        }
+        self._cleanup_result = SandboxManager(
+            docker_bin=self.spec.docker_bin,
+            env=env,
+            container_prefix=self.container_prefix,
+        ).cleanup()
+        self._closed = True
+        return self._cleanup_result
+
+    def __enter__(self) -> "OpenClawTaskRuntime":
+        return self
+
+    def __exit__(self, _exc_type, _exc, _tb) -> None:
+        self.close()
