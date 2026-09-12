@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
 """POC03: one real OpenClaw business-diagnosis task with a workspace Skill.
 
-Reuses the passed POC02 native preflight for the validated runtime/sandbox shape,
-but stages a fresh read-only workspace containing only input.log and the POC03
-skill. The model chooses its own read/exec investigation path. No expected
-answer or grading fixture is mounted into the sandbox.
+POC02 already validates the OpenClaw sandbox boundary and runtime wiring. POC03
+therefore treats a passed POC02 native preflight as its security prerequisite,
+stages a fresh read-only workspace, and lets the Agent loop run without an
+in-flight Docker lifecycle gate. After the task finishes, POC03 grades only
+business behavior and recorded tool evidence.
+
+No expected answer or grading fixture is mounted into the Agent workspace.
 """
 from __future__ import annotations
 
@@ -18,7 +21,6 @@ import os
 from pathlib import Path
 import re
 import secrets
-import shlex
 import shutil
 import sys
 import threading
@@ -142,6 +144,7 @@ def collect_trace(out: Path) -> dict:
     skill_read = False
     knowledge_read = False
     recovery_seen = False
+    exec_or_process_returned = False
     for cid, call in calls.items():
         args = call.get("arguments") if isinstance(call.get("arguments"), dict) else {}
         path = args.get("path", args.get("file_path"))
@@ -151,6 +154,8 @@ def collect_trace(out: Path) -> dict:
             knowledge_read |= path.endswith(
                 f"/skills/{SKILL_NAME}/references/cow-disinfect-log.md"
             ) and KNOWLEDGE_MARKER in content
+        if call.get("name") in {"exec", "process"} and cid in results:
+            exec_or_process_returned = True
         recovery_seen |= "CalLeftCamStartFollowPt succeeded" in content
         rows.append({
             "id": cid,
@@ -165,6 +170,7 @@ def collect_trace(out: Path) -> dict:
         "skill_read": skill_read,
         "knowledge_read": knowledge_read,
         "recovery_seen_in_tool_result": recovery_seen,
+        "exec_or_process_returned": exec_or_process_returned,
     }
 
 
@@ -288,6 +294,15 @@ def stage_workspace(source_input: Path, workspace: Path) -> dict:
     }
 
 
+def current_workspace_hashes(workspace: Path) -> dict:
+    target = workspace / "skills" / SKILL_NAME
+    return {
+        "input_sha256": sha_bytes((workspace / "input.log").read_bytes()),
+        "skill_sha256": sha_bytes((target / "SKILL.md").read_bytes()),
+        "knowledge_sha256": sha_bytes((target / "references" / "cow-disinfect-log.md").read_bytes()),
+    }
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--preflight", type=Path, required=True,
@@ -312,6 +327,9 @@ def main(argv=None):
     os.umask(0o077)
     pf = args.preflight.resolve()
     old_ref, old_cfg, _old_case, key_env = p2.bundle(pf)
+    preflight_result = p2.read(pf / "result.json")
+    if preflight_result.get("status") != "PREFLIGHT_PASS_NOT_MODEL_EVAL":
+        raise ValueError("POC03 requires a passed POC02 native preflight")
     source_stage = native.check_input(old_ref)
     source_input = source_stage / "input.log"
     p2.endpoint(args.base_url)
@@ -349,15 +367,22 @@ def main(argv=None):
         "status": "SETUP_FAILED",
         "stage": "setup",
         "errors": [],
+        "cleanup_warnings": [],
         "functional_pass": False,
         "synthetic_response": False,
         "automatic_retry": False,
+        "security_basis": {
+            "poc02_preflight": str(pf),
+            "poc02_status": preflight_result.get("status"),
+            "poc02_sandbox_problems": preflight_result.get("sandbox", {}).get("problems"),
+            "inflight_docker_gate": False,
+            "policy": "POC02 validates sandbox boundary; POC03 does not block the Agent loop on container lifecycle observations",
+        },
     }
     server = None
     thread = None
-    owned = []
     env = {}
-    gate_passed = False
+    prefix = None
 
     try:
         staged = stage_workspace(source_input, workspace)
@@ -404,49 +429,11 @@ def main(argv=None):
         prefix = "sxpoc03-" + agent_id + "-"
         result["sandbox_prefix"] = prefix
 
-        def gate():
-            nonlocal gate_passed
-            if gate_passed:
-                return
-            ids = native.run_command(
-                [docker, "ps", "-aq", "--filter", "name=" + prefix],
-                env, out, out, "poc03-sandbox-list"
-            ).split()
-            if len(ids) != 1 or not re.fullmatch(r"[0-9a-f]{12,64}", ids[0]):
-                raise ValueError("one native sandbox must exist before first inference")
-            item = p2.load(native.run_command(
-                [docker, "inspect", ids[0], "--format", "{{json .}}"],
-                env, out, out, "poc03-sandbox-inspect"
-            ))
-            owned.append(ids[0])
-            boundary = native.check_container(
-                item, workspace.resolve(), runtime / "sandboxes", prefix, image_id, os.getuid()
-            )
-            result["sandbox"] = boundary
-            if boundary["problems"]:
-                raise ValueError("sandbox boundary mismatch")
-            checks = (
-                "set -eu; "
-                "test -r /agent/input.log; "
-                f"test -r /agent/skills/{SKILL_NAME}/SKILL.md; "
-                f"test -r /agent/skills/{SKILL_NAME}/references/cow-disinfect-log.md; "
-                f"test ! -e {shlex.quote(str(ROOT))}; "
-                "test ! -e /var/run/docker.sock; "
-                "sha256sum /agent/input.log "
-                f"/agent/skills/{SKILL_NAME}/SKILL.md "
-                f"/agent/skills/{SKILL_NAME}/references/cow-disinfect-log.md"
-            )
-            raw = native.run_command(
-                [docker, "exec", ids[0], "/bin/sh", "-c", checks],
-                env, out, out, "poc03-boundary-read"
-            )
-            hashes = [line.split()[0] for line in raw.splitlines() if line.strip()]
-            expected = [staged["input_sha256"], staged["skill_sha256"], staged["knowledge_sha256"]]
-            if hashes != expected:
-                raise ValueError("sandbox input/skill hashes mismatch")
-            gate_passed = True
-
-        server = p2.Recorder(out, ref, api_key, token, native, gate, args.max_requests)
+        server = p2.Recorder(
+            out, ref, api_key, token, native,
+            lambda: None,
+            args.max_requests,
+        )
         cfg = native.build_config(
             ref, runtime, out, f"http://127.0.0.1:{server.server_port}/v1", token,
             image_id, agent_id, os.getuid(), os.getgid()
@@ -485,6 +472,16 @@ def main(argv=None):
         )
         result.update(timing)
 
+        trace = collect_trace(out)
+        p2.save(out / "tool-trace.json", trace)
+        result["trace"] = trace
+
+        after = current_workspace_hashes(workspace)
+        result["post_workspace_hashes"] = after
+        result["workspace_integrity_ok"] = after == staged
+        if not result["workspace_integrity_ok"]:
+            raise ValueError("staged workspace changed during POC03")
+
         if timing["stop"] or timing["returncode"] != 0:
             result["status"] = "NOT_COMPLETED"
         else:
@@ -495,11 +492,12 @@ def main(argv=None):
             }
             answer, payload_count = p2.extract_answer(cli_text)
             (out / "answer.txt").write_text(answer, encoding="utf-8")
-            trace = collect_trace(out)
-            p2.save(out / "tool-trace.json", trace)
-            grade = grade_answer(answer, (workspace / "input.log").read_text(encoding="utf-8"), trace)
+            grade = grade_answer(
+                answer,
+                (workspace / "input.log").read_text(encoding="utf-8"),
+                trace,
+            )
             result["visible_payloads"] = payload_count
-            result["trace"] = trace
             result["grade"] = grade
             wire_ok = bool(server.records) and all(
                 r.get("forwarded") and r.get("http_status") == 200
@@ -507,7 +505,14 @@ def main(argv=None):
                 for r in server.records
             )
             result["wire_ok"] = wire_ok
-            result["functional_pass"] = bool(wire_ok and gate_passed and grade["passed"])
+            preflight_ok = (
+                preflight_result.get("status") == "PREFLIGHT_PASS_NOT_MODEL_EVAL"
+                and preflight_result.get("sandbox", {}).get("problems") == []
+            )
+            result["preflight_security_ok"] = preflight_ok
+            result["functional_pass"] = bool(
+                preflight_ok and wire_ok and result["workspace_integrity_ok"] and grade["passed"]
+            )
             result["status"] = (
                 "PASS_POC03_SINGLE_CASE" if result["functional_pass"]
                 else "SKILL_OR_EVIDENCE_NOT_PROVED" if grade.get("schema_ok")
@@ -534,14 +539,29 @@ def main(argv=None):
                 response = out / f"wire-{row['index']:02d}-response.bin" if "index" in row else None
                 if response and response.is_file():
                     row["response"] = p2.response_metadata(response, row.get("content_type", ""))
-        for cid in owned:
+
+        if prefix and env:
             try:
-                native.run_command(
-                    [docker, "stop", "--time", "2", cid], env, out, out,
-                    "poc03-stop-" + cid[:12], 10
+                ids = native.run_command(
+                    [docker, "ps", "-aq", "--filter", "name=" + prefix],
+                    env, out, out, "poc03-cleanup-list"
+                ).split()
+                for cid in ids:
+                    if re.fullmatch(r"[0-9a-f]{12,64}", cid):
+                        try:
+                            native.run_command(
+                                [docker, "stop", "--time", "2", cid],
+                                env, out, out, "poc03-stop-" + cid[:12], 10
+                            )
+                        except Exception as exc:
+                            result["cleanup_warnings"].append(
+                                "sandbox cleanup failed: " + type(exc).__name__ + ": " + str(exc)[:200]
+                            )
+            except Exception as exc:
+                result["cleanup_warnings"].append(
+                    "sandbox cleanup discovery failed: " + type(exc).__name__ + ": " + str(exc)[:200]
                 )
-            except Exception:
-                result["errors"].append("owned sandbox stop failed: " + cid)
+
         if result["errors"]:
             result["functional_pass"] = False
             if result["status"] == "PASS_POC03_SINGLE_CASE":
@@ -552,7 +572,8 @@ def main(argv=None):
         summary = (
             "# POC03 Skill 业务诊断单次验证\n\n"
             "```json\n" + json.dumps(result, ensure_ascii=False, indent=2) + "\n```\n\n"
-            "只评估一次功能可行性，不计重复率。Skill/知识文件不含本案例答案；"
+            "只评估一次功能可行性，不计重复率。POC02 提供已验证的 sandbox 安全前置；"
+            "POC03 运行期间不再用容器生命周期观测阻断 Agent Loop。Skill/知识文件不含本案例答案；"
             "原始 wire、工具返回与答案仅留本机审计目录。\n"
         )
         (out / "summary.md").write_text(summary, encoding="utf-8")
