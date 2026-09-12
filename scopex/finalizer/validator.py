@@ -30,31 +30,27 @@ def _unique_strings(value: Any) -> tuple[bool, list[str]]:
 
 
 def _claim_signature(claim: Mapping[str, Any], refs: list[str]) -> tuple[Any, ...] | None:
-    """Return the user-visible structural identity of a validated-ish claim.
-
-    Fact and temporal-association topics are intentionally not rendered, so two
-    such claims with the same structural fields and evidence refs would produce
-    duplicate user-visible output even if the model changed only ``topic``.
-    Causal hypotheses and unknowns do render topic, so topic remains part of
-    their signature. Evidence-ref order is canonicalized because it does not
-    change claim meaning.
-    """
+    """Return the identity of the text the deterministic renderer would show."""
 
     kind = claim.get("kind")
     relation = claim.get("relation")
     scope = claim.get("scope")
     confidence = claim.get("confidence")
+    topic = claim.get("topic")
     if kind not in _KINDS or relation not in _RELATIONS or scope not in _SCOPES:
         return None
-    topic = claim.get("topic") if relation in {"causal_hypothesis", "unknown"} else None
-    return (
-        kind,
-        relation,
-        scope,
-        confidence,
-        tuple(sorted(refs)),
-        topic,
-    )
+
+    canonical_refs = tuple(sorted(refs))
+    if kind == "fact" and relation == "observed":
+        # Fact topic/confidence are intentionally not rendered.
+        return "fact", scope, canonical_refs
+    if relation == "temporal_association":
+        return "temporal_association", scope, confidence, canonical_refs
+    if relation == "causal_hypothesis":
+        return "causal_hypothesis", scope, confidence, canonical_refs, topic
+    if kind == "unknown" and relation == "unknown":
+        return "unknown", scope, canonical_refs, topic
+    return kind, relation, scope, confidence, canonical_refs, topic
 
 
 def validate_claim_payload(payload: Any, catalog: EvidenceCatalog) -> list[str]:
