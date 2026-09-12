@@ -34,6 +34,7 @@ class RuntimeApiFactoryTests(unittest.TestCase):
                 docker_host="unix:///var/run/docker.sock",
                 timeout_s=181,
                 max_requests=6,
+                data_binds=("/srv/logs:/agent-data/logs:ro",),
             )
             factory = OpenClawRuntimeFactory(config)
 
@@ -54,6 +55,10 @@ class RuntimeApiFactoryTests(unittest.TestCase):
 
             self.assertEqual(coordinator.agent.spec.timeout_s, 181)
             self.assertEqual(coordinator.agent.spec.max_requests, 6)
+            self.assertEqual(
+                coordinator.agent.spec.sandbox_binds,
+                ("/srv/logs:/agent-data/logs:ro",),
+            )
             self.assertEqual(coordinator.convergence_policy.max_elapsed_s, 181.0)
             self.assertEqual(coordinator.convergence_policy.max_model_requests, 6)
 
