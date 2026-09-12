@@ -28,7 +28,8 @@ class EvidenceExtractionPipeline:
 
     Runtime owns processing/deduplication and provenance. Extractors own only
     selection/normalization of candidate material. No business diagnosis path is
-    encoded here.
+    encoded here. Completed calls are processed in trace order so E references
+    remain deterministic across runs.
     """
 
     def __init__(
@@ -45,13 +46,12 @@ class EvidenceExtractionPipeline:
         return frozenset(self._processed_call_ids)
 
     def process_trace(self, trace: AgentTrace) -> tuple[EvidenceItem, ...]:
-        calls = trace.call_map
         results = trace.result_map
         added: list[EvidenceItem] = []
-        for call_id in trace.completed_call_ids:
-            if call_id in self._processed_call_ids:
+        for call in trace.calls:
+            call_id = call.id
+            if call_id not in results or call_id in self._processed_call_ids:
                 continue
-            call = calls[call_id]
             result = results[call_id]
             for extractor in self.extractors:
                 for candidate in extractor.extract(call, result):
