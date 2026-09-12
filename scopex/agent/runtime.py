@@ -49,6 +49,8 @@ class OpenClawTaskSpec:
     max_tokens: int = 2048
     skills: tuple[str, ...] = ()
     sandbox_binds: tuple[str, ...] = ()
+    exec_host: str = "sandbox"
+    exec_mode: str = "full"
     docker_bin: str = "docker"
 
 
@@ -156,6 +158,8 @@ class OpenClawTaskRuntime:
                     ),
                     skills=self.spec.skills,
                     sandbox_binds=self.spec.sandbox_binds,
+                    exec_host=self.spec.exec_host,
+                    exec_mode=self.spec.exec_mode,
                     container_prefix="scopex-",
                 )
             )
