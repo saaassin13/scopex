@@ -10,7 +10,9 @@ from __future__ import annotations
 import argparse
 import os
 from pathlib import Path
+import signal
 import sys
+import threading
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -81,18 +83,28 @@ def main(argv=None) -> int:
         finalizer_factory=factory.finalizer,
     )
     server = RuntimeApiServer((args.host, args.port), service)
+    server.timeout = 0.5
     host, port = server.server_address[:2]
     print(f"ScopeX Runtime API: http://{host}:{port}", flush=True)
     print(f"workspace: {config.workspace}", flush=True)
     print(f"audit root: {data_root / 'tasks'}", flush=True)
 
+    stopping = threading.Event()
+
+    def request_stop(_signum, _frame):
+        stopping.set()
+
+    old_term = signal.signal(signal.SIGTERM, request_stop)
+    old_int = signal.signal(signal.SIGINT, request_stop)
     try:
-        server.serve_forever(poll_interval=0.25)
-    except KeyboardInterrupt:
-        print("\nScopeX Runtime API stopping...", flush=True)
+        while not stopping.is_set():
+            server.handle_request()
     finally:
-        server.server_close()
+        signal.signal(signal.SIGTERM, old_term)
+        signal.signal(signal.SIGINT, old_int)
+        print("ScopeX Runtime API stopping...", flush=True)
         service.shutdown(timeout_s=max(args.timeout, 120) + 10)
+        server.server_close()
     return 0
 
 
