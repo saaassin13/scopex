@@ -5,10 +5,13 @@ import json
 from pathlib import Path
 import threading
 import time
+from typing import Iterable
 
 from scopex.agent.runtime import OpenClawTaskRuntime, OpenClawTaskSpec, OpenClawTurnResult
+from scopex.agent.trace import load_audit_trace
 from scopex.evidence.catalog import EvidenceCatalog, EvidenceItem
 from scopex.evidence.collector import EvidenceCollector
+from scopex.evidence.extractor import EvidenceExtractionPipeline, EvidenceExtractor
 from scopex.events.progress import EventSink, EventType
 from scopex.finalizer.service import FinalizationResult, FinalizationService
 from scopex.finalizer.structured import StructuredFinalizer, StructuredFinalizerResult
@@ -23,6 +26,7 @@ from scopex.runtime.session import Session
 from scopex.runtime.steering import PendingSteeringQueue
 from scopex.runtime.stop import SafeStopGate, StopBoundary
 from scopex.runtime.task import Task, TaskState
+from scopex.storage.runtime_audit import RuntimeAudit
 
 
 @dataclass(frozen=True, slots=True)
@@ -51,6 +55,8 @@ class InvestigationCoordinator:
         convergence_policy: ConvergencePolicy,
         events: EventSink,
         steering: PendingSteeringQueue | None = None,
+        evidence_pipeline: EvidenceExtractionPipeline | None = None,
+        audit: RuntimeAudit | None = None,
         control_lock=None,
     ) -> None:
         self.task = task
@@ -63,6 +69,8 @@ class InvestigationCoordinator:
         self.convergence_policy = convergence_policy
         self.events = events
         self.steering = steering or PendingSteeringQueue()
+        self.evidence_pipeline = evidence_pipeline
+        self.audit = audit
         self._control_lock = control_lock or threading.RLock()
         self._turn_lock = threading.RLock()
         self._started_at: float | None = None
@@ -81,12 +89,19 @@ class InvestigationCoordinator:
         spec: OpenClawTaskSpec,
         events: EventSink,
         convergence_policy: ConvergencePolicy | None = None,
+        extractors: Iterable[EvidenceExtractor] = (),
+        audit: RuntimeAudit | None = None,
     ) -> "InvestigationCoordinator":
         controller = TaskController(task, session, events)
         stop_gate = SafeStopGate()
         steering = PendingSteeringQueue()
         catalog = EvidenceCatalog(task.id, task.session_key)
         collector = EvidenceCollector(catalog, events)
+        configured_extractors = tuple(extractors)
+        evidence_pipeline = (
+            EvidenceExtractionPipeline(collector, configured_extractors)
+            if configured_extractors else None
+        )
         control_lock = threading.RLock()
 
         def on_safe_stop(boundary: StopBoundary) -> None:
@@ -102,6 +117,8 @@ class InvestigationCoordinator:
                     before_model_request=boundary.request_index,
                     running_tool_cancelled=False,
                 )
+                if audit is not None:
+                    audit.snapshot_control(task, session, catalog)
 
         agent = OpenClawTaskRuntime(
             task_id=task.id,
@@ -122,6 +139,8 @@ class InvestigationCoordinator:
             convergence_policy=convergence_policy or ConvergencePolicy(),
             events=events,
             steering=steering,
+            evidence_pipeline=evidence_pipeline,
+            audit=audit,
             control_lock=control_lock,
         )
 
@@ -132,6 +151,7 @@ class InvestigationCoordinator:
         self.controller.created()
         self.controller.start()
         self._started_at = time.monotonic()
+        self._snapshot()
         return self._run_turn(message, turn_name=turn_name)
 
     def request_stop(self, message: str = "") -> None:
@@ -142,6 +162,7 @@ class InvestigationCoordinator:
             self.steering.clear()
             self.stop_gate.request("user_stop")
             self.controller.request_stop(message)
+            self._snapshot()
 
     def resume(self, message: str, *, turn_name: str) -> OpenClawTurnResult:
         """Resume only after the stopped OpenClaw turn has fully unwound."""
@@ -151,6 +172,7 @@ class InvestigationCoordinator:
                     raise ValueError("resume requires PAUSED task")
                 self.stop_gate.reset_for_next_turn()
                 self.controller.resume(message)
+                self._snapshot()
             return self._run_turn(message, turn_name=turn_name)
 
     def request_steer(self, message: str) -> None:
@@ -161,6 +183,7 @@ class InvestigationCoordinator:
             self.steering.push(message)
             self.stop_gate.request("user_steer")
             self.controller.steer(message)
+            self._snapshot()
 
     def continue_pending_steering(self, *, turn_name: str) -> OpenClawTurnResult:
         """Run accumulated steering in the same session after the prior turn unwinds."""
@@ -182,21 +205,18 @@ class InvestigationCoordinator:
         tool_call_id: str | None = None,
         metadata: dict | None = None,
     ) -> EvidenceItem:
-        return self.collector.add(
+        item = self.collector.add(
             source=source,
             raw=raw,
             tool_call_id=tool_call_id,
             metadata=metadata,
         )
+        if self.audit is not None:
+            self.audit.persist_evidence(self.catalog)
+        return item
 
     def checkpoint_evidence_progress(self) -> int:
-        """Update stale-round state after the caller finishes evidence extraction.
-
-        Investigation turns and evidence extraction are intentionally separate:
-        generic runtime cannot decide which arbitrary tool-result bytes are
-        meaningful domain evidence. Call this once after all extractors for the
-        completed round have had a chance to add evidence.
-        """
+        """Update stale-round state after configured extractors have run."""
 
         current = len(self.catalog.items)
         if current > self._last_evidence_count:
@@ -224,6 +244,7 @@ class InvestigationCoordinator:
         if not decision.should_finalize:
             raise ValueError("convergence policy does not allow finalization yet")
         self.controller.begin_finalization(reasons=decision.reasons)
+        self._snapshot()
         return decision
 
     def finish_finalization(
@@ -235,11 +256,17 @@ class InvestigationCoordinator:
         if self.controller.state is not TaskState.FINALIZING:
             raise ValueError("task must be FINALIZING")
         result = (service or FinalizationService()).finalize(payload, self.catalog)
+        if self.audit is not None:
+            self.audit.persist_claims(payload)
         if not result.valid:
             self.controller.fail("structured_finalizer_validation_failed")
+            self._persist_result(result)
+            self._snapshot()
             return result
         self.controller.finalization_completed()
         self.controller.complete()
+        self._persist_result(result)
+        self._snapshot()
         return result
 
     def finalize_fresh(
@@ -252,11 +279,17 @@ class InvestigationCoordinator:
 
         self.begin_finalization(goal_satisfied=goal_satisfied)
         result = finalizer.run(user_request=self.task.user_request, catalog=self.catalog)
+        if self.audit is not None and result.payload is not None:
+            self.audit.persist_claims(result.payload)
         if not result.valid:
             self.controller.fail("fresh_structured_finalizer_failed")
+            self._persist_structured_result(result)
+            self._snapshot()
             return result
         self.controller.finalization_completed()
         self.controller.complete()
+        self._persist_structured_result(result)
+        self._snapshot()
         return result
 
     @property
@@ -272,7 +305,9 @@ class InvestigationCoordinator:
         )
 
     def close(self):
-        return self.agent.close()
+        result = self.agent.close()
+        self._snapshot()
+        return result
 
     def _run_turn(self, message: str, *, turn_name: str) -> OpenClawTurnResult:
         with self._turn_lock:
@@ -287,7 +322,49 @@ class InvestigationCoordinator:
                 self._max_context_chars,
                 self._context_chars(result.audit_dir),
             )
+            if self.evidence_pipeline is not None:
+                trace = load_audit_trace(result.audit_dir)
+                self.evidence_pipeline.process_trace(trace)
+                self.checkpoint_evidence_progress()
+                if self.audit is not None:
+                    self.audit.persist_evidence(self.catalog)
+            self._snapshot()
             return result
+
+    def _snapshot(self) -> None:
+        if self.audit is not None:
+            self.audit.snapshot_control(self.task, self.session, self.catalog)
+
+    def _persist_result(self, result: FinalizationResult) -> None:
+        if self.audit is None:
+            return
+        self.audit.persist_result(
+            {
+                "valid": result.valid,
+                "errors": list(result.errors),
+                "task_state": self.task.state.value,
+            },
+            rendered=result.rendered,
+        )
+
+    def _persist_structured_result(self, result: StructuredFinalizerResult) -> None:
+        if self.audit is None:
+            return
+        rendered = result.finalization.rendered if result.finalization is not None else None
+        errors = (
+            list(result.finalization.errors)
+            if result.finalization is not None else ([result.parse_error] if result.parse_error else [])
+        )
+        self.audit.persist_result(
+            {
+                "valid": result.valid,
+                "errors": errors,
+                "parse_error": result.parse_error,
+                "finish_reasons": list(result.transport.finish_reasons),
+                "task_state": self.task.state.value,
+            },
+            rendered=rendered,
+        )
 
     @staticmethod
     def _context_chars(audit_dir: Path) -> int:
