@@ -7,6 +7,7 @@ import threading
 import uuid
 from typing import Callable, Protocol
 
+from scopex.agent.runtime import OpenClawTurnResult
 from scopex.events.progress import EventSink, InMemoryEventSink
 from scopex.finalizer.structured import StructuredFinalizer
 from scopex.runtime.investigation import InvestigationCoordinator
@@ -235,21 +236,22 @@ class TaskService:
                 self._cleanup_terminal_locked(handle)
 
     def _run_initial(self, handle: TaskHandle, _unused: str) -> None:
-        handle.coordinator.start(
+        turn = handle.coordinator.start(
             handle.task.user_request,
             turn_name=handle.next_turn_name(),
         )
-        self._drive_after_turn(handle)
+        self._drive_after_turn(handle, turn)
 
     def _run_resume(self, handle: TaskHandle, message: str) -> None:
-        handle.coordinator.resume(
+        turn = handle.coordinator.resume(
             message,
             turn_name=handle.next_turn_name(),
         )
-        self._drive_after_turn(handle)
+        self._drive_after_turn(handle, turn)
 
-    def _drive_after_turn(self, handle: TaskHandle) -> None:
+    def _drive_after_turn(self, handle: TaskHandle, turn: OpenClawTurnResult) -> None:
         coordinator = handle.coordinator
+        current_turn = turn
         while True:
             action = None
             turn_name = None
@@ -282,14 +284,41 @@ class TaskService:
                             coordinator.catalog,
                         )
                         return
-                    coordinator.begin_finalization(goal_satisfied=True)
-                    action = "finalize"
+
+                    if self._turn_completed_normally(current_turn):
+                        coordinator.begin_finalization(goal_satisfied=True)
+                        action = "finalize"
+                    else:
+                        decision = coordinator.convergence(goal_satisfied=False)
+                        if decision.should_finalize:
+                            coordinator.begin_finalization(goal_satisfied=False)
+                            action = "finalize"
+                        else:
+                            coordinator.controller.fail(
+                                "investigation_turn_incomplete"
+                            )
+                            handle.audit.store.write_json(
+                                handle.task.id,
+                                "investigation-error.json",
+                                {
+                                    "returncode": current_turn.process.returncode,
+                                    "stop_reason": current_turn.process.stop_reason,
+                                    "cli_blockers": list(current_turn.cli_outcome.blockers)
+                                    if current_turn.cli_outcome is not None else ["missing_cli_outcome"],
+                                },
+                            )
+                            handle.audit.snapshot_control(
+                                handle.task,
+                                handle.session,
+                                coordinator.catalog,
+                            )
+                            return
                 else:
                     return
 
             if action == "steer":
                 try:
-                    coordinator.continue_pending_steering(turn_name=turn_name)
+                    current_turn = coordinator.continue_pending_steering(turn_name=turn_name)
                 except ValueError:
                     with self._lock:
                         if coordinator.controller.state in {
@@ -303,6 +332,15 @@ class TaskService:
             if action == "finalize":
                 coordinator.finish_fresh_finalization(self.finalizer_factory())
                 return
+
+    @staticmethod
+    def _turn_completed_normally(turn: OpenClawTurnResult) -> bool:
+        return bool(
+            turn.process.returncode == 0
+            and turn.process.stop_reason is None
+            and turn.cli_outcome is not None
+            and turn.cli_outcome.completed
+        )
 
     def _start_worker_locked(
         self,
