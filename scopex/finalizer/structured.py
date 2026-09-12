@@ -59,13 +59,14 @@ claim 字段固定：id, kind, topic, evidence_refs, confidence, scope, relation
 
 规则：
 1. 只输出 3-6 个最重要 claim；topic 最多 24 个中文字符或约 48 个 ASCII 字符。
-2. fact 必须 relation=observed 且引用直接证据。
-3. temporal_association 至少引用两个证据，只表示时间关联，不表示因果。
+2. fact 必须 relation=observed 且只引用能直接支持该事实的精确证据；优先引用最少必要证据。
+3. temporal_association 至少引用两个不同事件证据，只表示时间关联，不表示因果。
 4. causal_hypothesis 只能 medium/low，明确是未证实假设。
 5. unknown 的 confidence=unknown；可引用相关证据作为上下文。
 6. 不把局部观察扩大成全局结论，不把常识/典型原因写成已观察事实。
 7. summary_claim_ids 最多 4 个，只列最重要 claim。
 8. 不复制日志全文到 topic，不增加额外字段。
+9. 不要生成结构上重复的 claim：相同 fact 不要因 topic 换词重复；同一组证据的同类时间关联也只保留一个。
 
 只输出 JSON 对象，可有或没有 json fence。"""
     user = f"""原任务：{user_request}
