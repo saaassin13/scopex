@@ -73,6 +73,18 @@ def main(argv=None) -> int:
         help="read-only host directory exposed to the OpenClaw sandbox; repeatable",
     )
     parser.add_argument(
+        "--exec-host",
+        choices=("sandbox", "gateway", "node"),
+        default="sandbox",
+        help="OpenClaw exec target; use gateway to inspect the current Spark host",
+    )
+    parser.add_argument(
+        "--exec-mode",
+        choices=("deny", "allowlist", "ask", "auto", "full"),
+        default="full",
+        help="OpenClaw native exec policy; POC07 uses full for permissive validation",
+    )
+    parser.add_argument(
         "--web-dist",
         type=Path,
         default=ROOT / "frontend" / "dist",
@@ -116,6 +128,8 @@ def main(argv=None) -> int:
         finalizer_max_tokens=args.finalizer_max_tokens,
         skills=tuple(args.skill),
         data_binds=tuple(args.data_dir),
+        exec_host=args.exec_host,
+        exec_mode=args.exec_mode,
     )
     factory = OpenClawRuntimeFactory(config)
     service = TaskService(
@@ -133,6 +147,7 @@ def main(argv=None) -> int:
     print(f"ScopeX FastAPI: http://{args.host}:{args.port}", flush=True)
     print(f"workspace: {config.workspace}", flush=True)
     print(f"audit root: {data_root / 'tasks'}", flush=True)
+    print(f"exec: host={config.exec_host} mode={config.exec_mode}", flush=True)
     if config.data_binds:
         print("data binds:", flush=True)
         for bind in config.data_binds:
