@@ -1,7 +1,8 @@
 # Local Runtime API
 
-ScopeX Runtime MVP has passed real OpenClaw + local-vLLM integration. The next
-product boundary is a loopback-only HTTP API over the proven runtime.
+ScopeX Runtime MVP has passed real OpenClaw + local-vLLM integration and the
+line-level stored-trace refinalization. The product boundary is now a
+loopback-only HTTP API over the frozen runtime core.
 
 ## Product boundary
 
@@ -20,7 +21,8 @@ AuditStore
 ```
 
 The HTTP layer does not implement diagnosis logic, tool routing, evidence rules
-or model prompts.
+or model prompts. HTTP handlers call `TaskService`; they never call OpenClaw or
+`InvestigationCoordinator` directly.
 
 Current constraints:
 
@@ -28,7 +30,7 @@ Current constraints:
 - one non-terminal major task at a time;
 - a PAUSED task still owns the slot;
 - loopback bind only;
-- no database;
+- no database, Redis, broker or scheduler;
 - events use incremental polling, not SSE/WebSocket yet;
 - historical tasks remain readable after restart but are not resumable after the
   ScopeX process is restarted.
@@ -50,7 +52,8 @@ Content-Type: application/json
 {"message":"分析今天 10:15 左右任务失败"}
 ```
 
-Returns `202` with the created Task snapshot.
+Returns `202` with the created Task snapshot. Execution continues in a
+background task worker.
 
 ```http
 GET /tasks
@@ -72,6 +75,10 @@ POST /tasks/{task_id}/steer
 
 Controls return `202`. Invalid lifecycle operations return `409`.
 
+Stop remains a safe model-request boundary rather than a hard process kill.
+Steering keeps the Task RUNNING and starts the pending instruction in the same
+OpenClaw session after the interrupted turn unwinds.
+
 ### Progress
 
 ```http
@@ -90,6 +97,38 @@ GET /tasks/{task_id}/result
 
 Evidence uses runtime-owned exact refs such as `E11 system.log:L3`. Result is
 unavailable until finalization completes.
+
+## Investigation completion rule
+
+The API service must not treat "some Evidence exists" as proof that the
+investigation completed successfully.
+
+```text
+normal OpenClaw turn
+(returncode=0, no runtime stop reason, parsed CLI outcome completed)
+        +
+non-empty Evidence
+        ↓
+goal_satisfied
+        ↓
+Fresh Finalizer
+
+abnormal OpenClaw turn
+(timeout / transport / non-zero exit / malformed CLI outcome)
+        +
+non-empty Evidence
+        ↓
+Generic ConvergencePolicy
+        ├─ budget/convergence reached → Fresh Finalizer from existing evidence
+        └─ not reached → FAILED + investigation-error.json
+
+user Stop / Steering
+        ↓
+control path only; never auto-finalize
+```
+
+This keeps completion control generic while preventing a partial failed Agent
+turn from being presented as a successful product diagnosis.
 
 ## Error shape
 
@@ -145,6 +184,9 @@ Default endpoint:
 http://127.0.0.1:8787
 ```
 
+The entrypoint handles both SIGINT and SIGTERM through `TaskService.shutdown()`
+so service managers do not bypass task Stop/cleanup semantics.
+
 ## First real API verification
 
 Create a task:
@@ -166,4 +208,21 @@ curl -sS "http://127.0.0.1:8787/tasks/$TASK_ID/result"
 ```
 
 Expected terminal state is `COMPLETED`, with line-level evidence and the same
-evidence-calibrated rendered result already validated by Runtime MVP refinalize.
+evidence-calibrated output shape already validated by Runtime MVP refinalize.
+
+## Regression gate
+
+Before the first real API task run:
+
+```bash
+python3 -m unittest \
+  tests.test_runtime_api_service \
+  tests.test_runtime_api_http \
+  -v
+
+python3 -m unittest discover -s tests -v
+```
+
+Do not diagnose API failures by weakening Runtime evidence/finalizer semantics.
+Classify failures as API lifecycle/transport, Runtime execution, model output, or
+validation logic first.
