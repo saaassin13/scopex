@@ -127,6 +127,23 @@ class FastApiRuntimeTests(unittest.TestCase):
         invalid_cursor = self.client.get("/tasks/task-1/events?after=-1")
         self.assertEqual(invalid_cursor.status_code, 400)
 
+    def test_duplicate_json_key_and_large_body_are_rejected(self):
+        duplicate = self.client.post(
+            "/tasks",
+            content=b'{"message":"a","message":"b"}',
+            headers={"Content-Type": "application/json"},
+        )
+        self.assertEqual(duplicate.status_code, 400)
+        self.assertEqual(duplicate.json()["error"]["code"], "invalid_request")
+
+        large = self.client.post(
+            "/tasks",
+            content=b'{"message":"' + (b"x" * 70000) + b'"}',
+            headers={"Content-Type": "application/json"},
+        )
+        self.assertEqual(large.status_code, 413)
+        self.assertEqual(large.json()["error"]["code"], "request_too_large")
+
     def test_lifespan_shutdowns_service(self):
         self.assertEqual(self.service.shutdown_calls, [])
         self.client_ctx.__exit__(None, None, None)
