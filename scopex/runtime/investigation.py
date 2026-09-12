@@ -9,7 +9,7 @@ import time
 from scopex.agent.runtime import OpenClawTaskRuntime, OpenClawTaskSpec, OpenClawTurnResult
 from scopex.evidence.catalog import EvidenceCatalog, EvidenceItem
 from scopex.evidence.collector import EvidenceCollector
-from scopex.events.progress import EventSink
+from scopex.events.progress import EventSink, EventType
 from scopex.finalizer.service import FinalizationResult, FinalizationService
 from scopex.finalizer.structured import StructuredFinalizer, StructuredFinalizerResult
 from scopex.runtime.controller import TaskController
@@ -20,6 +20,7 @@ from scopex.runtime.convergence import (
     evaluate,
 )
 from scopex.runtime.session import Session
+from scopex.runtime.steering import PendingSteeringQueue
 from scopex.runtime.stop import SafeStopGate, StopBoundary
 from scopex.runtime.task import Task, TaskState
 
@@ -48,6 +49,8 @@ class InvestigationCoordinator:
         catalog: EvidenceCatalog,
         collector: EvidenceCollector,
         convergence_policy: ConvergencePolicy,
+        events: EventSink,
+        steering: PendingSteeringQueue | None = None,
         control_lock=None,
     ) -> None:
         self.task = task
@@ -58,6 +61,8 @@ class InvestigationCoordinator:
         self.catalog = catalog
         self.collector = collector
         self.convergence_policy = convergence_policy
+        self.events = events
+        self.steering = steering or PendingSteeringQueue()
         self._control_lock = control_lock or threading.RLock()
         self._turn_lock = threading.RLock()
         self._started_at: float | None = None
@@ -79,12 +84,20 @@ class InvestigationCoordinator:
     ) -> "InvestigationCoordinator":
         controller = TaskController(task, session, events)
         stop_gate = SafeStopGate()
+        steering = PendingSteeringQueue()
         catalog = EvidenceCatalog(task.id, task.session_key)
         collector = EvidenceCollector(catalog, events)
         control_lock = threading.RLock()
 
         def on_safe_stop(boundary: StopBoundary) -> None:
             with control_lock:
+                if boundary.reason == "user_steer":
+                    events.emit(
+                        task.id,
+                        EventType.STEER_BOUNDARY,
+                        before_model_request=boundary.request_index,
+                    )
+                    return
                 controller.safe_stop_if_pausing(
                     before_model_request=boundary.request_index,
                     running_tool_cancelled=False,
@@ -107,6 +120,8 @@ class InvestigationCoordinator:
             catalog=catalog,
             collector=collector,
             convergence_policy=convergence_policy or ConvergencePolicy(),
+            events=events,
+            steering=steering,
             control_lock=control_lock,
         )
 
@@ -124,6 +139,7 @@ class InvestigationCoordinator:
         with self._control_lock:
             if self.controller.state is not TaskState.RUNNING:
                 raise ValueError("stop requires RUNNING task")
+            self.steering.clear()
             self.stop_gate.request("user_stop")
             self.controller.request_stop(message)
 
@@ -133,8 +149,29 @@ class InvestigationCoordinator:
             with self._control_lock:
                 if self.controller.state is not TaskState.PAUSED:
                     raise ValueError("resume requires PAUSED task")
-                self.stop_gate.reset_for_resume()
+                self.stop_gate.reset_for_next_turn()
                 self.controller.resume(message)
+            return self._run_turn(message, turn_name=turn_name)
+
+    def request_steer(self, message: str) -> None:
+        """Interrupt the current Agent turn at the next safe model boundary."""
+        with self._control_lock:
+            if self.controller.state is not TaskState.RUNNING:
+                raise ValueError("mid-turn steering requires RUNNING task")
+            self.steering.push(message)
+            self.stop_gate.request("user_steer")
+            self.controller.steer(message)
+
+    def continue_pending_steering(self, *, turn_name: str) -> OpenClawTurnResult:
+        """Run accumulated steering in the same session after the prior turn unwinds."""
+        with self._turn_lock:
+            with self._control_lock:
+                if self.controller.state is not TaskState.RUNNING:
+                    raise ValueError("steering continuation requires RUNNING task")
+                message = self.steering.drain_message()
+                if message is None:
+                    raise ValueError("no pending steering instruction")
+                self.stop_gate.reset_for_next_turn()
             return self._run_turn(message, turn_name=turn_name)
 
     def add_evidence(
