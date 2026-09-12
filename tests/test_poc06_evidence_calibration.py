@@ -48,7 +48,7 @@ def good_obj():
             },
             {
                 "id": "C5", "kind": "unknown", "topic": "status=137 的具体触发机制",
-                "evidence_refs": ["E2"], "confidence": "unknown", "scope": "unknown",
+                "evidence_refs": ["E2"], "confidence": "unknown", "scope": "event",
                 "relation": "unknown",
             },
         ],
@@ -70,6 +70,11 @@ class Poc06EvidenceCalibrationTests(unittest.TestCase):
 
     def test_generic_validator_accepts_calibrated_structure(self):
         self.assertEqual(MOD.validate_claims(good_obj(), catalog()), [])
+
+    def test_generic_validator_accepts_high_confidence_temporal_association(self):
+        obj = good_obj()
+        obj["claims"][2]["confidence"] = "high"
+        self.assertEqual(MOD.validate_claims(obj, catalog()), [])
 
     def test_generic_validator_rejects_fact_without_evidence(self):
         obj = good_obj()
@@ -132,7 +137,7 @@ class Poc06EvidenceCalibrationTests(unittest.TestCase):
         self.assertIn("事实｜单事件", text)
         self.assertIn("推断｜时间关联｜medium", text)
         self.assertIn("该结构不表示已证明因果", text)
-        self.assertIn("未知：status=137 的具体触发机制", text)
+        self.assertIn("未知｜单事件：status=137 的具体触发机制", text)
         self.assertIn("E2 [system.log] 2026-09-12 10:15:00.180", text)
 
     def test_fact_topic_cannot_smuggle_causal_wording_into_rendered_fact(self):
