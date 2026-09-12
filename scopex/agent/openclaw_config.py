@@ -7,6 +7,8 @@ from urllib.parse import urlsplit
 
 
 APPROVED_TOOLS = frozenset({"read", "exec", "process"})
+EXEC_HOSTS = frozenset({"sandbox", "gateway", "node"})
+EXEC_MODES = frozenset({"deny", "allowlist", "ask", "auto", "full"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -44,6 +46,8 @@ class OpenClawConfigSpec:
     skills: tuple[str, ...] = ()
     tools: tuple[str, ...] = ("read", "exec", "process")
     sandbox_binds: tuple[str, ...] = ()
+    exec_host: str = "sandbox"
+    exec_mode: str = "full"
     container_prefix: str = "scopex-"
 
 
@@ -104,6 +108,10 @@ def build_openclaw_config(spec: OpenClawConfigSpec) -> dict:
         raise ValueError("unapproved OpenClaw tools: " + ", ".join(sorted(unknown_tools)))
     for bind in spec.sandbox_binds:
         _validate_bind(bind)
+    if spec.exec_host not in EXEC_HOSTS:
+        raise ValueError("exec_host must be one of: " + ", ".join(sorted(EXEC_HOSTS)))
+    if spec.exec_mode not in EXEC_MODES:
+        raise ValueError("exec_mode must be one of: " + ", ".join(sorted(EXEC_MODES)))
 
     model_ref = "vllm/" + spec.model_id
     extra_body = {
@@ -206,8 +214,8 @@ def build_openclaw_config(spec: OpenClawConfigSpec) -> dict:
             "allow": tools,
             "elevated": {"enabled": False},
             "exec": {
-                "host": "sandbox",
-                "mode": "full",
+                "host": spec.exec_host,
+                "mode": spec.exec_mode,
                 "timeoutSeconds": spec.limits.exec_timeout_s,
             },
             "sandbox": {"tools": {"allow": tools}},
