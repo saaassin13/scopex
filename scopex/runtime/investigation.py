@@ -60,6 +60,7 @@ class InvestigationCoordinator:
         self._forwarded_model_requests = 0
         self._max_context_chars = 0
         self._stale_rounds = 0
+        self._last_evidence_count = 0
 
     @classmethod
     def for_openclaw(
@@ -77,11 +78,10 @@ class InvestigationCoordinator:
         collector = EvidenceCollector(catalog, events)
 
         def on_safe_stop(boundary: StopBoundary) -> None:
-            if task.state is TaskState.PAUSING:
-                controller.safe_stop(
-                    before_model_request=boundary.request_index,
-                    running_tool_cancelled=False,
-                )
+            controller.safe_stop_if_pausing(
+                before_model_request=boundary.request_index,
+                running_tool_cancelled=False,
+            )
 
         agent = OpenClawTaskRuntime(
             task_id=task.id,
@@ -137,6 +137,23 @@ class InvestigationCoordinator:
             metadata=metadata,
         )
 
+    def checkpoint_evidence_progress(self) -> int:
+        """Update stale-round state after the caller finishes evidence extraction.
+
+        Investigation turns and evidence extraction are intentionally separate:
+        generic runtime cannot decide which arbitrary tool-result bytes are
+        meaningful domain evidence. Call this once after all extractors for the
+        completed round have had a chance to add evidence.
+        """
+
+        current = len(self.catalog.items)
+        if current > self._last_evidence_count:
+            self._stale_rounds = 0
+        else:
+            self._stale_rounds += 1
+        self._last_evidence_count = current
+        return self._stale_rounds
+
     def convergence(self, *, goal_satisfied: bool = False) -> ConvergenceDecision:
         return evaluate(
             self.convergence_policy,
@@ -191,7 +208,6 @@ class InvestigationCoordinator:
     def _run_turn(self, message: str, *, turn_name: str) -> OpenClawTurnResult:
         if self.task.state is not TaskState.RUNNING:
             raise ValueError("agent turn requires RUNNING task")
-        before_evidence = len(self.catalog.items)
         result = self.agent.run_turn(message, turn_name=turn_name)
         self._turns += 1
         self._forwarded_model_requests += sum(
@@ -201,10 +217,6 @@ class InvestigationCoordinator:
             self._max_context_chars,
             self._context_chars(result.audit_dir),
         )
-        if len(self.catalog.items) == before_evidence:
-            self._stale_rounds += 1
-        else:
-            self._stale_rounds = 0
         return result
 
     @staticmethod
