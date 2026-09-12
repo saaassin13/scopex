@@ -69,12 +69,38 @@ class StructuredFinalizerTests(unittest.TestCase):
         )
         self.assertTrue(result.valid)
         self.assertTrue(result.finalization.valid)
+        self.assertIn("直接观察｜system.log", result.finalization.rendered)
         self.assertIn("worker exited status=137", result.finalization.rendered)
         self.assertNotIn("GPU OOM caused everything", result.finalization.rendered)
-        self.assertIn("该结构不表示已证明因果", result.finalization.rendered)
+        self.assertIn("这不表示已经证明因果", result.finalization.rendered)
         self.assertEqual(len(client.calls), 1)
         self.assertEqual(client.calls[0]["temperature"], 0)
         self.assertEqual(client.calls[0]["max_tokens"], 768)
+
+    def test_facts_from_one_source_are_grouped_for_readability(self):
+        catalog = EvidenceCatalog("t1", "s1")
+        catalog.add(source="/agent-data/poc07/marker.txt", raw="POC07_BIND_OK", metadata={"line_number": 1})
+        catalog.add(source="/agent-data/poc07/marker.txt", raw="source=spark-host", metadata={"line_number": 2})
+        catalog.add(source="/agent-data/poc07/marker.txt", raw="purpose=openclaw-readonly-bind-validation", metadata={"line_number": 3})
+        content = '''{
+          "claims": [
+            {"id":"C1","kind":"fact","topic":"marker","evidence_refs":["E1"],"confidence":"high","scope":"component","relation":"observed"},
+            {"id":"C2","kind":"fact","topic":"source","evidence_refs":["E2"],"confidence":"high","scope":"component","relation":"observed"},
+            {"id":"C3","kind":"fact","topic":"purpose","evidence_refs":["E3"],"confidence":"high","scope":"component","relation":"observed"}
+          ],
+          "summary_claim_ids": ["C1", "C2", "C3"]
+        }'''
+        result = StructuredFinalizer(FakeClient(content), model="m").run(
+            user_request="read marker",
+            catalog=catalog,
+        )
+        self.assertTrue(result.valid)
+        rendered = result.finalization.rendered
+        self.assertEqual(rendered.count("直接观察｜marker.txt"), 1)
+        self.assertIn("[E1 · L1] POC07_BIND_OK", rendered)
+        self.assertIn("[E2 · L2] source=spark-host", rendered)
+        self.assertIn("[E3 · L3] purpose=openclaw-readonly-bind-validation", rendered)
+        self.assertNotIn("事实｜组件范围", rendered)
 
     def test_causal_hypothesis_kind_alias_is_safely_normalized_to_inference(self):
         content = '''{
@@ -101,7 +127,7 @@ class StructuredFinalizerTests(unittest.TestCase):
             result.normalizations,
             ("claims[0].kind:hypothesis->inference",),
         )
-        self.assertIn("因果未证实", result.finalization.rendered)
+        self.assertIn("待验证假设", result.finalization.rendered)
 
     def test_observed_relation_is_never_upgraded_to_fact_by_normalization(self):
         content = '''{
