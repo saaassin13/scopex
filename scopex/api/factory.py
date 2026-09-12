@@ -9,6 +9,7 @@ from scopex.evidence.extractor import ReadLineExtractor
 from scopex.events.progress import EventSink
 from scopex.finalizer.client import StreamingFinalizerClient
 from scopex.finalizer.structured import StructuredFinalizer
+from scopex.runtime.convergence import ConvergencePolicy
 from scopex.runtime.investigation import InvestigationCoordinator
 from scopex.runtime.session import Session
 from scopex.runtime.task import Task
@@ -89,6 +90,10 @@ class OpenClawRuntimeFactory:
             session=session,
             spec=spec,
             events=events,
+            convergence_policy=ConvergencePolicy(
+                max_model_requests=self.config.max_requests,
+                max_elapsed_s=float(self.config.timeout_s),
+            ),
             extractors=(ReadLineExtractor(),),
             audit=audit,
         )
