@@ -6,6 +6,9 @@ import ipaddress
 from urllib.parse import urlsplit
 
 
+APPROVED_TOOLS = frozenset({"read", "exec", "process"})
+
+
 @dataclass(frozen=True, slots=True)
 class ModelRequestSettings:
     max_tokens: int = 2048
@@ -70,18 +73,25 @@ def build_openclaw_config(spec: OpenClawConfigSpec) -> dict:
     _require_loopback_v1(spec.proxy_base_url)
     if not spec.model_id or not spec.agent_id or not spec.image:
         raise ValueError("model_id, agent_id and image are required")
+    if not spec.proxy_api_key or "\n" in spec.proxy_api_key or "\r" in spec.proxy_api_key:
+        raise ValueError("a non-empty single-line local proxy token is required")
     if spec.uid < 0 or spec.gid < 0:
         raise ValueError("uid/gid must be non-negative")
     if spec.timeout_s <= 0 or spec.request.max_tokens <= 0:
         raise ValueError("timeouts/token limits must be positive")
+    if spec.request.enable_thinking is not False:
+        raise ValueError("ScopeX validated OpenClaw runtime requires thinking=false")
     if not spec.tools:
         raise ValueError("at least one tool must be configured")
+    unknown_tools = set(spec.tools) - APPROVED_TOOLS
+    if unknown_tools:
+        raise ValueError("unapproved OpenClaw tools: " + ", ".join(sorted(unknown_tools)))
 
     model_ref = "vllm/" + spec.model_id
     extra_body = {
         "temperature": spec.request.temperature,
         "max_tokens": spec.request.max_tokens,
-        "chat_template_kwargs": {"enable_thinking": spec.request.enable_thinking},
+        "chat_template_kwargs": {"enable_thinking": False},
     }
     skills = list(spec.skills)
     tools = list(spec.tools)
