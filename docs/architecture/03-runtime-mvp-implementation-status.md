@@ -1,7 +1,42 @@
 # Runtime MVP Implementation Status
 
-This is the engineering checkpoint after POC01-POC06 were frozen as regression
-baselines and production code moved under `scopex/`.
+POC01-POC06 are frozen regression baselines. Production code lives under
+`scopex/`. The first real end-to-end Runtime MVP integration against OpenClaw +
+local vLLM has now passed.
+
+## Validated checkpoint
+
+Real Spark integration result:
+
+```text
+PASS_RUNTIME_MVP_SMOKE
+```
+
+Validated in one production Runtime path:
+
+```text
+Task
+  -> OpenClaw Investigation
+  -> local ModelProxy / vLLM
+  -> real read/exec tools
+  -> EvidenceExtractionPipeline
+  -> EvidenceCatalog
+  -> Fresh Structured Finalizer
+  -> Generic Claim Validator
+  -> Deterministic Renderer
+  -> Runtime Audit
+  -> Task COMPLETED
+  -> task-scope sandbox cleanup
+```
+
+The passing run proved all three fixture files were actually read, Evidence was
+created automatically, the fresh finalizer ended with `finish_reason=stop`, the
+structured output validated, the Task reached `COMPLETED`, and the task-owned
+sandbox container was cleaned without warnings.
+
+This closes the Runtime MVP **core execution-chain feasibility** milestone. Do
+not reopen it for output-format refinements unless a later regression provides
+new evidence that the control chain itself is broken.
 
 ## Implemented
 
@@ -19,11 +54,12 @@ baselines and production code moved under `scopex/`.
 ### M2 — OpenClaw execution boundary
 
 - same-session `--session-key` command builder;
+- session-key agent identity validation;
 - POC02-derived private OpenClaw environment;
 - POC02-derived sandbox/security config builder;
 - enforced `thinking=false` and approved tool surface;
 - exact-body loopback ModelProxy with local bearer token;
-- wire request/response/meta audit;
+- atomic wire request/response/meta audit;
 - request policy validation before forwarding;
 - Progress observer from real assistant/tool transcript state;
 - deterministic boundary before model forwarding;
@@ -34,7 +70,7 @@ baselines and production code moved under `scopex/`.
 
 ### M3 — Investigation coordinator
 
-`scopex.runtime.investigation.InvestigationCoordinator` now wires:
+`scopex.runtime.investigation.InvestigationCoordinator` wires:
 
 ```text
 TaskController
@@ -66,19 +102,24 @@ Implemented control semantics:
 - stable E1/E2/... EvidenceCatalog with exact provenance;
 - generic `EvidenceExtractor` protocol;
 - deterministic `EvidenceExtractionPipeline` preserving tool-call order;
-- bounded opt-in `ReadResultExtractor` for smoke/basic file workflows;
+- bounded opt-in `ReadResultExtractor` for whole-result evidence;
+- opt-in `ReadLineExtractor` for exact line/event evidence without business
+  parsing;
+- repeated equal lines at different observed positions keep distinct evidence
+  identities;
 - loopback streaming Fresh Finalizer client;
-- generic evidence-calibration prompt;
-- strict JSON/fence parser;
+- compact generic evidence-calibration prompt;
+- explicit truncation/incomplete-stream detection;
 - Claim schema;
 - generic validator;
-- deterministic renderer;
+- duplicate user-visible claim rejection;
+- deterministic concise renderer;
 - one-call `StructuredFinalizer` orchestrator;
 - no automatic retry.
 
 ### M5 — Audit
 
-One task directory can now contain:
+One task directory can contain:
 
 ```text
 task.json
@@ -101,33 +142,24 @@ live UI sink.
 - Runtime owns evidence identity/provenance and epistemic validation;
 - no automatic retry after ambiguous OpenClaw/model failures;
 - fact prose is rendered from runtime-owned evidence, not model free text;
-- no business-specific error strings or CowDisinfect logic in generic Runtime.
+- no business-specific error strings or CowDisinfect logic in generic Runtime;
+- the Investigation Agent's free final prose is not the product diagnosis; only
+  validated structured claims are rendered to the user.
 
-## Regression coverage
+## Output-quality follow-up after core PASS
 
-Production modules now have tests for:
+The first passing smoke exposed two presentation-quality issues without
+invalidating the core Runtime chain:
 
-- task/session/controller transitions;
-- Progress, Stop and Resume semantics;
-- pending Steering and same-task next-turn continuation;
-- safe-boundary reset and control races;
-- convergence and permissions;
-- OpenClaw private environment and sandbox config;
-- exact-body model proxy and request policy;
-- CLI process/outcome handling;
-- same-session multi-turn OpenClaw task runtime with fake CLI/model;
-- sandbox cleanup;
-- generic evidence extraction, dedupe and deterministic E ordering;
-- turn-audit trace aggregation;
-- unified Runtime audit persistence;
-- coordinator extraction + audit + convergence;
-- malformed claim payload handling;
-- deterministic rendering;
-- Fresh Finalizer SSE transport;
-- structured finalizer orchestration;
-- in-memory end-to-end runtime flow.
+1. whole-file Evidence made each fact expand an entire log;
+2. the model could emit two structurally equivalent facts that rendered the same
+   evidence twice.
 
-## Current checkpoint: run Spark regression
+The product path now supports line-level evidence and rejects duplicate rendered
+claim identities. `scripts/runtime_mvp_refinalize.py` can validate these changes
+against a previously passed wire trace without rerunning OpenClaw or tools.
+
+## Fast regression for evidence/output changes
 
 ```bash
 cd /home/yanlan/workspaces/code/scopex
@@ -135,56 +167,37 @@ git pull --ff-only
 
 python3 -m unittest \
   tests/test_runtime_mvp_core.py \
-  tests/test_agent_runtime_bridge.py \
-  tests/test_finalizer_client.py \
-  tests/test_openclaw_config.py \
-  tests/test_openclaw_environment.py \
-  tests/test_model_proxy.py \
-  tests/test_proxy_control.py \
-  tests/test_openclaw_runner_outcome.py \
-  tests/test_openclaw_task_runtime.py \
-  tests/test_sandbox_manager.py \
-  tests/test_investigation_coordinator.py \
+  tests/test_evidence_extractor.py \
   tests/test_structured_finalizer.py \
   tests/test_runtime_end_to_end_smoke.py \
-  tests/test_evidence_extractor.py \
-  tests/test_runtime_audit.py \
-  tests/test_investigation_audit_extraction.py \
-  tests/test_steering_queue.py \
   -v
 
 python3 -m unittest discover -s tests -v
 ```
 
-Do not run the real Runtime MVP smoke until both are clean.
+For a previously passed Runtime smoke, validate only the new evidence/finalizer
+path without another Investigation:
 
-## Real Runtime MVP smoke
-
-A real integration runner now exists:
-
-```text
-scripts/runtime_mvp_smoke.py
+```bash
+python3 scripts/runtime_mvp_refinalize.py \
+  --run <existing .local/runtime-mvp-smoke/... directory> \
+  --model qwen3.8-27b-nvfp4 \
+  --base-url http://127.0.0.1:18002/v1
 ```
 
-It uses only production `scopex/` runtime modules for execution. It stages the
-known app/system/robot fixture, runs real OpenClaw against the existing local
-vLLM, extracts read evidence, invokes one fresh structured finalizer and writes a
-complete audit directory.
-
-The POC02 preflight is used only to retrieve the already-validated sandbox image
-reference; no POC runner/grader is imported.
-
-Expected pass status:
+Expected:
 
 ```text
-PASS_RUNTIME_MVP_SMOKE
+PASS_RUNTIME_MVP_REFINALIZE
 ```
 
-## After the real smoke passes
+## Next product phase
 
-1. replace the smoke-only `ReadResultExtractor` with domain/Skill extractor
-   adapters for real device tasks;
-2. add the local Runtime API (task create/control/events/result);
-3. build the minimal local Web UI over that API;
-4. then validate a real CowDisinfect task through the product surface, not
-   through POC scripts.
+After the evidence/output regression is clean:
+
+1. implement the local Runtime API: task create/status/control/events/evidence/result;
+2. build the minimal local Web UI over that API;
+3. then validate a real CowDisinfect task through the product surface, not
+   through POC scripts;
+4. performance tuning is measured separately: the core smoke is a complex
+   diagnostic path and should not redefine the simple-task ~120s target.
