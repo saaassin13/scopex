@@ -67,6 +67,22 @@ class EvidenceExtractorTests(unittest.TestCase):
         self.assertTrue(item.metadata["truncated"])
         self.assertEqual(item.metadata["original_chars"], 9)
 
+    def test_evidence_refs_follow_tool_call_order_not_set_order(self):
+        _, catalog, pipeline = self.make_pipeline()
+        trace = AgentTrace(
+            calls=(
+                ToolCall("z-call", "read", {"path": "/agent/first.log"}),
+                ToolCall("a-call", "read", {"path": "/agent/second.log"}),
+            ),
+            results=(
+                ToolResult("a-call", "second evidence"),
+                ToolResult("z-call", "first evidence"),
+            ),
+        )
+        pipeline.process_trace(trace)
+        self.assertEqual(catalog.get("E1").source, "/agent/first.log")
+        self.assertEqual(catalog.get("E2").source, "/agent/second.log")
+
 
 if __name__ == "__main__":
     unittest.main()
