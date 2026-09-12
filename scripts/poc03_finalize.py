@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Finalize a recorded POC03 investigation from a compact evidence catalog.
 
-This is phase B of the POC03 two-phase design:
+Phase B of the POC03 two-phase design:
 
   OpenClaw investigation -> Evidence Context Builder -> fresh no-tool finalizer
 
@@ -35,7 +35,14 @@ import poc03_run as p3
 
 DEFAULT_FOCUS = "CalLeftCamStartFollowPt failed"
 DEFAULT_MAX_EVIDENCE = 12
-DEFAULT_MAX_TOKENS = 384
+DEFAULT_MAX_TOKENS = 512
+
+NEGATIVE_MARKERS = (
+    "[error]", "[warn]", "failed", "failure", "invalid", "exception", "timeout",
+)
+RECOVERY_MARKERS = (
+    "succeeded", "success", "recovered", "recover", "restored", "resumed", "healthy",
+)
 
 
 def load_json(path: Path):
@@ -93,16 +100,14 @@ def extract_knowledge(calls: dict, results: dict) -> str:
 def observed_line_indices(source_text: str, results: dict[str, str]) -> list[int]:
     """Find exact source lines that occurred inside recorded tool results.
 
-    Matching exact source-line substrings also handles grep -n prefixes and
+    Exact source-line substring matching also handles grep -n prefixes and
     cat -A suffixes without trusting line numbers emitted by a command.
     """
     lines = source_text.splitlines()
     contents = [value for value in results.values() if isinstance(value, str) and value]
     observed = []
     for idx, line in enumerate(lines):
-        if not line:
-            continue
-        if any(line in content for content in contents):
+        if line and any(line in content for content in contents):
             observed.append(idx)
     return observed
 
@@ -118,7 +123,7 @@ def _score_line(line: str, idx: int, anchors: list[int], focus: str) -> int:
         score += 60
     if any(word in lower for word in ("failed", "invalid", "exception")):
         score += 70
-    if any(word in lower for word in ("succeeded", "recovered", "recover")):
+    if any(word in lower for word in RECOVERY_MARKERS):
         score += 65
     if anchors:
         distance = min(abs(idx - anchor) for anchor in anchors)
@@ -126,22 +131,94 @@ def _score_line(line: str, idx: int, anchors: list[int], focus: str) -> int:
     return score
 
 
+def _best(indices: list[int], lines: list[str], anchors: list[int], focus: str) -> int | None:
+    if not indices:
+        return None
+    return max(indices, key=lambda idx: (_score_line(lines[idx], idx, anchors, focus), -idx))
+
+
 def build_catalog(source_text: str, results: dict[str, str], focus: str,
                   max_evidence: int = DEFAULT_MAX_EVIDENCE) -> list[dict]:
+    """Build a small but diversified evidence catalog.
+
+    Pure top-N scoring can fill every slot with failure-side ERROR lines and
+    accidentally discard a later recovery line that the Agent actually saw.
+    Reserve semantically distinct evidence first, then fill remaining slots by
+    score. This policy is generic runtime logic; it does not encode the POC case
+    timestamps or expected answer.
+    """
     if max_evidence < 4 or max_evidence > 40:
         raise ValueError("max_evidence must be between 4 and 40")
+
     lines = source_text.splitlines()
     observed = observed_line_indices(source_text, results)
     if not observed:
         raise ValueError("no exact source-log lines were observed in recorded tool results")
 
-    anchors = [idx for idx in observed if focus.lower() in lines[idx].lower()] if focus else []
-    scored = [(_score_line(lines[idx], idx, anchors, focus), idx) for idx in observed]
-    # Keep the highest-value evidence, but restore source order for final context.
-    selected = sorted(idx for _score, idx in sorted(scored, key=lambda x: (-x[0], x[1]))[:max_evidence])
+    focus_lower = focus.lower() if focus else ""
+    anchors = [idx for idx in observed if focus_lower and focus_lower in lines[idx].lower()]
+    anchor_floor = min(anchors) if anchors else min(observed)
+    anchor_ceiling = max(anchors) if anchors else anchor_floor
+
+    selected: set[int] = set()
+    reasons: dict[int, set[str]] = {}
+
+    def reserve(idx: int | None, reason: str):
+        if idx is None:
+            return
+        selected.add(idx)
+        reasons.setdefault(idx, set()).add(reason)
+
+    # 1) Keep the strongest exact focus anchor when one exists.
+    reserve(_best(anchors, lines, anchors, focus), "focus")
+
+    # 2) Keep one nearby negative/upstream event before or at the focus. This
+    # often carries the direct trigger even when its text differs from focus.
+    negative_before = [
+        idx for idx in observed
+        if idx <= anchor_ceiling and any(m in lines[idx].lower() for m in NEGATIVE_MARKERS)
+        and idx not in selected
+    ]
+    if negative_before:
+        closest_negative = max(
+            negative_before,
+            key=lambda idx: (-min(abs(idx - a) for a in anchors) if anchors else idx,
+                             _score_line(lines[idx], idx, anchors, focus), idx),
+        )
+        reserve(closest_negative, "negative_context")
+
+    # 3) Crucial diversity guard: if the Agent observed a success/recovery after
+    # the focus, reserve the strongest one even if ERROR-heavy top-N ranking
+    # would otherwise push it out.
+    recovery_after = [
+        idx for idx in observed
+        if idx > anchor_floor and any(m in lines[idx].lower() for m in RECOVERY_MARKERS)
+    ]
+    reserve(_best(recovery_after, lines, anchors, focus), "post_focus_recovery")
+
+    # 4) Fill the remaining budget by relevance score.
+    ranked = [
+        idx for _score, idx in sorted(
+            ((_score_line(lines[idx], idx, anchors, focus), idx) for idx in observed),
+            key=lambda x: (-x[0], x[1]),
+        )
+    ]
+    for idx in ranked:
+        if len(selected) >= max_evidence:
+            break
+        if idx not in selected:
+            selected.add(idx)
+            reasons.setdefault(idx, set()).add("score")
+
+    chosen = sorted(selected)
     return [
-        {"ref": f"E{n}", "source_line": idx + 1, "raw_line": lines[idx]}
-        for n, idx in enumerate(selected, 1)
+        {
+            "ref": f"E{n}",
+            "source_line": idx + 1,
+            "raw_line": lines[idx],
+            "selection_reason": sorted(reasons.get(idx, {"score"})),
+        }
+        for n, idx in enumerate(chosen, 1)
     ]
 
 
@@ -150,7 +227,7 @@ def finalizer_prompts(focus: str, knowledge: str, catalog: list[dict]):
 
 只能根据提供的业务背景和证据目录完成最终结论；禁止继续调查、调用工具、请求额外信息或编造根因。业务背景只能帮助解释，事件事实必须由 E 编号证据支持。
 
-输出必须简短：evidence 最多4条，facts最多3条，inferences最多1条，unknowns必须1到2条。evidence 必须优先包含直接 trigger、明确 failure 和后续 recovery；若目录中存在直接相关的上游 invalid/exception，再补1条 upstream。只输出一个 JSON 对象，可以有或没有 Markdown json fence。"""
+输出必须简短：evidence 最多4条，facts最多3条，inferences最多1条，unknowns必须1到2条。优先引用能直接支持触发条件、失败状态和后续恢复判断的证据。只输出一个 JSON 对象，可以有或没有 Markdown json fence。"""
 
     evidence_text = "\n".join(
         f"{row['ref']} | source line {row['source_line']} | {row['raw_line']}"
@@ -193,12 +270,14 @@ def parse_compact(text: str) -> dict:
 
 
 def validate_compact(obj: dict, catalog: list[dict]) -> list[str]:
+    """Validate transport/schema only; semantic evidence is graded after expansion."""
     errors = []
     valid_refs = {row["ref"] for row in catalog}
     if not isinstance(obj.get("direct_trigger"), str):
         errors.append("direct_trigger")
     if obj.get("persistence") not in {"transient", "persistent", "unknown"}:
         errors.append("persistence")
+
     recovery = obj.get("recovery")
     if not isinstance(recovery, dict) or recovery.get("observed") not in {True, False, None}:
         errors.append("recovery")
@@ -214,15 +293,13 @@ def validate_compact(obj: dict, catalog: list[dict]) -> list[str]:
         errors.append("evidence")
     else:
         for item in evidence:
-            if not isinstance(item, dict) or item.get("role") not in {
-                "upstream", "trigger", "failure", "recovery"
-            } or item.get("ref") not in valid_refs:
+            if (
+                not isinstance(item, dict)
+                or item.get("role") not in {"upstream", "trigger", "failure", "recovery"}
+                or item.get("ref") not in valid_refs
+            ):
                 errors.append("evidence.item")
                 break
-        roles = {item.get("role") for item in evidence if isinstance(item, dict)}
-        for required in ("trigger", "failure", "recovery"):
-            if required not in roles:
-                errors.append("evidence.missing_" + required)
 
     for key, limit in (("facts", 3), ("inferences", 1)):
         value = obj.get(key)
@@ -381,7 +458,6 @@ def main(argv=None):
     catalog = build_catalog(source_text, results, args.focus, args.max_evidence)
     system_prompt, user_prompt = finalizer_prompts(args.focus, knowledge, catalog)
 
-    # Use the same API-key environment selected by the validated POC02 baseline.
     basis_pf = Path(result["security_basis"]["poc02_preflight"]).resolve()
     _ref, _cfg, _case, key_env = p2.bundle(basis_pf)
     api_key = os.environ.get(key_env, "")
