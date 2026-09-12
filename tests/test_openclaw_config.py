@@ -42,6 +42,7 @@ class OpenClawConfigTests(unittest.TestCase):
         self.assertFalse(cfg["tools"]["elevated"]["enabled"])
         self.assertEqual(cfg["tools"]["exec"]["host"], "sandbox")
         self.assertEqual(cfg["tools"]["exec"]["mode"], "full")
+        self.assertEqual(cfg["tools"]["allow"], ["read", "exec", "process"])
         extra = defaults["models"]["vllm/qwen-local"]["params"]["extra_body"]
         self.assertEqual(extra["chat_template_kwargs"]["enable_thinking"], False)
         self.assertEqual(defaults["skills"], ["camera-diagnosis"])
@@ -73,6 +74,19 @@ class OpenClawConfigTests(unittest.TestCase):
         self.assertEqual(cfg["tools"]["exec"]["host"], "gateway")
         self.assertEqual(cfg["tools"]["exec"]["mode"], "full")
         self.assertFalse(cfg["tools"]["elevated"]["enabled"])
+
+    def test_view_image_is_passed_to_openclaw_tool_policy(self):
+        cfg = build_openclaw_config(
+            replace(self.spec(), tools=("read", "exec", "process", "view_image"))
+        )
+        self.assertEqual(
+            cfg["tools"]["allow"],
+            ["read", "exec", "process", "view_image"],
+        )
+        self.assertEqual(
+            cfg["tools"]["sandbox"]["tools"]["allow"],
+            ["read", "exec", "process", "view_image"],
+        )
 
     def test_data_bind_must_be_read_only(self):
         with self.assertRaises(ValueError):
