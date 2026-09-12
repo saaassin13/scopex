@@ -37,7 +37,10 @@ class EvidenceCatalog:
     """Runtime-owned exact evidence identity.
 
     The model may reference E numbers, but it never owns or rewrites the raw
-    evidence attached to those references.
+    evidence attached to those references. Whole-result evidence deduplicates by
+    source/content as before. Fine-grained extractors can provide ``line_number``
+    metadata; that position becomes part of identity so repeated equal text at
+    different observed positions is not collapsed.
     """
 
     def __init__(self, task_id: str, session_key: str) -> None:
@@ -45,7 +48,14 @@ class EvidenceCatalog:
         self.session_key = session_key
         self._items: list[EvidenceItem] = []
         self._by_ref: dict[str, EvidenceItem] = {}
-        self._dedupe: dict[tuple[str, str], EvidenceItem] = {}
+        self._dedupe: dict[tuple[Any, ...], EvidenceItem] = {}
+
+    @staticmethod
+    def _dedupe_key(source: str, raw: str, metadata: dict[str, Any]) -> tuple[Any, ...]:
+        line_number = metadata.get("line_number")
+        if isinstance(line_number, int) and line_number > 0:
+            return source, raw, "line_number", line_number
+        return source, raw
 
     def add(
         self,
@@ -59,7 +69,8 @@ class EvidenceCatalog:
             raise ValueError("evidence source is required")
         if not isinstance(raw, str) or not raw.strip():
             raise ValueError("evidence raw content is required")
-        key = (source, raw)
+        metadata_value = dict(metadata or {})
+        key = self._dedupe_key(source, raw, metadata_value)
         existing = self._dedupe.get(key)
         if existing is not None:
             return existing
@@ -72,7 +83,7 @@ class EvidenceCatalog:
             raw=raw,
             tool_call_id=tool_call_id,
             observed_at=utcnow(),
-            metadata=dict(metadata or {}),
+            metadata=metadata_value,
         )
         self._items.append(item)
         self._by_ref[ref] = item
