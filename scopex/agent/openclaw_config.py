@@ -6,7 +6,7 @@ import ipaddress
 from urllib.parse import urlsplit
 
 
-APPROVED_TOOLS = frozenset({"read", "exec", "process"})
+APPROVED_TOOLS = frozenset({"read", "exec", "process", "view_image"})
 EXEC_HOSTS = frozenset({"sandbox", "gateway", "node"})
 EXEC_MODES = frozenset({"deny", "allowlist", "ask", "auto", "full"})
 
@@ -138,8 +138,6 @@ def build_openclaw_config(spec: OpenClawConfigSpec) -> dict:
     }
     if spec.sandbox_binds:
         docker["binds"] = list(spec.sandbox_binds)
-        # POC07 intentionally allows explicitly configured data roots outside the
-        # agent workspace. OpenClaw still applies its blocked-source checks.
         docker["dangerouslyAllowExternalBindSources"] = True
 
     return {
@@ -160,12 +158,7 @@ def build_openclaw_config(spec: OpenClawConfigSpec) -> dict:
                             "input": ["text", "image"],
                             "contextWindow": spec.context_window,
                             "maxTokens": spec.request.max_tokens,
-                            "cost": {
-                                "input": 0,
-                                "output": 0,
-                                "cacheRead": 0,
-                                "cacheWrite": 0,
-                            },
+                            "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0},
                             "compat": {
                                 "thinkingFormat": "qwen-chat-template",
                                 "maxTokensField": "max_tokens",
