@@ -1,3 +1,4 @@
+from dataclasses import replace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os
@@ -122,12 +123,12 @@ class OpenClawTaskRuntimeTests(unittest.TestCase):
             max_tokens=256,
         )
 
-    def make_runtime(self, stop=None, safe=None):
+    def make_runtime(self, stop=None, safe=None, spec=None):
         events = InMemoryEventSink()
         runtime = OpenClawTaskRuntime(
             task_id="task-1",
             session_key="agent:sx1:task-1",
-            spec=self.spec(),
+            spec=spec or self.spec(),
             events=events,
             stop_gate=stop or SafeStopGate(),
             on_safe_stop=safe,
@@ -175,6 +176,33 @@ class OpenClawTaskRuntimeTests(unittest.TestCase):
                 events=events,
                 stop_gate=SafeStopGate(),
             )
+
+    def test_close_cleans_only_own_agent_prefix(self):
+        log = self.root / "docker.log"
+        docker = self.root / "fake-docker"
+        docker.write_text(
+            "#!/usr/bin/env python3\n" + textwrap.dedent(f'''\
+            import pathlib
+            import sys
+            log = pathlib.Path({str(log)!r})
+            args = sys.argv[1:]
+            with log.open("a") as f:
+                f.write(" ".join(args) + "\\n")
+            if args[:2] == ["ps", "-aq"]:
+                print("abc123")
+            '''),
+            encoding="utf-8",
+        )
+        docker.chmod(0o755)
+        spec = replace(self.spec(), docker_bin=str(docker))
+        runtime, _events = self.make_runtime(spec=spec)
+        cleanup = runtime.close()
+        self.assertEqual(cleanup.container_ids, ("abc123",))
+        self.assertEqual(cleanup.warnings, ())
+        rows = log.read_text(encoding="utf-8").splitlines()
+        self.assertEqual(rows[0], "ps -aq --filter name=scopex-sx1-")
+        self.assertEqual(rows[1], "stop --time 2 abc123")
+        self.assertEqual(rows[2], "rm -f abc123")
 
 
 if __name__ == "__main__":
