@@ -1,7 +1,6 @@
 import importlib.util
 import json
 from pathlib import Path
-import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -39,6 +38,28 @@ class Poc03FinalizeTests(unittest.TestCase):
         self.assertTrue(any("CalLeftCamStartFollowPt succeeded" in line for line in raw))
         self.assertEqual([row["ref"] for row in catalog], [f"E{i}" for i in range(1, 6)])
 
+    def test_catalog_reserves_recovery_when_errors_crowd_top_n(self):
+        rows = [
+            f"2026-09-11 07:59:21:{500+i:03d} [x.cpp:{1000+i}] [ERROR] noisy failure invalid exception {i}"
+            for i in range(20)
+        ]
+        rows.append(
+            "2026-09-11 07:59:21:700 [mainwindow.cpp:4479] [ERROR] CalLeftCamStartFollowPt failed"
+        )
+        rows.append(
+            "2026-09-11 07:59:21:847 [mainwindow.cpp:4469] [INFO] CalLeftCamStartFollowPt succeeded"
+        )
+        source = "\n".join(rows)
+        catalog = MOD.build_catalog(
+            source, {"all": source}, "CalLeftCamStartFollowPt failed", max_evidence=12
+        )
+        recovery = [
+            row for row in catalog if "CalLeftCamStartFollowPt succeeded" in row["raw_line"]
+        ]
+        self.assertEqual(len(catalog), 12)
+        self.assertEqual(len(recovery), 1)
+        self.assertIn("post_focus_recovery", recovery[0]["selection_reason"])
+
     def test_validate_rejects_unknown_evidence_ref(self):
         catalog = [
             {"ref": "E1", "source_line": 1, "raw_line": SOURCE.splitlines()[0]},
@@ -57,6 +78,29 @@ class Poc03FinalizeTests(unittest.TestCase):
         errors = MOD.validate_compact(obj, catalog)
         self.assertIn("recovery.evidence_ref", errors)
         self.assertIn("evidence.item", errors)
+
+    def test_validator_does_not_grade_semantic_role_coverage(self):
+        lines = SOURCE.splitlines()
+        catalog = [
+            {"ref": "E1", "source_line": 3, "raw_line": lines[2]},
+            {"ref": "E2", "source_line": 4, "raw_line": lines[3]},
+            {"ref": "E3", "source_line": 5, "raw_line": lines[4]},
+        ]
+        obj = {
+            "direct_trigger": "x",
+            "persistence": "transient",
+            "recovery": {"observed": True, "evidence_ref": "E3"},
+            "evidence": [
+                {"role": "failure", "ref": "E1"},
+                {"role": "failure", "ref": "E2"},
+            ],
+            "facts": ["x"],
+            "inferences": ["x"],
+            "unknowns": ["x"],
+            "conclusion": "x",
+            "confidence": "high",
+        }
+        self.assertEqual(MOD.validate_compact(obj, catalog), [])
 
     def test_expand_restores_exact_raw_lines(self):
         lines = SOURCE.splitlines()
