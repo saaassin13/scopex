@@ -84,10 +84,14 @@ class FakeCoordinator:
         )
         self.audit.persist_evidence(self.catalog)
 
-    def finalize_fresh(self, _finalizer, *, goal_satisfied=False):
+    def begin_finalization(self, *, goal_satisfied=False):
         self.controller.begin_finalization(
             reasons=("goal_satisfied",) if goal_satisfied else ()
         )
+
+    def finish_fresh_finalization(self, _finalizer):
+        if self.controller.state is not TaskState.FINALIZING:
+            raise ValueError("task must be FINALIZING")
         self.controller.finalization_completed()
         self.controller.complete()
         self.audit.persist_result(
@@ -96,6 +100,10 @@ class FakeCoordinator:
         )
         self.audit.snapshot_control(self.task, self.session, self.catalog)
         return object()
+
+    def finalize_fresh(self, finalizer, *, goal_satisfied=False):
+        self.begin_finalization(goal_satisfied=goal_satisfied)
+        return self.finish_fresh_finalization(finalizer)
 
     def close(self):
         self.closed = True
