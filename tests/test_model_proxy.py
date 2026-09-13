@@ -4,9 +4,15 @@ import json
 from pathlib import Path
 import tempfile
 import threading
+import time
 import unittest
 
-from scopex.agent.model_proxy import ModelProxy, StopBeforeForward
+from scopex.agent.model_proxy import (
+    ModelProxy,
+    RUNTIME_LIMIT_MODEL_REQUESTS,
+    RUNTIME_LIMIT_TURN_TIMEOUT,
+    StopBeforeForward,
+)
 
 
 class UpstreamHandler(BaseHTTPRequestHandler):
@@ -49,14 +55,14 @@ class ModelProxyTests(unittest.TestCase):
         self.upstream_thread.join(timeout=2)
         self.tmp.cleanup()
 
-    def start_proxy(self, hook=None):
+    def start_proxy(self, hook=None, *, max_requests=4, deadline_s=10):
         self.proxy = ModelProxy(
             audit_dir=Path(self.tmp.name),
             upstream_base_url=f"http://127.0.0.1:{self.upstream.server_port}/v1",
             upstream_api_key="",
             local_token="proxy-token",
-            max_requests=4,
-            deadline_s=10,
+            max_requests=max_requests,
+            deadline_s=deadline_s,
             on_request=hook,
         )
         self.proxy_thread = threading.Thread(target=self.proxy.serve_forever, daemon=True)
@@ -112,6 +118,26 @@ class ModelProxyTests(unittest.TestCase):
         body = b'{"model":"a","model":"b","messages":[]}'
         status, _response = self.send(body)
         self.assertEqual(status, 502)
+        self.assertEqual(UpstreamHandler.bodies, [])
+
+    def test_model_request_budget_exposes_authoritative_runtime_reason(self):
+        self.start_proxy(max_requests=1)
+        body = b'{"model":"m","messages":[]}'
+        first, _ = self.send(body)
+        second, second_body = self.send(body)
+        self.assertEqual(first, 200)
+        self.assertEqual(second, 422)
+        self.assertIn(b"model request budget reached", second_body)
+        self.assertEqual(self.proxy.runtime_limit_reason, RUNTIME_LIMIT_MODEL_REQUESTS)
+        self.assertEqual(len(UpstreamHandler.bodies), 1)
+
+    def test_turn_deadline_exposes_authoritative_runtime_reason(self):
+        self.start_proxy(deadline_s=0.05)
+        time.sleep(0.08)
+        status, body = self.send(b'{"model":"m","messages":[]}')
+        self.assertEqual(status, 422)
+        self.assertIn(b"task deadline reached", body)
+        self.assertEqual(self.proxy.runtime_limit_reason, RUNTIME_LIMIT_TURN_TIMEOUT)
         self.assertEqual(UpstreamHandler.bodies, [])
 
 
