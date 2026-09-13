@@ -75,13 +75,16 @@ class OpenClawEvidenceProjector:
     business diagnosis logic and does not execute tools.
 
     Image working-set rule:
-    - a multi-image ``view_image`` call is screening/context only;
-    - a single-image ``view_image`` call may become immutable image Evidence.
+    - large multi-image ``view_image`` calls are screening/context only;
+    - a final bounded original-image set (up to ``max_claim_images``) may become
+      immutable image Evidence in one call.
 
-    This lets an Agent inspect many images in bounded batches without forcing
-    every screened frame into the Fresh Finalizer. If an original image matters
-    to a final claim, the Agent can re-open that exact original individually.
-    The finalizer still re-opens and SHA-verifies the promoted original itself.
+    This lets an Agent inspect many images in coarse batches and then narrow to a
+    small final set without forcing singleton re-open calls solely for ScopeX's
+    evidence plumbing. Every promoted original is still independently resolved,
+    hashed and re-opened by the Fresh Finalizer. Scratch-derived previews remain
+    useful for investigation but cannot become strong image Evidence because they
+    are outside the configured read-only source binds.
     """
 
     def __init__(
@@ -95,6 +98,7 @@ class OpenClawEvidenceProjector:
         max_exec_lines: int = 256,
         max_exec_line_chars: int = 4096,
         max_exec_chars: int = 12_000,
+        max_claim_images: int = 4,
     ) -> None:
         if (
             max_read_lines <= 0
@@ -102,6 +106,7 @@ class OpenClawEvidenceProjector:
             or max_exec_lines <= 0
             or max_exec_line_chars <= 0
             or max_exec_chars <= 0
+            or max_claim_images <= 0
         ):
             raise ValueError("projection limits must be positive")
         self.collector = collector
@@ -112,6 +117,7 @@ class OpenClawEvidenceProjector:
         self.max_exec_lines = max_exec_lines
         self.max_exec_line_chars = max_exec_line_chars
         self.max_exec_chars = max_exec_chars
+        self.max_claim_images = max_claim_images
         self._processed_call_ids: set[str] = set()
 
     @property
@@ -245,39 +251,41 @@ class OpenClawEvidenceProjector:
 
     def _project_images(self, call: ToolCall) -> tuple[EvidenceItem, ...]:
         paths = self._image_paths(call)
-        if len(paths) != 1:
-            # Multi-image views are a bounded visual working set, not claim-grade
-            # immutable Evidence. Important originals must be re-opened alone.
-            return ()
-
-        path = paths[0]
-        resolved = self.bind_resolver.resolve(path)
-        if resolved is None:
-            # Strong image evidence requires immutable identity. Scratch-derived
-            # previews/contact sheets and files outside read-only source roots are
-            # intentionally useful for investigation but not promoted to Evidence.
+        if not paths or len(paths) > self.max_claim_images:
+            # Large image sets are a visual working set, not final claim-grade
+            # Evidence. The agent may narrow them in later calls.
             return ()
 
         prompt = call.arguments.get("prompt")
-        digest = self._sha256_file(resolved.host_path)
-        media_type = mimetypes.guess_type(resolved.host_path.name)[0] or "application/octet-stream"
-        stat = resolved.host_path.stat()
-        return (
-            self.collector.add(
-                source=path,
-                raw=f"image:{Path(path).name}",
-                tool_call_id=call.id,
-                metadata={
-                    "evidence_type": "image",
-                    "tool": "view_image",
-                    "sha256": digest,
-                    "byte_size": stat.st_size,
-                    "media_type": media_type,
-                    "view_prompt": prompt if isinstance(prompt, str) else None,
-                    "evidence_role": "claim_grade_single_image",
-                },
-            ),
-        )
+        added: list[EvidenceItem] = []
+        for path in paths:
+            resolved = self.bind_resolver.resolve(path)
+            if resolved is None:
+                # Strong image evidence requires immutable identity. Scratch-derived
+                # previews/contact sheets and files outside read-only source roots are
+                # useful for investigation but intentionally not promoted.
+                continue
+            digest = self._sha256_file(resolved.host_path)
+            media_type = mimetypes.guess_type(resolved.host_path.name)[0] or "application/octet-stream"
+            stat = resolved.host_path.stat()
+            added.append(
+                self.collector.add(
+                    source=path,
+                    raw=f"image:{Path(path).name}",
+                    tool_call_id=call.id,
+                    metadata={
+                        "evidence_type": "image",
+                        "tool": "view_image",
+                        "sha256": digest,
+                        "byte_size": stat.st_size,
+                        "media_type": media_type,
+                        "view_prompt": prompt if isinstance(prompt, str) else None,
+                        "evidence_role": "claim_grade_bounded_image_set",
+                        "view_set_size": len(paths),
+                    },
+                )
+            )
+        return tuple(added)
 
     @staticmethod
     def _sha256_file(path: Path) -> str:
