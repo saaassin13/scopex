@@ -147,21 +147,27 @@ tool_call_id = ...
 
 ### Exec evidence
 
-Do not copy arbitrarily large stdout into Evidence.
+A single command can report several independent facts. Therefore whole stdout
+must not be treated as one E ref. Project bounded non-empty output lines while
+keeping provenance back to one complete tool result.
 
 ```text
 E4
-kind = command_output
+kind = command_line
 host = gateway
 command = "free -h"
-excerpt = bounded output
-result_sha256 = digest of full tool result
-original_chars = ...
-truncated = true|false
+line = 2
+raw = "Mem: ..."
+result_sha256 = digest of complete tool result
 tool_call_id = ...
 ```
 
-The complete tool result remains in OpenClaw/audit trace.
+A different output line becomes a different E ref even when it came from the
+same exec call. This lets CPU count, memory state and process rows support
+separate facts without weakening duplicate-claim validation.
+
+The complete tool result remains in OpenClaw/audit trace. ScopeX only freezes a
+bounded claim-grade projection, not another full stdout copy.
 
 ### Image evidence
 
@@ -265,9 +271,10 @@ requirements, remove the proxy rather than expanding it.
 
 ### Step 5A — Trace -> Evidence Projection
 
-- replace the production `ReadLineExtractor` plugin path with one generic
-  OpenClaw Evidence Projector;
-- project `read`, `exec`, and `view_image` provenance only;
+- production uses one generic OpenClaw Evidence Projector;
+- `read` -> exact line Evidence;
+- `exec` -> claim-grade command-line Evidence with full-result digest;
+- `view_image` -> immutable image identity only;
 - retain legacy extractor classes only for compatibility/regression until no
   production path depends on them;
 - do not project `progress_card` into Evidence.
@@ -307,6 +314,4 @@ Only implementation details remain, not architectural uncertainty:
    OpenClaw per-call exec-host routing. Evidence provenance already records an
    explicit per-call host when present, so this does not change the architecture.
 
-None of these blocks Step 5A. Step 5B is implemented behind strict integrity
-checks and must be validated with the existing POC07 image fixture before it is
-marked PASS.
+None of these blocks the current Step 5 validation.
