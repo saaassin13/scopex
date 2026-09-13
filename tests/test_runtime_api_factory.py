@@ -37,6 +37,7 @@ class RuntimeApiFactoryTests(unittest.TestCase):
                 exec_host="gateway",
                 exec_mode="full",
                 enable_view_image=True,
+                enable_progress_card=True,
             )
             factory = OpenClawRuntimeFactory(config)
 
@@ -65,7 +66,7 @@ class RuntimeApiFactoryTests(unittest.TestCase):
             self.assertEqual(coordinator.agent.spec.exec_mode, "full")
             self.assertEqual(
                 coordinator.agent.spec.tools,
-                ("read", "exec", "process", "view_image"),
+                ("read", "exec", "process", "view_image", "progress_card"),
             )
             self.assertEqual(coordinator.convergence_policy.max_elapsed_s, 181.0)
             self.assertEqual(coordinator.convergence_policy.max_model_requests, 6)
