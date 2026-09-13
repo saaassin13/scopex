@@ -109,6 +109,28 @@ class EvidenceProjectorTests(unittest.TestCase):
                 hashlib.sha256(b"fake-jpeg-bytes").hexdigest(),
             )
 
+    def test_image_identity_includes_digest(self):
+        catalog = EvidenceCatalog("task-1", "agent:sx:task-1")
+        first = catalog.add(
+            source="/agent-data/frame.jpg",
+            raw="image:frame.jpg",
+            metadata={"evidence_type": "image", "sha256": "a" * 64},
+        )
+        same = catalog.add(
+            source="/agent-data/frame.jpg",
+            raw="image:frame.jpg",
+            metadata={"evidence_type": "image", "sha256": "a" * 64},
+        )
+        changed = catalog.add(
+            source="/agent-data/frame.jpg",
+            raw="image:frame.jpg",
+            metadata={"evidence_type": "image", "sha256": "b" * 64},
+        )
+
+        self.assertEqual(first.ref, same.ref)
+        self.assertNotEqual(first.ref, changed.ref)
+        self.assertEqual(len(catalog.items), 2)
+
     def test_unresolved_image_is_not_promoted_to_strong_evidence(self):
         catalog, _, projector = self.projector()
         trace = AgentTrace(
