@@ -2,8 +2,69 @@ from __future__ import annotations
 
 from typing import Any
 
-from scopex.agent.trace import parse_messages, tool_target
+from scopex.agent.trace import ToolCall, parse_messages, tool_target
 from scopex.events.progress import EventSink, EventType
+
+
+_RESULT_PREVIEW_CHARS = 1200
+_PROGRESS_STATUSES = {"pending", "in_progress", "completed"}
+
+
+def _clip(value: str, limit: int) -> str:
+    value = value.strip()
+    if len(value) <= limit:
+        return value
+    return value[:limit].rstrip() + "\n…"
+
+
+def _tool_public_fields(call: ToolCall) -> dict[str, Any]:
+    """Return only explicit tool arguments safe for user-visible progress.
+
+    These are actual actions requested by the model, not hidden reasoning.
+    """
+
+    data: dict[str, Any] = {}
+    for key in ("title", "command", "path", "file_path", "prompt"):
+        value = call.arguments.get(key)
+        if isinstance(value, str) and value:
+            data[key] = _clip(value, 1200)
+
+    paths = call.arguments.get("paths")
+    if isinstance(paths, list):
+        clean_paths = [value for value in paths if isinstance(value, str) and value]
+        if clean_paths:
+            data["paths"] = clean_paths[:20]
+
+    for key in ("offset", "limit"):
+        value = call.arguments.get(key)
+        if isinstance(value, int):
+            data[key] = value
+    return data
+
+
+def _progress_payload(call: ToolCall) -> tuple[list[dict[str, str]], str | None]:
+    plan: list[dict[str, str]] = []
+    raw_plan = call.arguments.get("plan")
+    if isinstance(raw_plan, list):
+        for row in raw_plan[:50]:
+            if not isinstance(row, dict):
+                continue
+            step = row.get("step")
+            status = row.get("status")
+            if (
+                isinstance(step, str)
+                and step.strip()
+                and isinstance(status, str)
+                and status in _PROGRESS_STATUSES
+            ):
+                plan.append({"step": _clip(step, 512), "status": status})
+
+    markdown = call.arguments.get("markdown")
+    if isinstance(markdown, str) and markdown.strip():
+        markdown = _clip(markdown, 8192)
+    else:
+        markdown = None
+    return plan, markdown
 
 
 class AgentProgressObserver:
@@ -33,12 +94,25 @@ class AgentProgressObserver:
             if cid in self._seen_calls:
                 continue
             self._seen_calls.add(cid)
+
+            if call.name == "progress_card":
+                plan, markdown = _progress_payload(call)
+                self.events.emit(
+                    self.task_id,
+                    EventType.PROGRESS_UPDATE,
+                    tool_call_id=cid,
+                    plan=plan,
+                    markdown=markdown,
+                )
+                continue
+
             self.events.emit(
                 self.task_id,
                 EventType.TOOL_CALL,
                 tool_call_id=cid,
                 tool=call.name,
                 target=tool_target(call),
+                **_tool_public_fields(call),
             )
 
         for cid, result in results.items():
@@ -46,6 +120,8 @@ class AgentProgressObserver:
                 continue
             self._seen_results.add(cid)
             call = calls.get(cid)
+            if call is not None and call.name == "progress_card":
+                continue
             self.events.emit(
                 self.task_id,
                 EventType.TOOL_RESULT,
@@ -53,6 +129,7 @@ class AgentProgressObserver:
                 tool=call.name if call else None,
                 target=tool_target(call) if call else None,
                 result_chars=len(result.content),
+                preview=_clip(result.content, _RESULT_PREVIEW_CHARS),
             )
 
     @property
