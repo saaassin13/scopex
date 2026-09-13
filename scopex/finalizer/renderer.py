@@ -28,7 +28,7 @@ def _source_name(item: EvidenceItem) -> str:
 
 
 def _source_title(item: EvidenceItem) -> str:
-    if item.metadata.get("evidence_type") == "command_output":
+    if item.metadata.get("evidence_type") in {"command_line", "command_output"}:
         title = item.metadata.get("title")
         command = item.metadata.get("command")
         if isinstance(title, str) and title:
