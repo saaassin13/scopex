@@ -94,7 +94,7 @@ def make_incident_fixture(input_root: Path, *, rows: int, image_count: int) -> d
         path.mkdir(parents=True, exist_ok=True)
 
     (incident / "README.md").write_text(
-        """# Incident bundle\n\n"
+        "# Incident bundle\n\n"
         "Inputs are intentionally mixed and may contain distractors.\n"
         "- logs/: controller and host observations\n"
         "- telemetry.csv: time-series measurements\n"
@@ -156,7 +156,7 @@ def make_incident_fixture(input_root: Path, *, rows: int, image_count: int) -> d
         write_square_png(images / f"frame_{i:03d}.png", alert=i in alert_indexes)
 
     (capabilities / "recovery.md").write_text(
-        """# Safe recovery capability\n\n"
+        "# Safe recovery capability\n\n"
         "The only permitted recovery for this probe is the immutable helper below.\n\n"
         "Query state:\n"
         "`python /agent-data/capabilities/device_tool.py status`\n\n"
@@ -444,7 +444,8 @@ def main(argv=None) -> int:
         evidence_snapshot = service.get_evidence(task_id)
         items = evidence_snapshot.get("items", []) if isinstance(evidence_snapshot, dict) else []
         image_items = [
-            item for item in items
+            item
+            for item in items
             if isinstance(item, dict)
             and isinstance(item.get("metadata"), dict)
             and item["metadata"].get("evidence_type") == "image"
