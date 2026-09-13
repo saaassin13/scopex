@@ -2,27 +2,34 @@
 
 ScopeX 是运行在 NVIDIA DGX Spark 上的本地、可交互、证据可追溯的工业诊断 Agent Runtime。
 
-OpenClaw 负责模型驱动的 Agent Loop、工具和 Skill；ScopeX 负责 Task/Session、Progress、Stop/Resume/Steering、权限、收敛、Evidence、结构化 Claims、校验、可追溯输出和产品 API。
+OpenClaw 负责模型驱动的 Agent Loop、工具和 Skill；ScopeX 负责 Task/Session、Progress、Stop/Resume/Steering、权限、Evidence、预算/运行时边界、结构化 Claims、可信校验、可追溯输出和产品 API。
+
+> **OpenClaw owns execution. ScopeX owns product control and trust.**
 
 ## 当前状态
 
-POC01–POC06 已冻结为回归基线，正式生产代码只放在 `scopex/`。
+POC01–POC06 已冻结为回归基线。Step 6 已完成复杂任务能力验证：
 
 | 阶段 | 能力 | 结果 |
 |---|---|---|
-| POC02 | OpenClaw 原生 wire/sandbox/security | PASS |
-| POC03 | 自主调查 + Fresh Finalizer | PASS |
-| POC04 | Mid-turn Steering + 用户纠正 | PASS |
-| POC05 | Progress + Stop + Resume + Re-steer | PASS |
-| POC06 | Evidence-Calibrated Structured Output | PASS |
 | Runtime MVP Smoke | 正式 Runtime + OpenClaw + vLLM + Evidence + Finalizer + Audit | **PASS** |
-| Runtime Refinalize | 逐行 Evidence + 去重 Claims + concise Renderer | **PASS** |
-| Local Runtime API | Task/control/events/evidence/result | **FastAPI 已落地，待 Spark 真实 HTTP 验证** |
-| Web UI | Task/Progress/Evidence/Result/Controls | **Vue 3 MVP 已落地，待构建联调** |
+| 6A | Context / Compaction / structured state retention | **PASS** |
+| 6B | Large Data / Multi-Image bounded working set + task scratch | **PASS** |
+| 6C | Hard Budget single source + trustworthy partial finalization | **PASS** |
+| 6D | OpenClaw native loop convergence + runtime-control Evidence filtering | **PASS** |
+| 6E | 120k telemetry + 15k logs + 48 images + constrained recovery + post-action verification | **CAPABILITY PASS** |
+| 6F | Complex-task usability / latency tuning | **IN PROGRESS（实验分支，不在 main）** |
+| Local Runtime API | Task/control/events/evidence/result | FastAPI 已落地，待完整 Spark HTTP 联调 |
+| Web UI | Task/Progress/Evidence/Result/Controls | Vue 3 MVP 已落地，待产品化联调 |
 
-核心原则：
+6E 已证明本地 `qwen3.8-27b-nvfp4` + OpenClaw 不仅能做简单问答：它能够自主完成大数据筛选、多源交叉验证、多图视觉确认、受约束动作执行和动作后的真实业务状态验证。
 
-> **模型负责理解、调查和判断；Runtime 负责控制、权限、证据身份、收敛和输出强度。**
+当前主要未通过项是**复杂任务产品可用性**：已通过的 6E 综合任务约 1008.5 s / 23 次模型请求，超过当前产品默认 600 s / 16 requests。离线 profile 显示约 90% wall time 在模型请求，主要瓶颈是本地 decode/output 成本与通用 Sandbox 工具缺口，而不是 32K Context hard wall。
+
+详细结论和下一步计划见：
+
+- [OpenClaw / ScopeX Boundary](docs/architecture/06-openclaw-scopex-boundary.md)
+- [Complex Task Validation and Next Plan](docs/architecture/07-complex-task-validation-and-next-plan.md)
 
 ## 产品技术栈
 
@@ -36,41 +43,43 @@ TaskService / ScopeX Runtime
 OpenClaw + local vLLM
 ```
 
-当前不引入 Pinia、axios、Redis、数据库、WebSocket 或 Nginx。前端使用原生 `fetch` 和 Vue composable/组件状态；FastAPI 仅替换 HTTP 传输层，不重新实现 Runtime 逻辑。
+当前不引入 Pinia、axios、Redis、数据库、WebSocket、Kubernetes 或工作流引擎。前端使用原生 `fetch` 和 Vue 状态；FastAPI 只做产品传输层，不重新实现 Agent Runtime。
 
 ## 当前架构
 
 ```text
-Vue Web UI / Local Client
+Goal / Trigger
+    ↓
+OpenClaw + Local Model
+    ↓
+autonomous investigation / tool use / action / verification
+    ↓ trace
+ScopeX Task Runtime
+    ├─ Stop / Resume / Steering
+    ├─ hard runtime boundary / audit
+    ├─ Evidence Projection
+    └─ Fresh Finalizer / Claim Validator
+    ↓
+Product Result / API / UI
+```
+
+可信输出链：
+
+```text
+Raw Tool Result / Original Image
         ↓
-FastAPI Local Runtime API
-        ↓
-TaskService / TaskController
-        ↓
-OpenClaw Investigation Agent
-        ↓
-Tool Gateway / Docker Sandbox
-        ↓
-Evidence Extraction
-        ↓
-Evidence Catalog (E1..En, source:line)
+Evidence Snapshot (E1..En)
         ↓
 Fresh Structured Finalizer
         ↓
-Generic Claim Validator
+Validated Claims
         ↓
 Deterministic Renderer
         ↓
-AuditStore + Final Result
+future constrained Answer Composer
 ```
 
-详细设计：
-
-- [Runtime MVP Architecture](docs/architecture/01-runtime-mvp.md)
-- [POC → Runtime Migration](docs/architecture/02-poc-to-runtime-migration.md)
-- [Runtime MVP Status](docs/architecture/03-runtime-mvp-implementation-status.md)
-- [Local Runtime API](docs/architecture/04-local-runtime-api.md)
-- [Frozen POC Baselines](docs/poc/README.md)
+Evidence 只证明结论，不承担第二套 Agent Loop，也不是产品主界面本身。
 
 ## 正式代码结构
 
@@ -80,55 +89,22 @@ scopex/
 ├── runtime/                # Task/Session/Control/Convergence/Steering
 ├── agent/                  # OpenClaw, proxy, sandbox, process/environment boundary
 ├── events/                 # observable Progress events
-├── evidence/               # extraction + runtime-owned provenance
+├── evidence/               # trace -> claim-grade Evidence projection
 ├── finalizer/              # structured claims / validator / renderer
 └── storage/                # filesystem audit
 
 frontend/                   # Vue 3 + TypeScript + Vite
+scripts/                    # validation/profiling/runbook scripts; not Agent control logic
 ```
 
-`scripts/poc*.py` 只用于历史验证/回归；正式 `scopex/` 代码禁止依赖 POC runner/grader。
+正式 `scopex/` 代码不得依赖 `scripts/poc*.py`，也不得把完整业务调查流程写死到 Handler。
 
-## 安装产品层依赖
-
-Python API：
-
-```bash
-cd /home/yanlan/workspaces/code/scopex
-python3 -m pip install -r requirements-api.txt
-```
-
-前端（当前依赖 Vite/官方 Vue 工具链，建议 Node 22.18+）：
-
-```bash
-cd /home/yanlan/workspaces/code/scopex/frontend
-npm install
-```
-
-## 开发入口
-
-更新并跑回归：
+## 开发 / 回归
 
 ```bash
 cd /home/yanlan/workspaces/code/scopex
 git pull --ff-only
 python3 -m unittest discover -s tests -v
-```
-
-FastAPI 新增测试：
-
-```bash
-python3 -m unittest \
-  tests.test_runtime_api_service \
-  tests.test_fastapi_app \
-  -v
-```
-
-前端类型检查和构建：
-
-```bash
-cd frontend
-npm run build
 ```
 
 产品入口：
@@ -137,15 +113,13 @@ npm run build
 scripts/runtime_api.py
 ```
 
-默认只监听：
+默认监听：
 
 ```text
 http://127.0.0.1:8787
 ```
 
-如果 `frontend/dist/` 已存在，FastAPI 会同时在 `/` 提供 Vue 静态页面；否则以 API-only 模式启动。
-
-接口：
+主要接口：
 
 ```text
 POST /tasks
@@ -159,22 +133,22 @@ GET  /tasks/{id}/evidence
 GET  /tasks/{id}/result
 ```
 
-FastAPI 自动文档：
-
-```text
-http://127.0.0.1:8787/docs
-```
-
 ## v0.1 产品边界
 
-- 单用户；
-- 同一时间一个主要任务；
-- PAUSED 任务仍占用任务槽位并保留同一 OpenClaw session；
-- 默认自主执行只读查询、日志分析和临时 workspace 脚本；
-- 配置修改、服务重启、删除和设备/机器人控制需要用户确认；
-- 本地运行、loopback API；
-- UI 当前使用 1.5–2.5 秒 polling，后续可替换为 SSE；
-- 不做多 Agent、多任务并发、Kubernetes、工作流编辑器和重型基础设施；
-- 不把完整业务调查流程写死到 Handler。
+- 单用户；同一时间一个主要任务；
+- PAUSED 任务保留同一 OpenClaw session；
+- 原始外部数据默认只读，任务中间产物写 `/task-scratch`；
+- 模型可以自主使用现有只读/受控能力调查和执行；
+- 高风险设备/机器人/配置动作必须通过明确 capability / permission boundary；
+- `exit code 0` 不是恢复成功，必须验证真实业务状态；
+- 不做多 Agent、多任务并发、工作流编辑器和重型基础设施；
+- 不在 ScopeX 重做 OpenClaw 已拥有的 Agent Loop、Tool Loop、Skill/Process/File/Image 能力。
 
-下一阶段：先完成 FastAPI + Vue 在 Spark 上的真实联调，再进入 UI 细节和 SSE。
+## 下一阶段
+
+1. **6F Complex Task Usability**：用同一 6E Gate 验证轻量分析 Sandbox 和 concise handoff 是否能进入 600 s / 16 requests；
+2. 若仍超预算，做 vLLM decode throughput / speculative decoding 的控制变量实验；
+3. 复杂任务可用性达标后进入 **Step 7 Answer Composer + Result-first UI**；
+4. 完成真实 Spark FastAPI + Vue 产品联调，再根据需要把 polling 替换为 SSE。
+
+详细验收条件、顺序和已知非阻塞项统一维护在 `docs/architecture/07-complex-task-validation-and-next-plan.md`。
