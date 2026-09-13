@@ -55,6 +55,18 @@ def percentile(values: list[float], p: float) -> float | None:
     return ordered[lo] * (1 - fraction) + ordered[hi] * fraction
 
 
+def correlation(xs: list[float], ys: list[float]) -> float | None:
+    if len(xs) != len(ys) or len(xs) < 2:
+        return None
+    mx, my = statistics.mean(xs), statistics.mean(ys)
+    dx = [x - mx for x in xs]
+    dy = [y - my for y in ys]
+    denom = sum(x * x for x in dx) * sum(y * y for y in dy)
+    if denom <= 0:
+        return None
+    return sum(x * y for x, y in zip(dx, dy)) / (denom ** 0.5)
+
+
 def fetch_cache_metrics(base_url: str) -> dict:
     parsed = urllib.parse.urlsplit(base_url)
     metrics_url = urllib.parse.urlunsplit((parsed.scheme, parsed.netloc, "/metrics", "", ""))
@@ -100,6 +112,9 @@ def main(argv=None) -> int:
     durations: list[float] = []
     prompt_tokens: list[int] = []
     completion_tokens: list[int] = []
+    paired_duration: list[float] = []
+    paired_prompt: list[float] = []
+    paired_completion: list[float] = []
     for meta_path in sorted(turn_dir.glob("wire-*-meta.json")):
         meta = read_json(meta_path)
         if meta.get("forwarded") is not True:
@@ -112,8 +127,14 @@ def main(argv=None) -> int:
             durations.append(duration)
         usage = parse_usage(turn_dir / f"wire-{index:02d}-response.bin") or {}
         pt, ct = usage.get("prompt_tokens"), usage.get("completion_tokens")
-        if isinstance(pt, int): prompt_tokens.append(pt)
-        if isinstance(ct, int): completion_tokens.append(ct)
+        if isinstance(pt, int):
+            prompt_tokens.append(pt)
+        if isinstance(ct, int):
+            completion_tokens.append(ct)
+        if duration is not None and isinstance(pt, int) and isinstance(ct, int):
+            paired_duration.append(duration)
+            paired_prompt.append(float(pt))
+            paired_completion.append(float(ct))
         request_rows.append({
             "index": index,
             "duration_s": None if duration is None else round(duration, 4),
@@ -123,13 +144,27 @@ def main(argv=None) -> int:
         })
 
     exec_calls = result.get("exec_calls") if isinstance(result.get("exec_calls"), list) else []
-    commands = [row.get("command", "") for row in exec_calls if isinstance(row, dict) and isinstance(row.get("command"), str)]
+    commands = [
+        row.get("command", "")
+        for row in exec_calls
+        if isinstance(row, dict) and isinstance(row.get("command"), str)
+    ]
     package_install_calls = [cmd for cmd in commands if "pip install" in cmd or "pip3 install" in cmd]
-    manual_image_codec_calls = [cmd for cmd in commands if "/incident/images" in cmd and ("import zlib" in cmd or "struct.unpack" in cmd)]
-    image_related_exec_calls = [cmd for cmd in commands if "/incident/images" in cmd or "contact_sheet" in cmd or "final_sheet" in cmd]
+    manual_image_codec_calls = [
+        cmd for cmd in commands
+        if "/incident/images" in cmd and ("import zlib" in cmd or "struct.unpack" in cmd)
+    ]
+    image_related_exec_calls = [
+        cmd for cmd in commands
+        if "/incident/images" in cmd or "contact_sheet" in cmd or "final_sheet" in cmd
+    ]
 
     total_wall_s = result.get("total_wall_s") if isinstance(result.get("total_wall_s"), (int, float)) else None
     model_request_wall = sum(durations)
+    sum_completion = sum(completion_tokens)
+    completion_rate = None if model_request_wall <= 0 else sum_completion / model_request_wall
+    duration_completion_corr = correlation(paired_duration, paired_completion)
+    duration_prompt_corr = correlation(paired_duration, paired_prompt)
     profile = {
         "status": "PASS_STEP6F_PROFILE_CAPTURED",
         "source_run_root": str(root),
@@ -149,10 +184,21 @@ def main(argv=None) -> int:
         },
         "token_profile": {
             "sum_prompt_tokens": sum(prompt_tokens),
-            "sum_completion_tokens": sum(completion_tokens),
+            "sum_completion_tokens": sum_completion,
             "largest_prompt_tokens": max(prompt_tokens) if prompt_tokens else None,
             "first_prompt_tokens": prompt_tokens[0] if prompt_tokens else None,
             "last_prompt_tokens": prompt_tokens[-1] if prompt_tokens else None,
+        },
+        "latency_attribution": {
+            "completion_tokens_per_model_second": None if completion_rate is None else round(completion_rate, 4),
+            "seconds_per_completion_token": None if not completion_rate else round(1.0 / completion_rate, 6),
+            "duration_vs_completion_token_correlation": None if duration_completion_corr is None else round(duration_completion_corr, 6),
+            "duration_vs_prompt_token_correlation": None if duration_prompt_corr is None else round(duration_prompt_corr, 6),
+            "decode_dominated_signal": bool(
+                duration_completion_corr is not None
+                and duration_completion_corr >= 0.95
+                and (duration_prompt_corr is None or abs(duration_prompt_corr) < 0.5)
+            ),
         },
         "request_rows": request_rows,
         "generic_toolbox_gap_signals": {
