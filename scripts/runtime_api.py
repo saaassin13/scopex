@@ -89,6 +89,11 @@ def main(argv=None) -> int:
         help="allow OpenClaw's native progress_card tool for multi-step task status",
     )
     parser.add_argument(
+        "--disable-compaction",
+        action="store_true",
+        help="disable OpenClaw session compaction for regression/debugging only",
+    )
+    parser.add_argument(
         "--web-dist",
         type=Path,
         default=ROOT / "frontend" / "dist",
@@ -136,6 +141,7 @@ def main(argv=None) -> int:
         exec_mode=args.exec_mode,
         enable_view_image=args.enable_view_image,
         enable_progress_card=args.enable_progress_card,
+        enable_compaction=not args.disable_compaction,
     )
     factory = OpenClawRuntimeFactory(config)
     service = TaskService(
@@ -156,6 +162,7 @@ def main(argv=None) -> int:
     print(f"exec: host={config.exec_host} mode={config.exec_mode}", flush=True)
     print(f"view_image: {'enabled' if config.enable_view_image else 'disabled'}", flush=True)
     print(f"progress_card: {'enabled' if config.enable_progress_card else 'disabled'}", flush=True)
+    print(f"compaction: {'enabled' if config.enable_compaction else 'disabled'}", flush=True)
     if config.data_binds:
         print("data binds:", flush=True)
         for bind in config.data_binds:
