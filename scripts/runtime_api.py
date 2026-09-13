@@ -109,6 +109,8 @@ def main(argv=None) -> int:
     parser.add_argument("--max-tokens", type=int, default=2048)
     parser.add_argument("--finalizer-max-tokens", type=int, default=768)
     parser.add_argument("--finalizer-timeout", type=int, default=180)
+    parser.add_argument("--answer-composer-max-tokens", type=int, default=256)
+    parser.add_argument("--answer-composer-timeout", type=int, default=60)
     parser.add_argument("--skill", action="append", default=[])
     args = parser.parse_args(argv)
 
@@ -139,6 +141,8 @@ def main(argv=None) -> int:
         max_tokens=args.max_tokens,
         finalizer_max_tokens=args.finalizer_max_tokens,
         finalizer_timeout_s=args.finalizer_timeout,
+        answer_composer_max_tokens=args.answer_composer_max_tokens,
+        answer_composer_timeout_s=args.answer_composer_timeout,
         skills=tuple(args.skill),
         data_binds=tuple(args.data_dir),
         exec_host=args.exec_host,
@@ -152,6 +156,7 @@ def main(argv=None) -> int:
         audit_root=data_root / "tasks",
         coordinator_factory=factory.coordinator,
         finalizer_factory=factory.finalizer,
+        answer_composer_factory=factory.answer_composer,
     )
     static_dir = args.web_dist.expanduser().resolve()
     app = create_app(
@@ -168,7 +173,8 @@ def main(argv=None) -> int:
         "budgets: "
         f"turn_timeout={config.timeout_s}s "
         f"model_requests_per_turn={config.max_requests} "
-        f"finalizer_timeout={config.finalizer_timeout_s}s",
+        f"finalizer_timeout={config.finalizer_timeout_s}s "
+        f"answer_composer_timeout={config.answer_composer_timeout_s}s",
         flush=True,
     )
     print(f"view_image: {'enabled' if config.enable_view_image else 'disabled'}", flush=True)
