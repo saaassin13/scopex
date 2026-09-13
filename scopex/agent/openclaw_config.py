@@ -235,6 +235,11 @@ def build_openclaw_config(spec: OpenClawConfigSpec) -> dict:
         "tools": {
             "allow": tools,
             "updatePlan": "progress_card" in tools,
+            # OpenClaw already owns generic tool-loop detection, including
+            # repeated calls, no-progress outcomes, argument churn and a
+            # post-compaction guard. Enable the native guard for the smaller
+            # local model instead of rebuilding a ScopeX-side loop detector.
+            "loopDetection": {"enabled": True},
             "elevated": {"enabled": False},
             "exec": {
                 "host": spec.exec_host,
