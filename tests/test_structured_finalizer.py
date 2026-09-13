@@ -72,7 +72,7 @@ class StructuredFinalizerTests(unittest.TestCase):
         self.assertIn("直接观察｜system.log", result.finalization.rendered)
         self.assertIn("worker exited status=137", result.finalization.rendered)
         self.assertNotIn("GPU OOM caused everything", result.finalization.rendered)
-        self.assertIn("这不表示已经证明因果", result.finalization.rendered)
+        self.assertIn("该结构不表示已证明因果", result.finalization.rendered)
         self.assertEqual(len(client.calls), 1)
         self.assertEqual(client.calls[0]["temperature"], 0)
         self.assertEqual(client.calls[0]["max_tokens"], 768)
