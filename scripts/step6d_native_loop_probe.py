@@ -24,6 +24,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from scopex.agent.docker_host import resolve_local_docker_host
+from scopex.agent.outcome import NATIVE_TOOL_LOOP_GUARD
 from scopex.agent.runtime import OpenClawTaskRuntime, OpenClawTaskSpec
 from scopex.agent.trace import load_audit_trace
 from scopex.evidence.catalog import EvidenceCatalog
@@ -200,12 +201,18 @@ def main(argv=None) -> int:
         guard_stopped_before_40 = len(read_results) < 40
         evidence_raw = [item.raw for item in catalog.items]
         evidence_is_source_only = evidence_raw == [token]
+        terminal_guard_classified = (
+            turn.process.returncode == 0
+            or turn.runtime_guard_reason == NATIVE_TOOL_LOOP_GUARD
+        )
 
         result.update({
             "native_loop_detection_enabled": native_enabled,
             "returncode": turn.process.returncode,
             "process_stop_reason": turn.process.stop_reason,
             "runtime_limit_reason": turn.runtime_limit_reason,
+            "runtime_guard_reason": turn.runtime_guard_reason,
+            "terminal_guard_classified": terminal_guard_classified,
             "wall_s": turn.process.wall_s,
             "forwarded_requests": sum(1 for row in turn.proxy_records if row.get("forwarded") is True),
             "proxy_records": list(turn.proxy_records),
@@ -239,6 +246,7 @@ def main(argv=None) -> int:
             bool(observed_markers),
             guard_stopped_before_40,
             evidence_is_source_only,
+            terminal_guard_classified,
             turn.runtime_limit_reason is None,
         ))
         if passed:
@@ -253,6 +261,7 @@ def main(argv=None) -> int:
                 ("native_loop_marker_observed", bool(observed_markers)),
                 ("guard_stopped_before_40", guard_stopped_before_40),
                 ("evidence_is_source_only", evidence_is_source_only),
+                ("terminal_guard_classified", terminal_guard_classified),
                 ("not_budget_limited", turn.runtime_limit_reason is None),
             ):
                 if not ok:
