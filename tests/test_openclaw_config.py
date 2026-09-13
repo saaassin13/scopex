@@ -43,6 +43,7 @@ class OpenClawConfigTests(unittest.TestCase):
         self.assertEqual(cfg["tools"]["exec"]["host"], "sandbox")
         self.assertEqual(cfg["tools"]["exec"]["mode"], "full")
         self.assertEqual(cfg["tools"]["allow"], ["read", "exec", "process"])
+        self.assertFalse(cfg["tools"]["updatePlan"])
         extra = defaults["models"]["vllm/qwen-local"]["params"]["extra_body"]
         self.assertEqual(extra["chat_template_kwargs"]["enable_thinking"], False)
         self.assertEqual(defaults["skills"], ["camera-diagnosis"])
@@ -87,6 +88,13 @@ class OpenClawConfigTests(unittest.TestCase):
             cfg["tools"]["sandbox"]["tools"]["allow"],
             ["read", "exec", "process", "view_image"],
         )
+
+    def test_progress_card_enables_openclaw_native_plan_tool(self):
+        tools = ("read", "exec", "process", "view_image", "progress_card")
+        cfg = build_openclaw_config(replace(self.spec(), tools=tools))
+        self.assertEqual(cfg["tools"]["allow"], list(tools))
+        self.assertEqual(cfg["tools"]["sandbox"]["tools"]["allow"], list(tools))
+        self.assertTrue(cfg["tools"]["updatePlan"])
 
     def test_data_bind_must_be_read_only(self):
         with self.assertRaises(ValueError):
