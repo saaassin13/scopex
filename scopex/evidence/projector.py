@@ -11,6 +11,36 @@ from scopex.evidence.catalog import EvidenceItem
 from scopex.evidence.collector import EvidenceCollector
 
 
+_OPENCLAW_LOOP_WARNING_PREFIX = "[System note: Tool-loop warning after "
+_OPENCLAW_LOOP_RECOVERY_PREFIX = "Do not repeat this exact tool action."
+
+
+def _is_openclaw_runtime_control_line(raw_line: str) -> bool:
+    """Return True only for reserved OpenClaw loop-control annotations.
+
+    OpenClaw may append warning text to an otherwise successful tool result, or
+    replace a blocked tool result with a CRITICAL control message. Those strings
+    are runtime control-plane feedback to the model, not observations from the
+    underlying file/command and therefore must never become claim-grade Evidence.
+
+    The match is intentionally narrow and tied to OpenClaw's reserved messages;
+    ordinary tool output remains untouched.
+    """
+
+    line = raw_line.strip()
+    if line.startswith(_OPENCLAW_LOOP_WARNING_PREFIX):
+        return True
+    if line.startswith(_OPENCLAW_LOOP_RECOVERY_PREFIX):
+        return True
+    if line.startswith("CRITICAL:"):
+        lowered = line.lower()
+        return (
+            "session execution blocked" in lowered
+            and ("runaway loop" in lowered or "global circuit breaker" in lowered)
+        )
+    return False
+
+
 class EvidenceProjector(Protocol):
     @property
     def processed_call_ids(self) -> frozenset[str]: ...
@@ -147,7 +177,7 @@ class OpenClawEvidenceProjector:
         added: list[EvidenceItem] = []
         nonempty_seen = 0
         for line_number, raw_line in enumerate(result.content.splitlines(), 1):
-            if not raw_line.strip():
+            if not raw_line.strip() or _is_openclaw_runtime_control_line(raw_line):
                 continue
             nonempty_seen += 1
             if nonempty_seen > self.max_read_lines:
@@ -196,7 +226,7 @@ class OpenClawEvidenceProjector:
         output_truncated = False
 
         for line_number, raw_line in enumerate(content.splitlines(), 1):
-            if not raw_line.strip():
+            if not raw_line.strip() or _is_openclaw_runtime_control_line(raw_line):
                 continue
             if nonempty_seen >= self.max_exec_lines or projected_chars >= self.max_exec_chars:
                 output_truncated = True
