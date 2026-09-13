@@ -9,6 +9,7 @@ from urllib.parse import urlsplit
 APPROVED_TOOLS = frozenset({"read", "exec", "process", "view_image", "progress_card"})
 EXEC_HOSTS = frozenset({"sandbox", "gateway", "node"})
 EXEC_MODES = frozenset({"deny", "allowlist", "ask", "auto", "full"})
+TASK_SCRATCH_PATH = "/task-scratch"
 
 
 @dataclass(frozen=True, slots=True)
@@ -46,6 +47,7 @@ class OpenClawConfigSpec:
     skills: tuple[str, ...] = ()
     tools: tuple[str, ...] = ("read", "exec", "process")
     sandbox_binds: tuple[str, ...] = ()
+    task_scratch_bind: str | None = None
     exec_host: str = "sandbox"
     exec_mode: str = "full"
     container_prefix: str = "scopex-"
@@ -73,7 +75,7 @@ def _require_loopback_v1(url: str) -> None:
         raise ValueError("OpenClaw provider must use a credential-free loopback /v1 proxy URL")
 
 
-def _validate_bind(value: str) -> None:
+def _parse_bind(value: str) -> tuple[str, str, str]:
     if not isinstance(value, str) or not value:
         raise ValueError("sandbox bind must be a non-empty string")
     parts = value.rsplit(":", 2)
@@ -82,10 +84,26 @@ def _validate_bind(value: str) -> None:
     host, target, mode = parts
     if not host or not Path(host).is_absolute():
         raise ValueError("sandbox bind host path must be absolute")
-    if not target.startswith("/") or target == "/":
+    if not target.startswith("/") or target == "/" or ":" in target:
         raise ValueError("sandbox bind target must be an absolute non-root path")
+    return host, target, mode
+
+
+def _validate_data_bind(value: str) -> str:
+    _, target, mode = _parse_bind(value)
     if mode != "ro":
-        raise ValueError("ScopeX data binds are read-only during POC07")
+        raise ValueError("ScopeX external data binds must be read-only")
+    if target == TASK_SCRATCH_PATH or target.startswith(TASK_SCRATCH_PATH + "/"):
+        raise ValueError("read-only data bind cannot overlap the task scratch path")
+    return target
+
+
+def _validate_task_scratch_bind(value: str) -> None:
+    _, target, mode = _parse_bind(value)
+    if target != TASK_SCRATCH_PATH:
+        raise ValueError(f"task scratch must be mounted at {TASK_SCRATCH_PATH}")
+    if mode != "rw":
+        raise ValueError("task scratch bind must be writable (rw)")
 
 
 def build_openclaw_config(spec: OpenClawConfigSpec) -> dict:
@@ -108,7 +126,9 @@ def build_openclaw_config(spec: OpenClawConfigSpec) -> dict:
     if unknown_tools:
         raise ValueError("unapproved OpenClaw tools: " + ", ".join(sorted(unknown_tools)))
     for bind in spec.sandbox_binds:
-        _validate_bind(bind)
+        _validate_data_bind(bind)
+    if spec.task_scratch_bind is not None:
+        _validate_task_scratch_bind(spec.task_scratch_bind)
     if spec.exec_host not in EXEC_HOSTS:
         raise ValueError("exec_host must be one of: " + ", ".join(sorted(EXEC_HOSTS)))
     if spec.exec_mode not in EXEC_MODES:
@@ -137,8 +157,11 @@ def build_openclaw_config(spec: OpenClawConfigSpec) -> dict:
         "memorySwap": spec.limits.memory_swap,
         "cpus": spec.limits.cpus,
     }
-    if spec.sandbox_binds:
-        docker["binds"] = list(spec.sandbox_binds)
+    binds = list(spec.sandbox_binds)
+    if spec.task_scratch_bind is not None:
+        binds.append(spec.task_scratch_bind)
+    if binds:
+        docker["binds"] = binds
         docker["dangerouslyAllowExternalBindSources"] = True
 
     return {
