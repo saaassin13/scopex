@@ -14,6 +14,7 @@ from scopex.evidence.collector import EvidenceCollector
 from scopex.evidence.extractor import EvidenceExtractionPipeline, EvidenceExtractor
 from scopex.evidence.projector import EvidenceProjector
 from scopex.events.progress import EventSink, EventType
+from scopex.finalizer.answer import ConstrainedAnswerComposer
 from scopex.finalizer.service import FinalizationResult, FinalizationService
 from scopex.finalizer.structured import StructuredFinalizer, StructuredFinalizerResult
 from scopex.runtime.controller import TaskController
@@ -311,6 +312,8 @@ class InvestigationCoordinator:
     def finish_fresh_finalization(
         self,
         finalizer: StructuredFinalizer,
+        *,
+        answer_composer: ConstrainedAnswerComposer | None = None,
     ) -> StructuredFinalizerResult:
         if self.controller.state is not TaskState.FINALIZING:
             raise ValueError("task must be FINALIZING")
@@ -322,6 +325,8 @@ class InvestigationCoordinator:
             self.controller.fail("fresh_structured_finalizer_failed")
             self._snapshot()
             return result
+
+        self._compose_product_answer(result, answer_composer)
         self._persist_structured_result(result, published_state=TaskState.COMPLETED)
         self.controller.finalization_completed()
         self.controller.complete()
@@ -333,9 +338,13 @@ class InvestigationCoordinator:
         finalizer: StructuredFinalizer,
         *,
         goal_satisfied: bool = False,
+        answer_composer: ConstrainedAnswerComposer | None = None,
     ) -> StructuredFinalizerResult:
         self.begin_finalization(goal_satisfied=goal_satisfied)
-        return self.finish_fresh_finalization(finalizer)
+        return self.finish_fresh_finalization(
+            finalizer,
+            answer_composer=answer_composer,
+        )
 
     @property
     def metrics(self) -> InvestigationMetrics:
@@ -375,6 +384,39 @@ class InvestigationCoordinator:
                     self.audit.persist_evidence(self.catalog)
             self._snapshot()
             return result
+
+    def _compose_product_answer(
+        self,
+        result: StructuredFinalizerResult,
+        composer: ConstrainedAnswerComposer | None,
+    ) -> None:
+        if composer is None or self.audit is None:
+            return
+        finalization = result.finalization
+        claims = finalization.claims if finalization is not None else None
+        if claims is None:
+            return
+        try:
+            composition = composer.run(
+                user_request=self.task.user_request,
+                claims=claims,
+                catalog=self.catalog,
+            )
+            payload = composition.to_audit_dict()
+        except Exception as exc:
+            # Step 7 is a presentation enhancement over an already valid trusted
+            # result. Unexpected composer failure must never invalidate that result.
+            payload = {
+                "valid": False,
+                "errors": ["answer_composer_exception:" + type(exc).__name__],
+                "parse_error": None,
+                "finish_reasons": [],
+                "elapsed_s": 0.0,
+                "usage": None,
+                "selection": None,
+                "answer": None,
+            }
+        self.audit.persist_answer(payload)
 
     def _snapshot(self) -> None:
         if self.audit is not None:
