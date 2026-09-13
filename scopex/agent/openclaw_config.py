@@ -82,7 +82,7 @@ def _validate_bind(value: str) -> None:
     host, target, mode = parts
     if not host or not Path(host).is_absolute():
         raise ValueError("sandbox bind host path must be absolute")
-    if not target.startswith("/") or target == "/" or ":" in agent_dir:
+    if not target.startswith("/") or target == "/" or ":" in target:
         raise ValueError("sandbox bind target must be an absolute non-root path")
     if mode != "ro":
         raise ValueError("ScopeX data binds are read-only during POC07")
