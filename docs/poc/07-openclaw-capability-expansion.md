@@ -78,20 +78,70 @@ Agent 自主执行了资源概况与进程排序命令，并观察到 Spark 上�
 
 注意：原始 OpenClaw answer 曾使用“图像质量异常导致任务失败”这一偏强因果措辞。当前证据只支持直接观察、时间关联和未证实因果假设；这不回退 Step 3 的视觉能力结论，但说明产品最终输出仍必须经过 POC06 的 Evidence / Claim Validator / deterministic renderer。图片 Tool Result 如何进入 Evidence Catalog 留到 Step 5。
 
-## Step 4 — Progress v2 — PENDING
+## Step 4 — Progress v2 — IN PROGRESS
 
-优先验证 OpenClaw `progress_card` 是否能提供可展示的阶段状态。ScopeX 继续从 trace 展示真实动作：
+目标：网页能够让用户看懂 Agent 正在做什么，但不暴露隐藏 chain-of-thought。
 
-```text
-调查状态/计划
-读取文件 /path
-执行命令 command
-命令结果摘要
-查看图片 /path
-新增 Evidence
+实现分两层：
+
+1. **OpenClaw 原生 `progress_card`**：用于真正的多步骤任务，展示模型显式提交的 plan / markdown；简单问题允许不创建 card。
+2. **真实 Tool 行为**：无论模型是否使用 `progress_card`，ScopeX 都从 OpenClaw trace 展示真实动作。
+
+启动增加：
+
+```bash
+--enable-progress-card
 ```
 
-不展示隐藏 chain-of-thought，只展示模型显式提交的计划/状态和真实工具行为。
+Runtime 新增 `PROGRESS_UPDATE`，只记录 `progress_card` 明确提交的：
+
+```text
+plan: step + pending/in_progress/completed
+markdown: 当前状态、阻塞或下一步
+```
+
+普通工具进度增强为：
+
+```text
+exec       → title + command
+read       → path
+view_image → path/paths + prompt
+ToolResult → 最多 1200 字符结果预览
+```
+
+这些信息都来自真实 Tool Call / Tool Result，不从模型隐藏推理中提取。
+
+网页时间线对应展示：
+
+```text
+调查计划
+✓ 分析日志并定位失败时间
+→ 查找失败附近图片
+○ 综合日志和图片
+
+执行命令
+查找失败时间附近的图片
+$ ls ...
+
+读取文件
+/agent-data/poc07/app.log
+
+查看图片
+/agent-data/poc07/images/...
+观察要求：比较曝光、清晰度...
+
+工具返回结果
+<有限预览>
+```
+
+通过条件：
+
+- 多步骤任务若模型调用 `progress_card`，网页能显示完整 plan 和当前步骤；
+- 即使没有 `progress_card`，真实 exec/read/view_image 动作仍然可读；
+- command、文件路径、图片路径和工具结果来自 trace，而不是二次猜测；
+- Tool Result 预览有长度上限，不把完整大输出复制到事件流；
+- 不展示 hidden chain-of-thought；
+- 原有 Stop / Resume / Steer / Evidence / Finalizer 行为不被改变。
 
 ## Step 5 — 通用 Tool Observation Evidence — PENDING
 
