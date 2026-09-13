@@ -59,16 +59,32 @@ class StreamingFinalizerClient:
         user_prompt: str,
         max_tokens: int = 512,
         temperature: float = 0,
+        image_inputs: tuple[tuple[str, str], ...] = (),
     ) -> FinalizerResponse:
         if not model:
             raise ValueError("model is required")
         if not 1 <= max_tokens <= 4096:
             raise ValueError("max_tokens out of range")
+
+        user_content: str | list[dict[str, Any]]
+        if image_inputs:
+            parts: list[dict[str, Any]] = [{"type": "text", "text": user_prompt}]
+            for label, data_url in image_inputs:
+                if not isinstance(label, str) or not label:
+                    raise ValueError("image evidence label is required")
+                if not isinstance(data_url, str) or not data_url.startswith("data:image/"):
+                    raise ValueError("image evidence must use a data:image data URL")
+                parts.append({"type": "text", "text": f"\n多模态证据附件：{label}"})
+                parts.append({"type": "image_url", "image_url": {"url": data_url}})
+            user_content = parts
+        else:
+            user_content = user_prompt
+
         body = {
             "model": model,
             "messages": [
                 {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
+                {"role": "user", "content": user_content},
             ],
             "temperature": temperature,
             "max_tokens": max_tokens,
