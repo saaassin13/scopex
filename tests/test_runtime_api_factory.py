@@ -65,6 +65,12 @@ class RuntimeApiFactoryTests(unittest.TestCase):
                 coordinator.agent.spec.sandbox_binds,
                 ("/srv/logs:/agent-data/logs:ro",),
             )
+            expected_scratch = (root / "work" / "task-1" / "scratch").resolve()
+            self.assertTrue(expected_scratch.is_dir())
+            self.assertEqual(
+                coordinator.agent.spec.task_scratch_bind,
+                f"{expected_scratch}:/task-scratch:rw",
+            )
             self.assertEqual(coordinator.agent.spec.exec_host, "gateway")
             self.assertEqual(coordinator.agent.spec.exec_mode, "full")
             self.assertEqual(
