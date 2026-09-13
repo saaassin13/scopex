@@ -1,65 +1,131 @@
-# 最终产物、指标与规划预估
+# 交付、验收与当前状态
 
-状态：讨论通过的目标基线；下列数字不是实测成绩，也不是硬件性能承诺。
+状态：**2026-09-13 当前有效版本**。本文件区分“已经实测通过”“当前产品实现”“下一阶段待完成”，避免把计划当成完成项。
 
-## 1. 最终形态
+## 1. 当前产品形态
 
-一个现成 Agent 运行时及其对话界面，加本地推理服务，加文件形式的项目能力包与任务记录。优先由一个模型服务覆盖文本、工具调用与图片；只有验证有必要才增加辅助模型。项目知识先用文件与 Skill，不预设 RAG 服务。
+```text
+Vue 3 Web UI / local client
+        ↓
+FastAPI loopback API
+        ↓
+TaskService / ScopeX Runtime
+        ↓
+OpenClaw + qwen3.8-27b-nvfp4
+        ↓
+local vLLM
+        ↓
+read / exec / process / view_image / Skills
+        ↓
+Evidence -> Fresh Finalizer -> Validated Claims -> Product Result
+```
 
-模型负责理解目标、选择能力、组织调查、解释证据与决定是否完成。现成工具和专业脚本负责确定性操作。知识包说明环境、业务规则、证据与结果标准，不替模型预写每一步。
+OpenClaw + 模型拥有自主调查/工具/动作/验证循环；ScopeX 不重新实现 Agent Loop，只负责产品控制和可信输出。
 
-## 2. 最终交付物
+## 2. 已交付并验证的核心能力
 
-| 产物 | 内容 |
-|---|---|
-| 可直接使用的助手 | 本地模型、会话、文件/Shell/图片、工具进展、权限、中断与继续 |
-| 项目能力包 | 日志、按时间找文件及读图、Spark 服务与资源检查；共用知识和工具 |
-| 任务产物及证据机制 | 回答及必要的 Markdown/CSV/JSON；可追溯到文件、日志位置、图片、状态采集时间 |
-| 部署包 | 固定版本、启动/停止/自恢复、离线依赖清单、更新回退与备份说明 |
-| 测试集和验收报告 | 原始失败用例、独立真值、回归案例、耗时/正确率/失败分类、选型证据 |
-| 维护说明 | 新增知识/Skill/脚本、查看执行轨迹、授权与故障排查 |
+| 能力 | 当前状态 | 证据/说明 |
+|---|---|---|
+| Runtime MVP 核心执行链 | **PASS** | Task → OpenClaw → 工具 → Evidence → Fresh Finalizer → Result |
+| Stop / Resume / Steering | **PASS** | 同 Session、安全请求边界 |
+| Evidence-Calibrated Output | **PASS** | 精确 E refs、Claim Validator、deterministic renderer |
+| 6A Context / Compaction | **PASS** | OpenClaw 原生 compaction + structured state retention |
+| 6B Large Data / Multi-Image | **PASS** | 120k CSV、48 图、有界 working set、task scratch |
+| 6C Hard Budget | **PASS** | request/time budget 单一执行层 + 可信 partial finalization |
+| 6D Native Loop Convergence | **PASS** | OpenClaw loopDetection + Evidence runtime-control filtering |
+| 6E Complex Task Capability | **PASS** | 日志 + telemetry + 图片 + constrained recovery + post-action verification |
+| 6F Product-default Usability Gate | **PASS** | 同任务 `371.1 s / 14 requests`，进入 `600 s / 16 requests` |
+| Local Runtime API | **已实现** | FastAPI loopback；完整 Spark 产品联调仍在 Step 7 |
+| Vue Web UI | **MVP 已实现** | 当前仍需 Result-first 重构和 Spark 联调 |
 
-## 3. 性能规划
+## 3. 当前复杂任务验收基线
 
-前提：模型已加载，本地数据，单主要任务，适度输出长度，常见任务具备基本项目说明。冷启动时间另记，不混入热任务延迟；预热也必须单独标记。
+统一复杂任务产品 Gate：
 
-| 类别 | 规划耗时 | 正式产品目标 |
-|---|---:|---|
-| 简短聊天 | 10–45 秒 | 正常回应，无不必要工具调用 |
-| 小日志确定性提取 | 30–90 秒 | 自主正确率 ≥95%，120秒内自主正确率 ≥90% |
-| 按时间找文件并分析两张常规图片 | 45–120 秒 | 自主正确率 ≥90%，120秒内自主正确率 ≥90% |
-| 指定范围服务与资源检查 | 30–120 秒 | 自主正确率 ≥95%，120秒内自主正确率 ≥90% |
-| 有规则的业务异常分析 | 2–5 分钟 | 对已覆盖案例争取 ≥90%；按证据和案例验收 |
-| 未准备的新任务 | 暂不统一估计 | 独立记录泛化能力，不拉低或稀释常见任务定义 |
+```text
+turn timeout <= 600 s
+model requests <= 16
+Task state = COMPLETED
+Fresh Finalizer valid
+runtime_limit = null
+runtime_guard = null
+```
 
-日志体积、文件数、图片分辨率、上下文长度和输出量必须随报告记录。这些估计不能外推到几十 GB 日志或成千张图片。
+任务正确性不能只看“模型回答了”。需要同时满足：
 
-资源规划：模型服务及缓存先考虑约 40–80GB 可配置预算，Agent 与辅助常驻组件争取 ≤4GB，整机保留至少约20GB余量。三者是预算而非已测占用；必须给现有业务峰值让路，不能同时取上限后忽略生产负载。Spark 统一内存不能把系统内存和显存当成两份独立容量，硬件出处见[参考资料](references.md)。
+- 关键日志/数据/图片真实使用；
+- 大数据 working set 有界；
+- 原始只读数据未修改；
+- 业务动作只执行允许的次数；
+- 动作后独立查询真实状态；
+- 最终结论受到 Evidence / Validated Claims 约束。
 
-## 4. 不可变的统计口径
+最新已通过综合案例：
 
-120秒内自主正确完成率 = 在120秒内正确交付且未经人工步骤指导的次数 / 同类任务全部尝试次数。
+```text
+120,000 telemetry rows
+15,000+ log lines
+48 original images
+PUMP_OVERLOAD diagnosis
+1 constrained recovery
+independent status verification
+371.1 s
+14 forwarded model requests
+```
 
-自动恢复与重试计入同一次任务及完整耗时。分别记录自主完成、人工干预后完成、未完成。失败、超时、中断不能从已尝试分母中删去。尚未运行的计划任务单列，不当成功。
+## 4. 当前交付物
 
-不同类别分开汇报；不靠容易的聊天题拉高总体分数。温度、seed、输出预算与推理配置固定后才能重复对比。五次成功是有限样本证据，不是已证明总体95%可靠性。正式回归建议约20例×5次，并保留未用于调优的案例；仍只代表该测试范围。
+仓库当前已经包含：
 
-延迟统计以任务提交到正确结果交付为准，报告每次及中位数、P90。只有成功任务的延迟会产生偏差，必须同时看“时限内正确率”。本探针非流式，不能测首次 token 延迟或纯解码速度。
+- `scopex/`：正式 Runtime、API、Evidence、Finalizer、Audit 代码；
+- `frontend/`：Vue 3 MVP；
+- `docker/sandbox-analysis.Dockerfile`：轻量 analysis sandbox 层；
+- `scripts/runtime_api.py`：本地产品服务入口；
+- `scripts/step6*.py`：机制/复杂任务回归 Probe；
+- `docs/architecture/06-openclaw-scopex-boundary.md`：架构所有权边界；
+- `docs/architecture/07-complex-task-validation-and-next-plan.md`：当前实施路线和剩余工作；
+- `docs/08-local-usage-and-handoff.md`：本地使用与新会话接手手册。
 
-## 5. 交互、安全与运行目标
+运行时审计按 Task 保留 Task/Session/Events/Evidence/Claims/Result 等文件，具体位置由 `scripts/runtime_api.py --data-root` 决定。
 
-| 指标 | 目标/边界 |
-|---|---|
-| 真实进展 | 显示请求、工具开始结束、错误、等待授权；不伪造“正在分析”的内容 |
-| 打断 | 界面约2秒内确认并停止后续动作派发；已启动命令的终止另行确认 |
-| 继续 | 保留有效证据，不无提示重复有副作用操作 |
-| 简单任务止损 | 120秒以上记超时目标未达；约180秒停止无授权扩展，保留已有证据 |
-| 离线 | 全链路断网后和断网重启后均验证，禁止隐藏云端辅助调用 |
-| 权限 | 未授权生产修改出现一次即阻断交付 |
-| 稳定性 | 首轮4–8小时混合任务观察，无静默挂死、无限循环或持续泄漏；与生产负载对照 |
+## 5. 当前未完成项
 
-中断不等于回滚。硬超时客户端断开，也不自动证明服务端取消了 GPU 推理。本阶段不自动重启服务。
+### Step 7 — Product Answer + Result-first UI
 
-## 6. 如何判定交付
+当前主阶段，必须完成：
 
-功能成立、使用成立、部署成立三项都通过才进入实际试用。只演示过一次成功不算通过；加超时限制但仍做不对也不算改善完成率。某类任务没达标应明确标注，不未经讨论缩小需求。
+1. constrained Answer Composer：只允许基于 Validated Claims 组织自然语言；
+2. 主结果结构：结论 / 说明 / 执行情况 / 建议；
+3. Evidence 作为可展开辅助区，而不是主产品内容；
+4. deterministic renderer 保持 audit/trust fallback；
+5. FastAPI + Vue 在 Spark 上真实完整联调；
+6. 用真实业务任务从 UI/API 完成一次端到端产品验收。
+
+### 后续仅按真实需求触发
+
+- SSE 替换 polling；
+- vLLM speculative decoding / decode-throughput 深度优化；
+- >4 张同时 claim-grade 原图的 batch Fresh Verification；
+- Memory Search / 跨任务长期记忆；
+- 更完整的 `/task-scratch` retention/cleanup；
+- mixed gateway/sandbox 对共享 scratch 的真实验证。
+
+这些不是当前 Step 7 的前置阻塞项。
+
+## 6. 验收原则
+
+- 不用扩大 timeout/request budget 掩盖可用性问题；
+- 不通过降低任务要求提高通过率；
+- 不把固定业务流程写成 Runtime Handler；
+- 不把模型先前生成的自然语言当作原始 Evidence；
+- 不把 exit code 0 当作业务动作成功；
+- 不用单次成功宣称所有未知任务可靠；
+- 先保留真实失败，再做控制变量修复和复测。
+
+## 7. 当前产品阶段结论
+
+截至 2026-09-13：
+
+> **复杂任务的能力和当前产品默认预算 Gate 均已通过。当前主要工作已经从“证明 Agent 能不能做复杂任务”切换到“把可信结果做成真正好用的产品体验”。**
+
+下一步以 `docs/architecture/07-complex-task-validation-and-next-plan.md` 为主路线，日常启动与接手流程见 `docs/08-local-usage-and-handoff.md`。
