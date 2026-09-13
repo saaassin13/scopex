@@ -5,7 +5,7 @@ import os
 from pathlib import Path
 
 from scopex.agent.runtime import OpenClawTaskSpec
-from scopex.evidence.extractor import ReadLineExtractor
+from scopex.evidence.projector import OpenClawEvidenceProjector
 from scopex.events.progress import EventSink
 from scopex.finalizer.client import StreamingFinalizerClient
 from scopex.finalizer.structured import StructuredFinalizer
@@ -108,7 +108,11 @@ class OpenClawRuntimeFactory:
                 max_model_requests=self.config.max_requests,
                 max_elapsed_s=float(self.config.timeout_s),
             ),
-            extractors=(ReadLineExtractor(),),
+            evidence_projector_factory=lambda collector: OpenClawEvidenceProjector(
+                collector,
+                exec_host=self.config.exec_host,
+                sandbox_binds=self.config.data_binds,
+            ),
             audit=audit,
         )
 
