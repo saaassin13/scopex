@@ -4,6 +4,11 @@ import { RouterLink, useRoute } from 'vue-router'
 import { api, ApiError } from '../api'
 import type { EvidenceItem, ProgressEvent, ResultResponse, TaskSnapshot } from '../types'
 
+interface ProgressStep {
+  step: string
+  status: 'pending' | 'in_progress' | 'completed'
+}
+
 const route = useRoute()
 const taskId = computed(() => String(route.params.id))
 const task = ref<TaskSnapshot | null>(null)
@@ -55,14 +60,69 @@ const resultProblem = computed(() => {
   return '当前终态没有 result.json。请检查 TASK_FAILED 事件、worker-error.json 或 investigation-error.json。'
 })
 
+function dataString(event: ProgressEvent, key: string): string {
+  const value = event.data?.[key]
+  return typeof value === 'string' ? value : ''
+}
+
+function dataStrings(event: ProgressEvent, key: string): string[] {
+  const value = event.data?.[key]
+  if (!Array.isArray(value)) return []
+  return value.filter((item): item is string => typeof item === 'string' && Boolean(item))
+}
+
+function progressSteps(event: ProgressEvent): ProgressStep[] {
+  const value = event.data?.plan
+  if (!Array.isArray(value)) return []
+  const steps: ProgressStep[] = []
+  for (const item of value) {
+    if (!item || typeof item !== 'object') continue
+    const row = item as Record<string, unknown>
+    if (typeof row.step !== 'string') continue
+    if (!['pending', 'in_progress', 'completed'].includes(String(row.status))) continue
+    steps.push({ step: row.step, status: row.status as ProgressStep['status'] })
+  }
+  return steps
+}
+
+function progressSymbol(status: ProgressStep['status']): string {
+  if (status === 'completed') return '✓'
+  if (status === 'in_progress') return '→'
+  return '○'
+}
+
+function eventTitle(event: ProgressEvent): string {
+  const tool = dataString(event, 'tool')
+  if (event.type === 'PROGRESS_UPDATE') return '调查计划'
+  if (event.type === 'MODEL_REQUEST') return '模型处理中'
+  if (event.type === 'TOOL_CALL') {
+    if (tool === 'exec') return '执行命令'
+    if (tool === 'read') return '读取文件'
+    if (tool === 'view_image') return '查看图片'
+    if (tool === 'process') return '进程操作'
+    return `执行工具 · ${tool || 'unknown'}`
+  }
+  if (event.type === 'TOOL_RESULT') return `${tool || '工具'} · 返回结果`
+  if (event.type === 'EVIDENCE_ADDED') return '新增证据'
+  if (event.type === 'FINALIZATION_STARTED') return '正在整理最终结论'
+  if (event.type === 'FINALIZATION_COMPLETED') return '最终结论已生成'
+  if (event.type === 'TASK_COMPLETED') return '任务完成'
+  if (event.type === 'TASK_FAILED') return '任务失败'
+  if (event.type === 'TASK_STARTED') return '任务开始'
+  if (event.type === 'USER_STEER') return '用户调整调查方向'
+  if (event.type === 'USER_STOP') return '用户请求停止'
+  if (event.type === 'USER_RESUME') return '继续调查'
+  return event.type.replaceAll('_', ' ').toLowerCase()
+}
+
 function eventSummary(event: ProgressEvent): string {
   const data = event.data ?? {}
-  if (event.type === 'TOOL_CALL') return `${String(data.tool ?? 'tool')} ${String(data.target ?? '')}`.trim()
-  if (event.type === 'TOOL_RESULT') return `${String(data.tool ?? 'tool')} 完成`
+  if (event.type === 'MODEL_REQUEST') return `第 ${String(data.request_index ?? '')} 次模型请求`
   if (event.type === 'EVIDENCE_ADDED') return `${String(data.ref ?? '')} · ${String(data.source ?? '')}`
-  if (event.type === 'MODEL_REQUEST') return `模型请求 #${String(data.request_index ?? '')}`
   if (event.type === 'TASK_FAILED') return String(data.reason ?? '任务失败')
-  return event.type.replaceAll('_', ' ').toLowerCase()
+  if (event.type === 'TOOL_CALL') return dataString(event, 'target')
+  if (event.type === 'TOOL_RESULT') return `${String(data.result_chars ?? 0)} chars`
+  return ''
 }
 
 async function refresh() {
@@ -135,11 +195,58 @@ onBeforeUnmount(() => timer && window.clearInterval(timer))
           </div>
           <div class="timeline">
             <div v-if="!events.length" class="empty-state">等待 Runtime 事件…</div>
-            <div v-for="event in events" :key="event.seq" class="timeline-row">
+            <div
+              v-for="event in events"
+              :key="event.seq"
+              class="timeline-row"
+              :data-kind="event.type"
+            >
               <span class="timeline-index">{{ event.seq }}</span>
-              <div>
-                <strong>{{ event.type }}</strong>
-                <p>{{ eventSummary(event) }}</p>
+              <div class="timeline-content">
+                <strong>{{ eventTitle(event) }}</strong>
+
+                <template v-if="event.type === 'PROGRESS_UPDATE'">
+                  <p v-if="dataString(event, 'markdown')" class="progress-note">
+                    {{ dataString(event, 'markdown') }}
+                  </p>
+                  <div v-if="progressSteps(event).length" class="progress-plan">
+                    <div
+                      v-for="(step, index) in progressSteps(event)"
+                      :key="`${event.seq}-${index}`"
+                      class="progress-step"
+                      :data-status="step.status"
+                    >
+                      <span class="progress-symbol">{{ progressSymbol(step.status) }}</span>
+                      <span>{{ step.step }}</span>
+                    </div>
+                  </div>
+                </template>
+
+                <template v-else-if="event.type === 'TOOL_CALL'">
+                  <p v-if="dataString(event, 'title')" class="tool-intent">
+                    {{ dataString(event, 'title') }}
+                  </p>
+                  <pre v-if="dataString(event, 'command')" class="timeline-code">{{ dataString(event, 'command') }}</pre>
+                  <code v-else-if="dataString(event, 'path') || dataString(event, 'file_path')" class="timeline-path">
+                    {{ dataString(event, 'path') || dataString(event, 'file_path') }}
+                  </code>
+                  <div v-if="dataStrings(event, 'paths').length" class="timeline-path-list">
+                    <code v-for="path in dataStrings(event, 'paths')" :key="path">{{ path }}</code>
+                  </div>
+                  <p v-if="dataString(event, 'prompt')" class="tool-prompt">
+                    观察要求：{{ dataString(event, 'prompt') }}
+                  </p>
+                  <p v-if="!dataString(event, 'command') && !dataString(event, 'path') && !dataString(event, 'file_path') && !dataStrings(event, 'paths').length && eventSummary(event)">
+                    {{ eventSummary(event) }}
+                  </p>
+                </template>
+
+                <template v-else-if="event.type === 'TOOL_RESULT'">
+                  <pre v-if="dataString(event, 'preview')" class="timeline-result">{{ dataString(event, 'preview') }}</pre>
+                  <p v-else>{{ eventSummary(event) }}</p>
+                </template>
+
+                <p v-else-if="eventSummary(event)">{{ eventSummary(event) }}</p>
               </div>
             </div>
           </div>
