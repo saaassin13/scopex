@@ -1,5 +1,11 @@
 # ScopeX Runtime MVP Architecture
 
+> **Boundary update after POC07**: this document preserves the original Runtime
+> MVP design. For ownership boundaries between OpenClaw and ScopeX, Evidence
+> projection, exec approvals, progress state and budget de-duplication, the
+> canonical current design is `docs/architecture/06-openclaw-scopex-boundary.md`.
+> Where the two documents conflict, document 06 wins.
+
 ## Product definition
 
 ScopeX v0.1 is a local interactive diagnostic Agent for DGX Spark.
