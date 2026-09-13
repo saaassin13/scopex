@@ -1,9 +1,8 @@
 # Complex Task Validation and Next Plan
 
-This document is the current checkpoint after Step 6A–6E. It records what has
+This document is the current checkpoint after Step 6A–6F. It records what has
 actually been demonstrated on Spark, what is still only planned, and the order
-of the next work. It is intentionally product-oriented: capability, trust and
-usability are tracked separately.
+of the next work. Capability, trust and usability are tracked separately.
 
 ## Frozen architecture boundary
 
@@ -23,6 +22,7 @@ Fresh Finalizer. Do not add a second workflow/decision/action engine in ScopeX.
 | 6C | Are hard request/time budgets owned by one enforcement layer with trustworthy partial finalization? | **PASS** |
 | 6D | Can runaway tool loops be stopped by OpenClaw without ScopeX rebuilding loop detection? | **PASS** |
 | 6E | Can the local Agent complete a genuinely complex multi-source task including a constrained action and post-action verification? | **CAPABILITY PASS** |
+| 6F | Can the same complex task complete inside the product default 600 s / 16-request budget without weakening the task? | **PASS** |
 
 ### 6A — Context / compaction
 
@@ -63,7 +63,7 @@ that framework terminal into product finalization semantics.
 OpenClaw runtime-control messages are retained in Trace/Progress but filtered
 out of claim-grade Evidence.
 
-### 6E — Integrated complex task gate
+### 6E — Integrated complex task capability
 
 Real Spark task combined:
 
@@ -78,98 +78,93 @@ performed an independent status query and observed `RUNNING / NONE /
 generation=1`. Fresh Finalizer published a valid result. Original `/agent-data`
 remained unchanged.
 
-**Conclusion:** complex-task capability is proven. The system is no longer
-limited to simple daily Q&A or short diagnostics.
+The initial capability run completed in about **1008.5 s / 23 requests**. That
+proved the task was possible but not yet inside the product default budget.
 
-## Usability result: not yet product-pass
+### 6F — Complex-task usability
 
-The 6E run took about 1008.5 s and 23 forwarded model requests, exceeding the
-current product default of 600 s / 16 requests.
+The same task requirements were rerun with the product default hard budget:
 
-Offline profiling of that run shows:
+```text
+timeout = 600 s
+max_requests = 16
+```
 
-- model requests consumed about 908.8 s, roughly 90.1% of task wall time;
-- prompt tokens summed to about 257k, completion tokens to 6.7k;
-- request duration is strongly associated with completion length, while prompt
-  length is a weak predictor in this run;
-- effective decode rate is only about 7.4 completion tokens/s;
-- vLLM prefix cache is enabled and has real cache hits, so "cache disabled" is
-  not the primary explanation;
-- the image phase also wasted rounds because the validated sandbox lacked a
-  common image library, causing runtime package-install attempts and hand-written
-  PNG processing.
-
-The current bottleneck is therefore **multi-round decode/output cost plus generic
-toolbox gaps**, not a 32k-context hard wall.
-
-## Next plan
-
-### 6F-1 — Generic execution-efficiency pass
-
-Status: **in progress on `step6f-complex-task-usability`; not yet merged.**
-
-1. Build a lightweight analysis sandbox on top of the validated sandbox image.
-2. Preinstall only the generic dependency actually shown missing by the 6E
-   trace (Pillow); do not add pandas/OpenCV/etc. without evidence.
-3. Runtime sandbox remains `network=none`; package installation is build-time
-   only.
-4. Tell the Agent that runtime networking is unavailable so it does not waste
-   turns attempting `pip`/`apt`/`npm` installs.
-5. Keep the investigation result handoff concise because the Fresh Finalizer is
-   the user-facing trusted output layer.
-6. Rerun the *same* 6E fixture under the real product budget: **600 s / 16
-   requests**. Do not loosen the Gate.
-
-Acceptance:
+Result:
 
 ```text
 PASS_STEP6E_COMPLEX_TASK_CAPABILITY
 within_product_default_budget = true
-forwarded_requests <= 16
-total_wall_s <= 600
-recovery_exactly_once = true
-verification_after_recovery = true
-published_valid = true
-runtime_limit = null
-runtime_guard = null
 ```
 
-### 6F-2 — vLLM decode-throughput experiments
+Observed metrics:
 
-Only enter this step if 6F-1 preserves correctness but still misses the product
-budget.
+- wall time: **371.1 s**;
+- forwarded requests: **14**;
+- prompt tokens: **126,412**;
+- completion tokens: **2,055**;
+- largest prompt: **12,292 tokens**;
+- `compaction_count = 0`;
+- `runtime_limit = null`;
+- `runtime_guard = null`.
 
-Controlled experiments, one factor at a time:
+Compared with the initial 6E capability run:
 
-- measure decode tokens/s and time-to-first-token with the production prompt;
-- inspect current vLLM launch parameters and GPU/CPU/memory utilization;
-- evaluate supported speculative decoding / draft-model options for this exact
-  served Qwen configuration;
-- compare throughput, correctness and memory pressure under the same complex-task
-  fixture;
-- keep prefix caching enabled and measure per-run deltas rather than relying on
-  global cumulative metrics.
+- wall time reduced by about **63%**;
+- model requests reduced by about **39%**;
+- prompt-token processing reduced by about **51%**;
+- completion tokens reduced by about **69%**.
 
-Do not improve the benchmark by reducing required diagnosis/action/verification
-semantics.
+The trust/correctness Gate stayed unchanged:
 
-### Step 7 — Product answer and UI quality
+- logs, telemetry and original images were all used;
+- working set remained bounded;
+- recovery executed exactly once;
+- post-recovery status was queried independently;
+- actual final state was `RUNNING / NONE / generation=1`;
+- source `/agent-data` remained unchanged;
+- Fresh Finalizer remained valid.
 
-After complex-task usability is acceptable:
+The generic fixes that produced this improvement were:
 
-1. Add a constrained Answer Composer over validated Claims.
-2. Keep deterministic rendering as the audit/trust fallback.
-3. Make the primary UI result-oriented:
-   - conclusion;
-   - concise explanation;
-   - action/execution result;
-   - recommendation/next action;
-   - expandable Evidence.
-4. Evidence/Finding is supporting material, not the main product surface.
-5. Complete real Spark FastAPI + Vue integration and then consider SSE instead
-   of polling.
+1. add a lightweight analysis sandbox layer with Pillow available at runtime;
+2. keep runtime sandbox networking disabled and tell the Agent not to waste
+   turns attempting package installation;
+3. keep the Investigation Agent's terminal handoff concise because the Fresh
+   Finalizer is the trusted product-output layer;
+4. use profiling evidence to target actual decode/output and generic-toolbox
+   waste instead of increasing budgets or writing business workflows.
 
-Target presentation:
+**Conclusion:** complex-task capability and the current product-default usability
+Gate are both proven. Step 6 is frozen.
+
+## Current main phase — Step 7 Product Answer + Result-first UI
+
+Step 7 should now improve the product surface without weakening the trust model.
+The user cares first about the conclusion and what happened; Evidence supports
+that result and should not dominate the interface.
+
+### 7A — Constrained Answer Composer
+
+Target flow:
+
+```text
+Evidence
+  -> Fresh Finalizer
+  -> Validated Claims
+  -> deterministic trust rendering
+  -> constrained Answer Composer
+```
+
+Rules:
+
+- Validated Claims remain authoritative;
+- the Composer may reorganize, summarize and improve wording;
+- it must not add uncited factual or causal claims;
+- deterministic rendering remains available as audit/trust fallback;
+- no second diagnosis/planning model loop is introduced.
+
+Primary output structure:
 
 ```text
 诊断结果
@@ -190,6 +185,66 @@ Target presentation:
 相关证据 >
 ```
 
+### 7B — Result-first UI
+
+The primary task page should emphasize:
+
+1. conclusion;
+2. concise explanation;
+3. action/execution result;
+4. recommendation/next action;
+5. expandable Evidence / Findings.
+
+Evidence/Finding is supporting material. Do not spend disproportionate product
+space on an Evidence viewer when the user primarily needs the result.
+
+### 7C — Real Spark product integration
+
+Validate the actual product path, not only probe scripts:
+
+- FastAPI task create/status/control/events/evidence/result;
+- Vue result page and task controls;
+- live Progress readability during a multi-minute task;
+- Stop / Resume / Steering through the product surface;
+- final result + Evidence expansion;
+- refresh/reconnect behavior.
+
+Keep polling initially if it is adequate. Introduce SSE only when measured UX or
+network behavior justifies it.
+
+### 7D — Real business acceptance task
+
+After the product surface is integrated, run at least one real diagnostic task
+from the intended business environment through the API/UI path. Do not use the
+synthetic 6E fixture as the only product-acceptance evidence.
+
+Acceptance should include:
+
+- correct final conclusion;
+- understandable explanation;
+- trustworthy action/verification presentation;
+- Evidence traceability;
+- no hidden business workflow in ScopeX;
+- acceptable user-visible latency/progress behavior.
+
+## Optional performance track — not blocking Step 7
+
+The original profile showed local decode/output cost is still substantial. vLLM
+throughput work is now optional rather than the next mandatory phase because the
+600 s / 16-request Gate passed.
+
+Only reopen this track if real product tasks expose a concrete SLA issue. Then
+use controlled experiments:
+
+- decode tokens/s and TTFT;
+- vLLM launch parameters and resource utilization;
+- supported speculative decoding / draft-model options for this exact Qwen
+  configuration;
+- prefix-cache per-run deltas;
+- correctness and memory-pressure comparison under an unchanged task.
+
+Do not improve a benchmark by weakening diagnosis/action/verification semantics.
+
 ## Known non-blocking gaps
 
 Track these, but do not pre-emptively overbuild them:
@@ -207,6 +262,7 @@ Track these, but do not pre-emptively overbuild them:
 
 ## Merge policy
 
-`main` contains only validated runtime behavior. Step 6A–6E are eligible to be
-merged. Step 6F optimization experiments remain on their branch until the
-600 s / 16-request rerun passes or produces a clearly documented new finding.
+`main` contains validated runtime/product behavior. Step 6A–6F are frozen as the
+current baseline. Step 7 work should proceed in small branches with explicit
+product acceptance criteria; do not mix unrelated UI experiments or speculative
+performance work into the trusted runtime baseline.
