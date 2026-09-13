@@ -13,6 +13,16 @@ class OpenClawRequestPolicy:
     approved_tools: frozenset[str] = frozenset({"read", "exec", "process"})
 
     def validate(self, payload: dict[str, Any]) -> None:
+        """Validate model/runtime invariants without blocking OpenClaw utility calls.
+
+        Normal agent requests usually expose the configured tool surface, while
+        OpenClaw's internal utility requests (notably compaction summarization)
+        may intentionally omit ``tools``. Missing tools are capability-reducing,
+        not capability-expanding, so they are safe to forward. Whenever tools
+        are present, every exposed tool must still belong to the configured
+        allowlist and duplicate/malformed definitions remain rejected.
+        """
+
         problems: list[str] = []
         if payload.get("model") != self.model_id:
             problems.append("model mismatch")
@@ -27,18 +37,26 @@ class OpenClawRequestPolicy:
             problems.append("conflicting max_completion_tokens")
 
         rows = payload.get("tools")
-        if not isinstance(rows, list):
-            problems.append("tools missing")
-        else:
-            names = []
-            for row in rows:
-                if not isinstance(row, dict):
-                    names.append(None)
-                    continue
-                function = row.get("function") or {}
-                names.append(function.get("name") if isinstance(function, dict) else None)
-            if len(names) != len(set(names)) or set(names) != set(self.approved_tools):
-                problems.append("tool surface mismatch")
+        if rows is not None:
+            if not isinstance(rows, list):
+                problems.append("tools malformed")
+            else:
+                names: list[str | None] = []
+                for row in rows:
+                    if not isinstance(row, dict):
+                        names.append(None)
+                        continue
+                    function = row.get("function") or {}
+                    name = function.get("name") if isinstance(function, dict) else None
+                    names.append(name if isinstance(name, str) and name else None)
+
+                valid_names = [name for name in names if name is not None]
+                if (
+                    len(valid_names) != len(names)
+                    or len(valid_names) != len(set(valid_names))
+                    or not set(valid_names).issubset(self.approved_tools)
+                ):
+                    problems.append("tool surface mismatch")
 
         if payload.get("tool_choice") not in (None, "auto"):
             problems.append("tool_choice must be auto/omitted")
