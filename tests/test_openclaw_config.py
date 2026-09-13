@@ -75,6 +75,48 @@ class OpenClawConfigTests(unittest.TestCase):
         )
         self.assertTrue(docker["dangerouslyAllowExternalBindSources"])
 
+    def test_task_scratch_is_the_only_writable_external_bind(self):
+        cfg = build_openclaw_config(
+            replace(
+                self.spec(),
+                sandbox_binds=("/srv/logs:/agent-data/logs:ro",),
+                task_scratch_bind="/srv/scopex/task-1/scratch:/task-scratch:rw",
+            )
+        )
+        docker = cfg["agents"]["defaults"]["sandbox"]["docker"]
+        self.assertEqual(
+            docker["binds"],
+            [
+                "/srv/logs:/agent-data/logs:ro",
+                "/srv/scopex/task-1/scratch:/task-scratch:rw",
+            ],
+        )
+
+    def test_task_scratch_requires_fixed_path_and_rw_mode(self):
+        with self.assertRaises(ValueError):
+            build_openclaw_config(
+                replace(
+                    self.spec(),
+                    task_scratch_bind="/srv/scratch:/tmp/scratch:rw",
+                )
+            )
+        with self.assertRaises(ValueError):
+            build_openclaw_config(
+                replace(
+                    self.spec(),
+                    task_scratch_bind="/srv/scratch:/task-scratch:ro",
+                )
+            )
+
+    def test_data_bind_cannot_overlap_task_scratch(self):
+        with self.assertRaises(ValueError):
+            build_openclaw_config(
+                replace(
+                    self.spec(),
+                    sandbox_binds=("/srv/data:/task-scratch/input:ro",),
+                )
+            )
+
     def test_gateway_exec_uses_openclaw_native_exec_host(self):
         cfg = build_openclaw_config(
             replace(self.spec(), exec_host="gateway", exec_mode="full")
