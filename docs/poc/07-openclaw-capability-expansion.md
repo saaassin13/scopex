@@ -4,18 +4,20 @@
 
 POC01–POC06 的结论继续成立。本 POC 不重做 Agent、Tool 或 Finalizer；只验证 ScopeX 在继续复用 OpenClaw 原生能力的前提下，能否从“日志诊断”扩展到“通用本机调查”。
 
-核心边界：
+最终边界以 `docs/architecture/06-openclaw-scopex-boundary.md` 为准：
+
+> OpenClaw owns execution. ScopeX owns product control and trust.
 
 ```text
 用户自然语言任务
         ↓
 OpenClaw Agent 自主决定调查动作
         ↓
-OpenClaw 原生工具
-read / exec / process / view_image / progress_card / Skill
-        ↓
+OpenClaw 原生工具 / Session / Sandbox / Approval
+        ↓ trace
 ScopeX
-Control / Progress / Evidence / Budget / Finalizer / Audit
+Task Control / Progress Projection / Evidence Projection /
+Convergence / Fresh Finalizer / Claim Validation / Product UI
 ```
 
 ScopeX 不新增 CPU Tool、Memory Tool、Image Search Tool、Shell Tool，也不把调查顺序写死在 Handler 中。
@@ -42,13 +44,13 @@ nproc = 20
 Mem total ≈ 121 GiB
 ```
 
-Agent 自主执行了资源概况与进程排序命令，并观察到 Spark 上真实的 `openclaw-agent`、`claude`、`VLLM::EngineCor`、`vllm`、`gnome-shell` 等进程。因此确认命令运行在 Spark Gateway 主机，而不是 1 CPU / 512 MB sandbox。
+Agent 自主执行资源概况与进程排序命令，并观察到 Spark 上真实进程。因此确认命令运行在 Spark Gateway 主机，而不是 1 CPU / 512 MB sandbox。
 
-当前最终任务出现 `investigation_completed_without_evidence` 是预期的独立缺口：现有 Evidence Pipeline 仅覆盖 read，尚未把 exec Tool Result 纳入 Evidence。该问题留到 Step 5，不回退 Step 2 结论。
+当时的 `investigation_completed_without_evidence` 属于独立缺口：产品只投影 read Evidence；该问题进入 Step 5 解决，不回退 Step 2 结论。
 
 ## Step 3 — 图片自主调查 — PASS
 
-启用 OpenClaw 原生 `view_image`，不实现 ScopeX 图片查看工具。当前本地模型已经声明 `input=["text","image"]`，因此 `view_image` 直接使用当前模型；无需额外 image model fallback。
+启用 OpenClaw 原生 `view_image`，不实现 ScopeX 图片查看工具。
 
 启动增加：
 
@@ -62,123 +64,129 @@ Agent 自主执行了资源概况与进程排序命令，并观察到 Spark 上�
 --data-dir /host/poc07:/agent-data/poc07
 ```
 
-**Step 3 使用 `--exec-host sandbox`。** `/agent-data/...` 是 sandbox 内的 bind 目标路径；如果继续使用 Step 2 的 `--exec-host gateway`，`find /agent-data/...` 会在 Spark 主机执行，而主机上不存在该容器路径。混合“主机调查 + sandbox 数据调查”的 per-call host 路由留到后续单独验证，不在本步骤提前处理。
-
 实机验证结果：
 
 - Prompt 未给具体图片文件名；
 - Agent 自主使用 `exec/read` 查找日志和图片目录；
-- 日志异常/失败时间为 `20:05:00 / 20:06:01`；Agent 自主匹配到 `20:05:53 / 20:06:31` 的对应时间图片；
+- Agent 从日志异常/失败时间自主匹配对应时间图片；
 - trace 中真实出现 OpenClaw 原生 `view_image`；
-- 一次多图调用有 1 张未进入 context 后，Agent 根据工具反馈再次单独查看该图；
-- OpenClaw 最终可见 answer 对三张图给出了具体视觉观察：正常图清晰、异常时刻图片过曝/泛白、失败后图片模糊；
-- ScopeX 没有实现图片搜索器、图片查看 Tool 或固定“先日志后图片”的流程。
+- 多图上下文遗漏一张后，Agent 根据工具反馈再次单独查看；
+- OpenClaw 最终回答包含只能来自直接视觉查看的具体图像观察；
+- ScopeX 没有实现图片搜索器、图片查看 Tool 或固定流程。
 
-因此确认：OpenClaw 可以在 ScopeX 当前 sandbox/bind/model harness 中自主完成“定位日志时间 → 搜索相关图片 → 视觉查看 → 综合回答”。
+原始 OpenClaw answer 曾出现偏强因果措辞，因此产品最终输出仍必须经过 Evidence / Claim Validator，而不能直接发布调查 Agent prose。
 
-注意：原始 OpenClaw answer 曾使用“图像质量异常导致任务失败”这一偏强因果措辞。当前证据只支持直接观察、时间关联和未证实因果假设；这不回退 Step 3 的视觉能力结论，但说明产品最终输出仍必须经过 POC06 的 Evidence / Claim Validator / deterministic renderer。图片 Tool Result 如何进入 Evidence Catalog 留到 Step 5。
+## Step 4 — Progress v2 — PASS
 
-## Step 4 — Progress v2 — IN PROGRESS
+网页已实机验证能展示真实调查动作，而不是只有 `MODEL_REQUEST / TOOL_CALL / TOOL_RESULT`。
 
-目标：网页能够让用户看懂 Agent 正在做什么，但不暴露隐藏 chain-of-thought。
+实现：
 
-实现分两层：
+- `progress_card` 可选，用于 OpenClaw 显式 plan/status；
+- `exec` 展示 title + command；
+- `read` 展示路径；
+- `view_image` 展示 path/paths + prompt；
+- Tool Result 只展示有限预览；
+- 不展示 hidden chain-of-thought。
 
-1. **OpenClaw 原生 `progress_card`**：用于真正的多步骤任务，展示模型显式提交的 plan / markdown；简单问题允许不创建 card。
-2. **真实 Tool 行为**：无论模型是否使用 `progress_card`，ScopeX 都从 OpenClaw trace 展示真实动作。
+注意：`progress_card` 是 OpenClaw durable state；ScopeX 的 `PROGRESS_UPDATE` 只是历史 UI projection，不发展成第二套 plan state machine。
 
-启动增加：
+## Step 5 — OpenClaw Trace → Evidence Projection — IMPLEMENTED / NEEDS REAL VALIDATION
 
-```bash
---enable-progress-card
-```
-
-Runtime 新增 `PROGRESS_UPDATE`，只记录 `progress_card` 明确提交的：
-
-```text
-plan: step + pending/in_progress/completed
-markdown: 当前状态、阻塞或下一步
-```
-
-普通工具进度增强为：
+Step 5 不再叫“通用 Tool Adapter”。Evidence 不是第二套 transcript。
 
 ```text
-exec       → title + command
-read       → path
-view_image → path/paths + prompt
-ToolResult → 最多 1200 字符结果预览
+OpenClaw Trace  <- 执行事实源
+      │
+      │ project claim-grade source material only
+      ▼
+Evidence Snapshot <- 最终结论引用源
 ```
 
-这些信息都来自真实 Tool Call / Tool Result，不从模型隐藏推理中提取。
+### Step 5A — Evidence Projection
 
-网页时间线对应展示：
+生产 Runtime 已从 `ReadLineExtractor` 插件路径切换为单一 `OpenClawEvidenceProjector`：
+
+- `read` → 精确非空行，保留 source / line / tool_call_id；
+- `exec` → 有界输出快照 + command / host / full-result SHA256；
+- `view_image` → 只冻结图片身份：path / SHA256 / size / MIME；
+- `progress_card` → 不进入 Evidence；
+- 不执行工具，不解释业务，不保存第二套完整 transcript。
+
+旧 extractor 类暂时保留用于历史回归测试，但不再是产品默认路径。
+
+### Step 5B — Multimodal Fresh Finalizer
+
+图片 Evidence 不保存调查 Agent 的“模糊/过曝”等描述作为 raw Evidence。
+
+Fresh Finalizer 现在会：
+
+1. 仅通过显式 `HOST:AGENT:ro` bind 重新解析图片；
+2. 重新计算 SHA256；
+3. 若图片变化/丢失则 finalization 失败；
+4. 使用 vLLM OpenAI-compatible multimodal Chat Completions 将原图重新直接附加；
+5. 视觉 fact 必须引用对应 image E ref；
+6. deterministic renderer 将这种 claim 显示为“视觉观察”。
+
+这避免“调查 Agent 先说图片模糊 → ScopeX 把这句话当证据 → Finalizer 再证明图片模糊”的自证循环。
+
+### Step 5 实机通过条件
+
+**CPU/内存任务**：
+
+- `exec host=gateway` 输出自动形成 command Evidence；
+- 不再出现 `investigation_completed_without_evidence`；
+- Finalizer 只能从命令输出陈述直接观察事实。
+
+**图片任务**：
+
+- evidence.json 中除了 app.log 行，还包含 image Evidence；
+- image Evidence 有 SHA256；
+- Fresh Finalizer 请求真实包含 image input；
+- 最终结果能出现引用 image E ref 的“视觉观察”；
+- 时间关联仍不能升级为已证明因果。
+
+## Step 6 — Budget / 收敛减法 — PENDING
+
+方向：避免 OpenClaw / ModelProxy / ScopeX 三套预算互相打架。
+
+- hard timeout / request count / exec timeout 使用一个配置来源；
+- ScopeX Convergence 重点保留 goal-satisfied / stale / no-new-evidence；
+- 不继续发展 `max_context_chars` 这种第二套粗略上下文估算，优先使用 OpenClaw/vLLM 已有 context budget 信息。
+
+## Step 7 — End-user Answer Composition + Product Freeze — PENDING
+
+当前 deterministic renderer 保留为可信/audit 视图，但不作为最终唯一产品文风。
+
+目标：
 
 ```text
-调查计划
-✓ 分析日志并定位失败时间
-→ 查找失败附近图片
-○ 综合日志和图片
-
-执行命令
-查找失败时间附近的图片
-$ ls ...
-
-读取文件
-/agent-data/poc07/app.log
-
-查看图片
-/agent-data/poc07/images/...
-观察要求：比较曝光、清晰度...
-
-工具返回结果
-<有限预览>
+Evidence
+  -> Fresh Finalizer
+  -> Validated Claims
+  -> deterministic trust rendering
+  -> constrained Answer Composer
 ```
 
-通过条件：
+原则：Claims 决定“什么可以说”，Answer Composer 决定“怎么说”；Composer 不得增加未引用的新事实或升级因果强度。
 
-- 多步骤任务若模型调用 `progress_card`，网页能显示完整 plan 和当前步骤；
-- 即使没有 `progress_card`，真实 exec/read/view_image 动作仍然可读；
-- command、文件路径、图片路径和工具结果来自 trace，而不是二次猜测；
-- Tool Result 预览有长度上限，不把完整大输出复制到事件流；
-- 不展示 hidden chain-of-thought；
-- 原有 Stop / Resume / Steer / Evidence / Finalizer 行为不被改变。
-
-## Step 5 — 通用 Tool Observation Evidence — PENDING
-
-```text
-OpenClaw trace
-    ↓
-Tool Call + Tool Result
-    ↓
-ScopeX Observation Adapter
-    ↓
-Evidence Catalog
-```
-
-至少覆盖：
-- read：精确文件/行来源；
-- exec：执行位置、command、exit/result、时间；
-- view_image：图片路径、内容哈希/元信息、模型观察来源。
-
-这里只做 provenance/证据身份，不重新实现工具。
-
-## Step 6 — Budget / 收敛 — PENDING
-
-验证：
-- 简单任务完成后立即结束；
-- 有新 Tool/Evidence 时允许继续；
-- 连续无新信息或 request/tool/context/elapsed 预算达到时进入 Fresh Finalizer；
-- hard deadline 只作为最终保险。
-
-## Step 7 — 迁入产品 Runtime — PENDING
-
-只有 Step 1–6 的真实运行证据通过后，才把验证过的配置和 Observation 能力固化到正式 Runtime/API/UI。
+完成后再进入 Web Stop / Resume / Steer 产品交互回归。
 
 ## 不做的事情
 
 - 不新增 CPU/内存/进程专用 Tool；
 - 不实现第二套 shell 执行器；
 - 不实现第二套图片搜索器；
-- 不把“日志 → 图片 → 系统”的调查顺序写死；
+- 不复制 OpenClaw 完整 transcript 到 Evidence；
+- 不把调查顺序写死；
+- 不把 progress event 做成第二套 plan state machine；
+- 不对 OpenClaw exec 再叠一套 ScopeX shell approval；
 - 不用 UI 展示模型隐藏思维链；
-- 不因为验证阶段方便而让 POC07 改写 POC01–POC06 的冻结结论。
+- 不因为验证方便而改写 POC01–POC06 的冻结结论。
+
+## 当前尚未完全确认的实现细节
+
+1. 当前 Qwen/vLLM 一次 Fresh Finalizer 最适合附加多少张图片，需要 Spark 实测；实现会在超出配置上限时明确失败，不静默丢图。
+2. `progress_card` 的 durable current-state 读取接口需要在后续 refresh/restart 场景再验证；当前历史 Progress UI 不依赖该能力。
+
+这两点不影响 Step 5A 的架构结论，也不需要暂停当前实施。
