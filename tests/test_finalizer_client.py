@@ -63,12 +63,14 @@ class FinalizerClientTests(unittest.TestCase):
         self.server.server_close()
         self.thread.join(timeout=2)
 
-    def test_streaming_client_uses_fresh_no_tool_request(self):
-        client = StreamingFinalizerClient(
+    def client(self):
+        return StreamingFinalizerClient(
             f"http://127.0.0.1:{self.server.server_port}/v1",
             timeout_s=5,
         )
-        response = client.complete(
+
+    def test_streaming_client_uses_fresh_no_tool_request(self):
+        response = self.client().complete(
             model="local-model",
             system_prompt="system",
             user_prompt="user",
@@ -82,6 +84,27 @@ class FinalizerClientTests(unittest.TestCase):
         self.assertEqual(request["chat_template_kwargs"]["enable_thinking"], False)
         self.assertNotIn("tools", request)
         self.assertEqual([row["role"] for row in request["messages"]], ["system", "user"])
+        self.assertEqual(request["messages"][1]["content"], "user")
+
+    def test_multimodal_request_attaches_image_without_tools(self):
+        self.client().complete(
+            model="local-model",
+            system_prompt="system",
+            user_prompt="evidence",
+            max_tokens=256,
+            image_inputs=(("E7 source=frame.jpg", "data:image/jpeg;base64,ZmFrZQ=="),),
+        )
+        request = Handler.request_json
+        self.assertNotIn("tools", request)
+        content = request["messages"][1]["content"]
+        self.assertIsInstance(content, list)
+        self.assertEqual(content[0], {"type": "text", "text": "evidence"})
+        self.assertIn("E7 source=frame.jpg", content[1]["text"])
+        self.assertEqual(content[2]["type"], "image_url")
+        self.assertEqual(
+            content[2]["image_url"]["url"],
+            "data:image/jpeg;base64,ZmFrZQ==",
+        )
 
     def test_non_loopback_endpoint_is_rejected(self):
         with self.assertRaises(ValueError):
