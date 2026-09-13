@@ -5,13 +5,14 @@ import json
 from pathlib import Path
 import threading
 import time
-from typing import Iterable
+from typing import Callable, Iterable
 
 from scopex.agent.runtime import OpenClawTaskRuntime, OpenClawTaskSpec, OpenClawTurnResult
 from scopex.agent.trace import load_audit_trace
 from scopex.evidence.catalog import EvidenceCatalog, EvidenceItem
 from scopex.evidence.collector import EvidenceCollector
 from scopex.evidence.extractor import EvidenceExtractionPipeline, EvidenceExtractor
+from scopex.evidence.projector import EvidenceProjector
 from scopex.events.progress import EventSink, EventType
 from scopex.finalizer.service import FinalizationResult, FinalizationService
 from scopex.finalizer.structured import StructuredFinalizer, StructuredFinalizerResult
@@ -55,7 +56,7 @@ class InvestigationCoordinator:
         convergence_policy: ConvergencePolicy,
         events: EventSink,
         steering: PendingSteeringQueue | None = None,
-        evidence_pipeline: EvidenceExtractionPipeline | None = None,
+        evidence_pipeline: EvidenceProjector | None = None,
         audit: RuntimeAudit | None = None,
         control_lock=None,
     ) -> None:
@@ -69,6 +70,9 @@ class InvestigationCoordinator:
         self.convergence_policy = convergence_policy
         self.events = events
         self.steering = steering or PendingSteeringQueue()
+        # Historical attribute name kept for compatibility. In production this
+        # is now the OpenClaw Trace -> Evidence Projector, not a second tool
+        # pipeline or transcript store.
         self.evidence_pipeline = evidence_pipeline
         self.audit = audit
         self._control_lock = control_lock or threading.RLock()
@@ -89,6 +93,7 @@ class InvestigationCoordinator:
         spec: OpenClawTaskSpec,
         events: EventSink,
         convergence_policy: ConvergencePolicy | None = None,
+        evidence_projector_factory: Callable[[EvidenceCollector], EvidenceProjector] | None = None,
         extractors: Iterable[EvidenceExtractor] = (),
         audit: RuntimeAudit | None = None,
     ) -> "InvestigationCoordinator":
@@ -98,10 +103,16 @@ class InvestigationCoordinator:
         catalog = EvidenceCatalog(task.id, task.session_key)
         collector = EvidenceCollector(catalog, events)
         configured_extractors = tuple(extractors)
-        evidence_pipeline = (
-            EvidenceExtractionPipeline(collector, configured_extractors)
-            if configured_extractors else None
-        )
+        if evidence_projector_factory is not None and configured_extractors:
+            raise ValueError("configure either evidence projector or legacy extractors, not both")
+        if evidence_projector_factory is not None:
+            evidence_pipeline: EvidenceProjector | None = evidence_projector_factory(collector)
+        elif configured_extractors:
+            # Compatibility path for existing regression tests/POCs. Product
+            # runtime uses one OpenClaw Evidence Projector instead.
+            evidence_pipeline = EvidenceExtractionPipeline(collector, configured_extractors)
+        else:
+            evidence_pipeline = None
         control_lock = threading.RLock()
 
         def on_safe_stop(boundary: StopBoundary) -> None:
@@ -216,7 +227,7 @@ class InvestigationCoordinator:
         return item
 
     def checkpoint_evidence_progress(self) -> int:
-        """Update stale-round state after configured extractors have run."""
+        """Update stale-round state after configured projection has run."""
 
         current = len(self.catalog.items)
         if current > self._last_evidence_count:
@@ -264,9 +275,6 @@ class InvestigationCoordinator:
             self._snapshot()
             return result
 
-        # Publish the result before exposing FINALIZATION_COMPLETED/COMPLETED.
-        # API/UI readers may treat terminal state as a guarantee that result.json
-        # and final.txt are already available.
         self._persist_result(result, published_state=TaskState.COMPLETED)
         self.controller.finalization_completed()
         self.controller.complete()
@@ -290,8 +298,6 @@ class InvestigationCoordinator:
             self._snapshot()
             return result
 
-        # Same publication rule as the non-fresh path: result first, terminal
-        # lifecycle events/state second.
         self._persist_structured_result(result, published_state=TaskState.COMPLETED)
         self.controller.finalization_completed()
         self.controller.complete()
