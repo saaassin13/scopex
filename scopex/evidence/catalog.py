@@ -37,10 +37,8 @@ class EvidenceCatalog:
     """Runtime-owned exact evidence identity.
 
     The model may reference E numbers, but it never owns or rewrites the raw
-    evidence attached to those references. Whole-result evidence deduplicates by
-    source/content as before. Fine-grained extractors can provide ``line_number``
-    metadata; that position becomes part of identity so repeated equal text at
-    different observed positions is not collapsed.
+    evidence attached to those references. Identity includes source position for
+    line evidence and content digest for immutable image evidence.
     """
 
     def __init__(self, task_id: str, session_key: str) -> None:
@@ -52,6 +50,11 @@ class EvidenceCatalog:
 
     @staticmethod
     def _dedupe_key(source: str, raw: str, metadata: dict[str, Any]) -> tuple[Any, ...]:
+        evidence_type = metadata.get("evidence_type")
+        if evidence_type == "image":
+            sha256 = metadata.get("sha256")
+            if isinstance(sha256, str) and sha256:
+                return source, "image_sha256", sha256
         line_number = metadata.get("line_number")
         if isinstance(line_number, int) and line_number > 0:
             return source, raw, "line_number", line_number
