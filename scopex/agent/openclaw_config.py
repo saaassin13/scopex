@@ -49,6 +49,7 @@ class OpenClawConfigSpec:
     exec_host: str = "sandbox"
     exec_mode: str = "full"
     container_prefix: str = "scopex-"
+    compaction_enabled: bool = True
 
 
 def _require_loopback_v1(url: str) -> None:
@@ -81,7 +82,7 @@ def _validate_bind(value: str) -> None:
     host, target, mode = parts
     if not host or not Path(host).is_absolute():
         raise ValueError("sandbox bind host path must be absolute")
-    if not target.startswith("/") or target == "/":
+    if not target.startswith("/") or target == "/" or ":" in agent_dir:
         raise ValueError("sandbox bind target must be an absolute non-root path")
     if mode != "ro":
         raise ValueError("ScopeX data binds are read-only during POC07")
@@ -185,7 +186,12 @@ def build_openclaw_config(spec: OpenClawConfigSpec) -> dict:
                 "embeddedAgent": {"projectSettingsPolicy": "ignore"},
                 "thinkingDefault": "off",
                 "timeoutSeconds": spec.timeout_s,
-                "compaction": {"enabled": False, "memoryFlush": {"enabled": False}},
+                "compaction": {
+                    "enabled": spec.compaction_enabled,
+                    # Memory Search / durable memory remain disabled for Step 6.
+                    # Compaction only keeps one long-running task/session usable.
+                    "memoryFlush": {"enabled": False},
+                },
                 "sandbox": {
                     "mode": "all",
                     "scope": "session",
