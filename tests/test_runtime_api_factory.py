@@ -85,6 +85,35 @@ class RuntimeApiFactoryTests(unittest.TestCase):
             # ScopeX convergence no longer duplicates them.
             self.assertEqual(coordinator.convergence_policy.max_stale_rounds, 3)
 
+    def test_answer_composer_construction_failure_is_deferred_to_non_fatal_stage(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            cli = root / "openclaw"
+            cli.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            cli.chmod(0o755)
+            workspace = root / "workspace"
+            workspace.mkdir()
+
+            factory = OpenClawRuntimeFactory(
+                LocalRuntimeConfig(
+                    cli_path=cli,
+                    model_id="local-model",
+                    base_url="https://example.com/v1",
+                    api_key="",
+                    workspace=workspace,
+                    work_root=root / "work",
+                    sandbox_image="scopex-test:latest",
+                    docker_host="unix:///var/run/docker.sock",
+                )
+            )
+
+            composer = factory.answer_composer()
+            with self.assertRaisesRegex(
+                RuntimeError,
+                "answer_composer_factory_error:ValueError",
+            ):
+                composer.run()
+
 
 if __name__ == "__main__":
     unittest.main()
