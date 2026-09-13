@@ -37,6 +37,15 @@ class RequestPolicyTests(unittest.TestCase):
         )
         policy.validate(payload(["read", "exec", "process", "view_image"]))
 
+    def test_configured_progress_card_surface_is_accepted(self):
+        names = ["read", "exec", "process", "view_image", "progress_card"]
+        policy = OpenClawRequestPolicy(
+            "local-model",
+            2048,
+            frozenset(names),
+        )
+        policy.validate(payload(names))
+
     def test_unconfigured_view_image_surface_is_rejected(self):
         policy = OpenClawRequestPolicy("local-model", 2048)
         with self.assertRaises(RequestRejected):
