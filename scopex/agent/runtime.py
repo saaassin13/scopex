@@ -58,6 +58,7 @@ class OpenClawTaskSpec:
     exec_mode: str = "full"
     docker_bin: str = "docker"
     compaction_enabled: bool = True
+    concise_terminal_handoff: bool = True
 
 
 @dataclass(frozen=True, slots=True)
@@ -238,6 +239,12 @@ class OpenClawTaskRuntime:
                 "process bounded slices or summaries into task scratch instead of emitting "
                 "the full raw dataset into model context."
             )
+        if self.spec.exec_host == "sandbox":
+            notes.append(
+                "The sandbox runs with network access disabled. Do not attempt runtime package "
+                "installation with pip, apt, npm, or similar network installers; use the "
+                "preinstalled toolbox or standard-library fallbacks instead."
+            )
         if "view_image" in self.spec.tools:
             notes.append(
                 "For large image sets, keep the visual working set bounded: metadata, "
@@ -247,6 +254,14 @@ class OpenClawTaskRuntime:
                 "bounded view_image call of at most 4 originals. ScopeX can independently "
                 "SHA-verify those originals again in the Fresh Finalizer; singleton re-open "
                 "calls are not required solely for evidence bookkeeping."
+            )
+        if self.spec.concise_terminal_handoff:
+            notes.append(
+                "ScopeX independently composes the user-facing product result from observed "
+                "Evidence after this OpenClaw turn. Once investigation, any allowed action, "
+                "and required verification are complete, keep the terminal assistant answer "
+                "brief and do not restate the full evidence trail. This affects presentation "
+                "only; it does not change what you investigate, execute, verify, or when you stop."
             )
         if not notes:
             return message
