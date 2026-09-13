@@ -73,6 +73,15 @@ class OpenClawEvidenceProjector:
     OpenClaw remains the source of truth for the full transcript. This class
     freezes only minimal material needed for stable citation. It contains no
     business diagnosis logic and does not execute tools.
+
+    Image working-set rule:
+    - a multi-image ``view_image`` call is screening/context only;
+    - a single-image ``view_image`` call may become immutable image Evidence.
+
+    This lets an Agent inspect many images in bounded batches without forcing
+    every screened frame into the Fresh Finalizer. If an original image matters
+    to a final claim, the Agent can re-open that exact original individually.
+    The finalizer still re-opens and SHA-verifies the promoted original itself.
     """
 
     def __init__(
@@ -223,7 +232,8 @@ class OpenClawEvidenceProjector:
 
         return tuple(added)
 
-    def _project_images(self, call: ToolCall) -> tuple[EvidenceItem, ...]:
+    @staticmethod
+    def _image_paths(call: ToolCall) -> tuple[str, ...]:
         paths: list[str] = []
         one = call.arguments.get("path")
         if isinstance(one, str) and one:
@@ -231,38 +241,43 @@ class OpenClawEvidenceProjector:
         many = call.arguments.get("paths")
         if isinstance(many, list):
             paths.extend(value for value in many if isinstance(value, str) and value)
+        return tuple(dict.fromkeys(paths))
+
+    def _project_images(self, call: ToolCall) -> tuple[EvidenceItem, ...]:
+        paths = self._image_paths(call)
+        if len(paths) != 1:
+            # Multi-image views are a bounded visual working set, not claim-grade
+            # immutable Evidence. Important originals must be re-opened alone.
+            return ()
+
+        path = paths[0]
+        resolved = self.bind_resolver.resolve(path)
+        if resolved is None:
+            # Strong image evidence requires immutable identity. Scratch-derived
+            # previews/contact sheets and files outside read-only source roots are
+            # intentionally useful for investigation but not promoted to Evidence.
+            return ()
 
         prompt = call.arguments.get("prompt")
-        added: list[EvidenceItem] = []
-        seen_paths: set[str] = set()
-        for path in paths:
-            if path in seen_paths:
-                continue
-            seen_paths.add(path)
-            resolved = self.bind_resolver.resolve(path)
-            if resolved is None:
-                # Strong image evidence requires immutable identity. A tool call
-                # alone is not enough if ScopeX cannot resolve/hash the file.
-                continue
-            digest = self._sha256_file(resolved.host_path)
-            media_type = mimetypes.guess_type(resolved.host_path.name)[0] or "application/octet-stream"
-            stat = resolved.host_path.stat()
-            added.append(
-                self.collector.add(
-                    source=path,
-                    raw=f"image:{Path(path).name}",
-                    tool_call_id=call.id,
-                    metadata={
-                        "evidence_type": "image",
-                        "tool": "view_image",
-                        "sha256": digest,
-                        "byte_size": stat.st_size,
-                        "media_type": media_type,
-                        "view_prompt": prompt if isinstance(prompt, str) else None,
-                    },
-                )
-            )
-        return tuple(added)
+        digest = self._sha256_file(resolved.host_path)
+        media_type = mimetypes.guess_type(resolved.host_path.name)[0] or "application/octet-stream"
+        stat = resolved.host_path.stat()
+        return (
+            self.collector.add(
+                source=path,
+                raw=f"image:{Path(path).name}",
+                tool_call_id=call.id,
+                metadata={
+                    "evidence_type": "image",
+                    "tool": "view_image",
+                    "sha256": digest,
+                    "byte_size": stat.st_size,
+                    "media_type": media_type,
+                    "view_prompt": prompt if isinstance(prompt, str) else None,
+                    "evidence_role": "claim_grade_single_image",
+                },
+            ),
+        )
 
     @staticmethod
     def _sha256_file(path: Path) -> str:
