@@ -269,6 +269,23 @@ class InvestigationCoordinator:
         self._snapshot()
         return reasons
 
+    def begin_runtime_guard_finalization(self, reason: str) -> tuple[str, ...]:
+        """Finalize current facts after an OpenClaw-owned safety/convergence guard.
+
+        The guard remains part of the Agent runtime. ScopeX does not reproduce
+        its detector or decide a replacement investigation step; it only turns a
+        terminal guard boundary into a trustworthy product result when Evidence
+        already exists.
+        """
+
+        if not isinstance(reason, str) or not reason:
+            raise ValueError("runtime guard reason is required")
+        reasons = ("runtime_guard_reached", reason)
+        self._finalization_reasons = reasons
+        self.controller.begin_finalization(reasons=reasons)
+        self._snapshot()
+        return reasons
+
     def finish_finalization(
         self,
         payload: dict,
