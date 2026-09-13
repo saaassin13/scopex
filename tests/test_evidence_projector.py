@@ -13,7 +13,7 @@ from scopex.events.progress import InMemoryEventSink
 
 
 class EvidenceProjectorTests(unittest.TestCase):
-    def projector(self, *, binds=(), exec_host="sandbox", max_exec_chars=12000):
+    def projector(self, *, binds=(), exec_host="sandbox", **kwargs):
         catalog = EvidenceCatalog("task-1", "agent:sx:task-1")
         events = InMemoryEventSink()
         collector = EvidenceCollector(catalog, events)
@@ -24,7 +24,7 @@ class EvidenceProjectorTests(unittest.TestCase):
                 collector,
                 sandbox_binds=tuple(binds),
                 exec_host=exec_host,
-                max_exec_chars=max_exec_chars,
+                **kwargs,
             ),
         )
 
@@ -41,15 +41,15 @@ class EvidenceProjectorTests(unittest.TestCase):
         self.assertEqual([item.metadata["line_number"] for item in catalog.items], [1, 3])
         self.assertTrue(all(item.metadata["evidence_type"] == "file_line" for item in catalog.items))
 
-    def test_exec_projects_bounded_excerpt_and_full_result_hash(self):
-        catalog, _, projector = self.projector(exec_host="gateway", max_exec_chars=120)
-        content = "A" * 200 + "\nMIDDLE\n" + "Z" * 200
+    def test_exec_projects_claim_grade_lines_with_full_result_hash(self):
+        catalog, _, projector = self.projector(exec_host="gateway")
+        content = "20\nMem: 121Gi 56Gi 25Gi\nPID CPU MEM COMMAND\n123 88.0 2.4 vllm\n"
         trace = AgentTrace(
             calls=(
                 ToolCall(
                     "c2",
                     "exec",
-                    {"command": "free -h", "title": "memory"},
+                    {"command": "inspect-system", "title": "system snapshot"},
                 ),
             ),
             results=(ToolResult("c2", content),),
@@ -57,19 +57,51 @@ class EvidenceProjectorTests(unittest.TestCase):
 
         projector.process_trace(trace)
 
-        self.assertEqual(len(catalog.items), 1)
-        item = catalog.items[0]
-        self.assertEqual(item.metadata["evidence_type"], "command_output")
-        self.assertEqual(item.metadata["exec_host"], "gateway")
-        self.assertEqual(item.metadata["command"], "free -h")
-        self.assertTrue(item.metadata["truncated"])
-        self.assertEqual(item.metadata["original_chars"], len(content))
+        self.assertEqual(len(catalog.items), 4)
         self.assertEqual(
-            item.metadata["result_sha256"],
-            hashlib.sha256(content.encode("utf-8")).hexdigest(),
+            [item.raw for item in catalog.items],
+            ["20", "Mem: 121Gi 56Gi 25Gi", "PID CPU MEM COMMAND", "123 88.0 2.4 vllm"],
         )
-        self.assertLessEqual(len(item.raw), 140)
-        self.assertIn("truncated", item.raw)
+        expected_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
+        self.assertTrue(all(item.metadata["evidence_type"] == "command_line" for item in catalog.items))
+        self.assertTrue(all(item.metadata["exec_host"] == "gateway" for item in catalog.items))
+        self.assertTrue(all(item.metadata["command"] == "inspect-system" for item in catalog.items))
+        self.assertTrue(all(item.metadata["result_sha256"] == expected_hash for item in catalog.items))
+        self.assertEqual([item.metadata["line_number"] for item in catalog.items], [1, 2, 3, 4])
+
+    def test_exec_call_host_overrides_runtime_default_for_provenance(self):
+        catalog, _, projector = self.projector(exec_host="sandbox")
+        trace = AgentTrace(
+            calls=(
+                ToolCall(
+                    "c-host",
+                    "exec",
+                    {"command": "hostname", "host": "gateway"},
+                ),
+            ),
+            results=(ToolResult("c-host", "spark-host\n"),),
+        )
+
+        projector.process_trace(trace)
+
+        self.assertEqual(catalog.items[0].metadata["exec_host"], "gateway")
+
+    def test_exec_projection_is_bounded_by_lines_and_chars(self):
+        catalog, _, projector = self.projector(
+            max_exec_lines=2,
+            max_exec_line_chars=5,
+            max_exec_chars=8,
+        )
+        trace = AgentTrace(
+            calls=(ToolCall("c-bounded", "exec", {"command": "x"}),),
+            results=(ToolResult("c-bounded", "abcdef\n123456\nthird\n"),),
+        )
+
+        projector.process_trace(trace)
+
+        self.assertEqual([item.raw for item in catalog.items], ["abcde", "123"])
+        self.assertTrue(catalog.items[0].metadata["line_truncated"])
+        self.assertTrue(catalog.items[1].metadata["line_truncated"])
 
     def test_view_image_freezes_identity_from_explicit_read_only_bind(self):
         with tempfile.TemporaryDirectory() as td:
