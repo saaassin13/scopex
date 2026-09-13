@@ -75,6 +75,8 @@ class OpenClawEvidenceProjector:
     business diagnosis logic and does not execute tools.
     """
 
+    _EXEC_HOSTS = frozenset({"sandbox", "gateway", "node"})
+
     def __init__(
         self,
         collector: EvidenceCollector,
@@ -83,7 +85,7 @@ class OpenClawEvidenceProjector:
         sandbox_binds: tuple[str, ...] = (),
         max_read_lines: int = 512,
         max_read_line_chars: int = 4096,
-        max_exec_chars: int = 12_000,
+        max_exec_chars: int = 4096,
     ) -> None:
         if max_read_lines <= 0 or max_read_line_chars <= 0 or max_exec_chars <= 0:
             raise ValueError("projection limits must be positive")
@@ -154,6 +156,12 @@ class OpenClawEvidenceProjector:
         excerpt = self._bounded_excerpt(content, self.max_exec_chars)
         command = call.arguments.get("command")
         title = call.arguments.get("title")
+        requested_host = call.arguments.get("host")
+        effective_host = (
+            requested_host
+            if isinstance(requested_host, str) and requested_host in self._EXEC_HOSTS
+            else self.exec_host
+        )
         item = self.collector.add(
             source=f"exec:{call.id}",
             raw=excerpt,
@@ -161,7 +169,7 @@ class OpenClawEvidenceProjector:
             metadata={
                 "evidence_type": "command_output",
                 "tool": "exec",
-                "exec_host": self.exec_host,
+                "exec_host": effective_host,
                 "command": command if isinstance(command, str) else None,
                 "title": title if isinstance(title, str) else None,
                 "result_sha256": digest,
@@ -189,8 +197,6 @@ class OpenClawEvidenceProjector:
             seen_paths.add(path)
             resolved = self.bind_resolver.resolve(path)
             if resolved is None:
-                # Strong image evidence requires immutable identity. A tool call
-                # alone is not enough if ScopeX cannot resolve/hash the file.
                 continue
             digest = self._sha256_file(resolved.host_path)
             media_type = mimetypes.guess_type(resolved.host_path.name)[0] or "application/octet-stream"
