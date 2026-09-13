@@ -9,6 +9,13 @@ interface ProgressStep {
   status: 'pending' | 'in_progress' | 'completed'
 }
 
+interface EvidenceGroup {
+  key: string
+  title: string
+  source: string
+  items: EvidenceItem[]
+}
+
 const route = useRoute()
 const taskId = computed(() => String(route.params.id))
 const task = ref<TaskSnapshot | null>(null)
@@ -24,6 +31,33 @@ let timer: number | undefined
 const isRunning = computed(() => task.value?.state === 'RUNNING')
 const isPaused = computed(() => task.value?.state === 'PAUSED')
 const isTerminal = computed(() => ['COMPLETED', 'FAILED', 'CANCELLED'].includes(task.value?.state ?? ''))
+const evidenceGroups = computed<EvidenceGroup[]>(() => {
+  const groups = new Map<string, EvidenceGroup>()
+
+  for (const item of evidence.value) {
+    const kind = metadataString(item, 'evidence_type')
+    // Text/command Evidence keeps its claim-grade line identity internally, but
+    // the product UI groups rows from the same OpenClaw tool call. Images stay
+    // separate because one view_image call may contain several distinct files.
+    const key = kind === 'image'
+      ? `image:${item.ref}`
+      : `${item.tool_call_id || 'source'}:${item.source}`
+
+    let group = groups.get(key)
+    if (!group) {
+      group = {
+        key,
+        title: evidenceGroupTitle(item),
+        source: item.source,
+        items: [],
+      }
+      groups.set(key, group)
+    }
+    group.items.push(item)
+  }
+
+  return [...groups.values()]
+})
 const lastTaskFailed = computed(() => {
   for (let index = events.value.length - 1; index >= 0; index -= 1) {
     if (events.value[index]?.type === 'TASK_FAILED') return events.value[index]
@@ -59,6 +93,52 @@ const resultProblem = computed(() => {
   }
   return '当前终态没有 result.json。请检查 TASK_FAILED 事件、worker-error.json 或 investigation-error.json。'
 })
+
+function metadataString(item: EvidenceItem, key: string): string {
+  const value = item.metadata?.[key]
+  return typeof value === 'string' ? value : ''
+}
+
+function sourceName(source: string): string {
+  const normalized = source.replaceAll('\\', '/')
+  const parts = normalized.split('/').filter(Boolean)
+  return parts.at(-1) || source
+}
+
+function evidenceGroupTitle(item: EvidenceItem): string {
+  const title = metadataString(item, 'title')
+  if (title) return title
+
+  const kind = metadataString(item, 'evidence_type')
+  const tool = metadataString(item, 'tool')
+  if (kind === 'image') return `图片 · ${sourceName(item.source)}`
+  if (tool === 'read') return `文件 · ${sourceName(item.source)}`
+  if (tool === 'exec') {
+    const command = metadataString(item, 'command')
+    return command ? `命令 · ${command}` : '命令输出'
+  }
+  return sourceName(item.source)
+}
+
+function evidenceRefsLabel(items: EvidenceItem[]): string {
+  if (!items.length) return ''
+  if (items.length === 1) return items[0].ref
+  return `${items[0].ref}–${items[items.length - 1].ref}`
+}
+
+function evidenceLineRange(items: EvidenceItem[]): string {
+  const lines = items
+    .map((item) => item.metadata?.line_number)
+    .filter((value): value is number => typeof value === 'number' && value > 0)
+  if (!lines.length) return ''
+  const first = Math.min(...lines)
+  const last = Math.max(...lines)
+  return first === last ? `L${first}` : `L${first}–L${last}`
+}
+
+function evidenceRaw(group: EvidenceGroup): string {
+  return group.items.map((item) => item.raw).join('\n')
+}
 
 function dataString(event: ProgressEvent, key: string): string {
   const value = event.data?.[key]
@@ -291,15 +371,19 @@ onBeforeUnmount(() => timer && window.clearInterval(timer))
               <div class="eyebrow">EVIDENCE</div>
               <h2>证据</h2>
             </div>
-            <span class="muted">{{ evidence.length }}</span>
+            <span class="muted">{{ evidenceGroups.length }} 组 · {{ evidence.length }} 条</span>
           </div>
           <div v-if="!evidence.length" class="empty-state">暂未形成 Evidence。</div>
-          <article v-for="item in evidence" :key="item.ref" class="evidence-card">
+          <article v-for="group in evidenceGroups" :key="group.key" class="evidence-card">
             <div class="evidence-meta">
-              <strong>{{ item.ref }}</strong>
-              <span>{{ item.source }}<template v-if="item.metadata?.line_number">:L{{ item.metadata.line_number }}</template></span>
+              <strong>{{ evidenceRefsLabel(group.items) }}</strong>
+              <span>{{ group.title }}</span>
             </div>
-            <code>{{ item.raw }}</code>
+            <p class="muted">
+              {{ group.source }}<template v-if="evidenceLineRange(group.items)"> · {{ evidenceLineRange(group.items) }}</template>
+              · {{ group.items.length }} 条
+            </p>
+            <code>{{ evidenceRaw(group) }}</code>
           </article>
         </section>
       </aside>
