@@ -224,10 +224,11 @@ class OpenClawTaskRuntime:
             notes.append(
                 "For large image sets, keep the visual working set bounded: metadata, "
                 "multi-image view_image calls, or scratch-derived previews may be used for "
-                "screening. Multi-image views are screening only in ScopeX Evidence. Before "
-                "relying on an original image in the final conclusion, re-open the smallest "
-                "necessary set of exact read-only originals one at a time; those singleton "
-                "views can be SHA-verified again by the Fresh Finalizer."
+                "screening. When the final conclusion depends on images, narrow to the "
+                "smallest useful read-only original set and inspect that final set in a "
+                "bounded view_image call of at most 4 originals. ScopeX can independently "
+                "SHA-verify those originals again in the Fresh Finalizer; singleton re-open "
+                "calls are not required solely for evidence bookkeeping."
             )
         if not notes:
             return message
