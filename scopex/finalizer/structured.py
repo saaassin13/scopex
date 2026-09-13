@@ -19,6 +19,7 @@ class StructuredFinalizerResult:
     parse_error: str | None
     finalization: FinalizationResult | None
     normalizations: tuple[str, ...] = ()
+    image_evidence_refs: tuple[str, ...] = ()
 
     @property
     def valid(self) -> bool:
@@ -146,6 +147,7 @@ class StructuredFinalizer:
     def run(self, *, user_request: str, catalog: EvidenceCatalog) -> StructuredFinalizerResult:
         system, user = build_structured_prompts(user_request, catalog)
         image_inputs: tuple[tuple[str, str], ...] = ()
+        image_evidence_refs: tuple[str, ...] = ()
         if self.media_loader is not None:
             try:
                 images = self.media_loader.load(catalog)
@@ -156,6 +158,7 @@ class StructuredFinalizer:
                     str(exc),
                     None,
                 )
+            image_evidence_refs = tuple(image.ref for image in images)
             image_inputs = tuple(
                 (
                     f"{image.ref} source={image.source} sha256={image.sha256}",
@@ -175,15 +178,27 @@ class StructuredFinalizer:
 
         if not transport.done_seen:
             return StructuredFinalizerResult(
-                transport, None, "structured_finalizer_stream_incomplete", None
+                transport,
+                None,
+                "structured_finalizer_stream_incomplete",
+                None,
+                image_evidence_refs=image_evidence_refs,
             )
         if not transport.finish_reasons:
             return StructuredFinalizerResult(
-                transport, None, "structured_finalizer_missing_finish_reason", None
+                transport,
+                None,
+                "structured_finalizer_missing_finish_reason",
+                None,
+                image_evidence_refs=image_evidence_refs,
             )
         if transport.finish_reasons[-1] == "length":
             return StructuredFinalizerResult(
-                transport, None, "structured_finalizer_truncated", None
+                transport,
+                None,
+                "structured_finalizer_truncated",
+                None,
+                image_evidence_refs=image_evidence_refs,
             )
         if transport.finish_reasons[-1] != "stop":
             return StructuredFinalizerResult(
@@ -191,12 +206,19 @@ class StructuredFinalizer:
                 None,
                 "structured_finalizer_finish_reason:" + transport.finish_reasons[-1],
                 None,
+                image_evidence_refs=image_evidence_refs,
             )
 
         try:
             raw_payload = parse_structured_payload(transport.content)
         except (ValueError, json.JSONDecodeError) as exc:
-            return StructuredFinalizerResult(transport, None, str(exc), None)
+            return StructuredFinalizerResult(
+                transport,
+                None,
+                str(exc),
+                None,
+                image_evidence_refs=image_evidence_refs,
+            )
 
         normalized, normalizations = normalize_claim_payload(raw_payload)
         if not isinstance(normalized, dict):
@@ -206,6 +228,7 @@ class StructuredFinalizer:
                 "structured finalizer normalized payload must be one JSON object",
                 None,
                 normalizations,
+                image_evidence_refs,
             )
         finalization = self.service.finalize(normalized, catalog)
         return StructuredFinalizerResult(
@@ -214,4 +237,5 @@ class StructuredFinalizer:
             None,
             finalization,
             normalizations,
+            image_evidence_refs,
         )
