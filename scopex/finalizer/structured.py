@@ -52,13 +52,14 @@ def _evidence_prompt_line(item: EvidenceItem) -> str:
             f"{item.ref} | type=file_line | source={item.source} | "
             f"line={line} | {item.raw}"
         )
-    if evidence_type == "command_output":
+    if evidence_type == "command_line":
         host = item.metadata.get("exec_host")
         command = item.metadata.get("command")
+        line = item.metadata.get("line_number")
         digest = item.metadata.get("result_sha256")
         return (
-            f"{item.ref} | type=command_output | host={host} | command={command} | "
-            f"result_sha256={digest} | output={item.raw}"
+            f"{item.ref} | type=command_line | host={host} | command={command} | "
+            f"line={line} | result_sha256={digest} | {item.raw}"
         )
     if evidence_type == "image":
         digest = item.metadata.get("sha256")
@@ -99,9 +100,10 @@ kind 与 relation 必须严格匹配：
 6. 不把局部观察扩大成全局结论，不把常识/典型原因写成已观察事实。
 7. summary_claim_ids 最多 4 个，只列最重要 claim。
 8. 不复制日志全文到 topic，不增加额外字段。
-9. 不要生成结构上重复的 claim：相同 fact 不要因 topic 换词重复；同一组证据的同类时间关联也只保留一个。
+9. 不要生成结构上重复的 claim：同一组 evidence_refs 的同类 fact 不要仅因 topic 换词重复；同一组证据的同类时间关联也只保留一个。
 10. type=image 的 Evidence 已以原图直接附加。视觉 fact 必须基于你本次亲自看到的图片内容并引用对应图片 E ref；不要假定调查 Agent 之前的图片描述正确，因为这些描述不是证据。
-11. command_output 的 fact 只能陈述输出中直接出现的信息；不要把命令输出推断成未观察到的原因。
+11. type=command_line 的 fact 只能陈述该行输出直接支持的信息；可以为同一次命令的不同输出行生成不同 fact，但不要把命令输出推断成未观察到的原因。
+12. 如果多张图片呈现与原任务相关的明显不同状态、质量或内容差异，优先按图片或证据子集分别生成视觉 fact；不要把有意义的差异压缩成一个宽泛的场景描述。只有图片内容实质相同时才合并。
 
 只输出 JSON 对象，可有或没有 json fence。"""
     user = f"""原任务：{user_request}
