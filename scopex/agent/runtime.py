@@ -15,6 +15,7 @@ from scopex.agent.openclaw import OpenClawCommandBuilder
 from scopex.agent.openclaw_config import (
     ModelRequestSettings,
     OpenClawConfigSpec,
+    TASK_SCRATCH_PATH,
     build_openclaw_config,
 )
 from scopex.agent.openclaw_runner import OpenClawProcessResult, OpenClawTurnRunner
@@ -50,6 +51,7 @@ class OpenClawTaskSpec:
     skills: tuple[str, ...] = ()
     tools: tuple[str, ...] = ("read", "exec", "process")
     sandbox_binds: tuple[str, ...] = ()
+    task_scratch_bind: str | None = None
     exec_host: str = "sandbox"
     exec_mode: str = "full"
     docker_bin: str = "docker"
@@ -156,6 +158,7 @@ class OpenClawTaskRuntime:
                     skills=self.spec.skills,
                     tools=self.spec.tools,
                     sandbox_binds=self.spec.sandbox_binds,
+                    task_scratch_bind=self.spec.task_scratch_bind,
                     exec_host=self.spec.exec_host,
                     exec_mode=self.spec.exec_mode,
                     container_prefix="scopex-",
@@ -179,7 +182,7 @@ class OpenClawTaskRuntime:
             )
             process = runner.run(
                 session_key=self.session_key,
-                message=message,
+                message=self._runtime_message(message),
                 timeout_s=self.spec.timeout_s,
                 audit_dir=audit,
             )
@@ -205,6 +208,22 @@ class OpenClawTaskRuntime:
             proxy.shutdown()
             proxy.server_close()
             thread.join(timeout=3)
+
+    def _runtime_message(self, message: str) -> str:
+        """Attach capability context without prescribing an investigation workflow."""
+        if self.spec.task_scratch_bind is None or self.spec.exec_host != "sandbox":
+            return message
+        note = (
+            "[ScopeX runtime capability]\n"
+            f"{TASK_SCRATCH_PATH} is writable, task-local scratch space for intermediate "
+            "scripts and reduced analysis artifacts. External input mounts such as "
+            "/agent-data remain read-only. For large inputs, prefer using tools to "
+            "process bounded slices or summaries into task scratch instead of emitting "
+            "the full raw dataset into model context. This is a capability note, not a "
+            "required investigation sequence.\n"
+            "[/ScopeX runtime capability]"
+        )
+        return note + "\n\n" + message
 
     def close(self) -> SandboxCleanupResult:
         manager = SandboxManager(
