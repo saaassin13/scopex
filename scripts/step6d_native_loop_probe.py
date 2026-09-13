@@ -4,8 +4,9 @@
 Step 6D deliberately does not add a second ScopeX result-fingerprint detector.
 OpenClaw already has rolling tool-loop detection plus a post-compaction guard.
 This probe forces a repetitive read pattern and records the exact terminal/log
-shape produced by the OpenClaw version running on Spark. That observed shape is
-then used to wire product-level finalization without guessing framework internals.
+shape produced by the OpenClaw version running on Spark. It also verifies that
+OpenClaw's warning/block feedback stays in runtime trace/progress rather than
+being promoted into claim-grade ScopeX Evidence.
 """
 from __future__ import annotations
 
@@ -198,6 +199,7 @@ def main(argv=None) -> int:
         )
         guard_stopped_before_40 = len(read_results) < 40
         evidence_raw = [item.raw for item in catalog.items]
+        evidence_is_source_only = evidence_raw == [token]
 
         result.update({
             "native_loop_detection_enabled": native_enabled,
@@ -220,6 +222,7 @@ def main(argv=None) -> int:
             "unique_read_result_contents": actual_contents,
             "evidence_count": len(catalog.items),
             "evidence_raw": evidence_raw,
+            "evidence_is_source_only": evidence_is_source_only,
             "source_unchanged": source_unchanged,
             "native_loop_markers": observed_markers,
             "guard_stopped_before_40": guard_stopped_before_40,
@@ -235,7 +238,7 @@ def main(argv=None) -> int:
             repeated_same_path >= 3,
             bool(observed_markers),
             guard_stopped_before_40,
-            len(catalog.items) >= 1,
+            evidence_is_source_only,
             turn.runtime_limit_reason is None,
         ))
         if passed:
@@ -249,7 +252,7 @@ def main(argv=None) -> int:
                 ("same_path_repeated", repeated_same_path >= 3),
                 ("native_loop_marker_observed", bool(observed_markers)),
                 ("guard_stopped_before_40", guard_stopped_before_40),
-                ("evidence_exists", len(catalog.items) >= 1),
+                ("evidence_is_source_only", evidence_is_source_only),
                 ("not_budget_limited", turn.runtime_limit_reason is None),
             ):
                 if not ok:
