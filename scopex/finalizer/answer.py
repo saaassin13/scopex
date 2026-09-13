@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Iterable
 
 from scopex.evidence.catalog import EvidenceCatalog
 from scopex.finalizer.claims import Claim, ClaimKind, ClaimRelation, ClaimSet
@@ -72,12 +71,18 @@ def _ordered_summary_claims(claims: ClaimSet) -> list[Claim]:
     return ordered
 
 
-def _has_command_evidence(claim: Claim, catalog: EvidenceCatalog) -> bool:
-    for ref in claim.evidence_refs:
-        item = catalog.get(ref)
-        if item.metadata.get("evidence_type") in {"command_line", "command_output"}:
-            return True
-    return False
+def _has_action_verification_evidence(claim: Claim, catalog: EvidenceCatalog) -> bool:
+    """Require an explicit trusted semantic marker for the execution section.
+
+    A generic shell Tool Result is not equivalent to a business action. The
+    Evidence producer/capability boundary must explicitly mark post-action state
+    evidence before a claim may appear as an execution result.
+    """
+
+    return any(
+        catalog.get(ref).metadata.get("evidence_role") == "action_verification"
+        for ref in claim.evidence_refs
+    )
 
 
 def compose_product_answer(claims: ClaimSet, catalog: EvidenceCatalog) -> ProductAnswer:
@@ -98,7 +103,8 @@ def compose_product_answer(claims: ClaimSet, catalog: EvidenceCatalog) -> Produc
     execution_claims = [
         claim
         for claim in ordered
-        if claim.kind is ClaimKind.FACT and _has_command_evidence(claim, catalog)
+        if claim.kind is ClaimKind.FACT
+        and _has_action_verification_evidence(claim, catalog)
     ][:4]
 
     unresolved = [
