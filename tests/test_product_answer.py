@@ -42,6 +42,38 @@ class ProductAnswerTests(unittest.TestCase):
         self.assertEqual(answer["conclusion"][0]["claim_ids"], ["C1"])
         self.assertEqual(answer["recommendations"], [])
 
+    def test_generic_command_evidence_is_not_promoted_to_execution(self) -> None:
+        catalog = EvidenceCatalog("task-1", "session-1")
+        catalog.add(
+            source="exec:call-1",
+            raw="matched 42 rows",
+            metadata={
+                "evidence_type": "command_line",
+                "line_number": 1,
+                "command": "grep overload telemetry.csv",
+            },
+        )
+        claims = claim_set_from_dict(
+            {
+                "claims": [
+                    {
+                        "id": "C1",
+                        "kind": "fact",
+                        "topic": "发现 42 条过载记录",
+                        "evidence_refs": ["E1"],
+                        "confidence": "high",
+                        "scope": "time_window",
+                        "relation": "observed",
+                    }
+                ],
+                "summary_claim_ids": ["C1"],
+            }
+        )
+
+        answer = compose_product_answer(claims, catalog).to_dict()
+
+        self.assertEqual(answer["execution"], [])
+
     def test_runtime_audit_persists_answer_only_after_revalidation(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             store = AuditStore(Path(tmp))
@@ -52,6 +84,7 @@ class ProductAnswerTests(unittest.TestCase):
                 raw="state=RUNNING",
                 metadata={
                     "evidence_type": "command_line",
+                    "evidence_role": "action_verification",
                     "line_number": 1,
                     "command": "device status",
                 },
