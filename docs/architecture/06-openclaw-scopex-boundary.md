@@ -302,7 +302,11 @@ Only implementation details remain, not architectural uncertainty:
 2. A stable OpenClaw API for reading the current durable `progress_card` outside
    the transcript should be verified before ScopeX depends on it for refresh
    recovery.
+3. A single investigation that alternates between `gateway` host inspection and
+   sandbox `/agent-data` inspection still needs an explicit real-run check of
+   OpenClaw per-call exec-host routing. Evidence provenance already records an
+   explicit per-call host when present, so this does not change the architecture.
 
-Neither blocks Step 5A. Step 5B can be implemented behind strict integrity
-checks and then validated with the existing three-image POC07 fixture before it
-is marked PASS.
+None of these blocks Step 5A. Step 5B is implemented behind strict integrity
+checks and must be validated with the existing POC07 image fixture before it is
+marked PASS.
