@@ -26,10 +26,13 @@ POC01–POC06 已冻结为回归基线。Step 6 复杂任务能力与当前产�
 
 6F 在**不降低任务要求**的前提下，把同一综合任务从约 `1008.5 s / 23 requests` 优化到约 `371.1 s / 14 requests`，进入当前产品默认 `600 s / 16 requests` 边界。主要优化来自通用执行环境和输出效率，而不是把业务流程写死进 ScopeX。
 
-详细结论和下一步计划见：
+当前文档入口：
 
-- [OpenClaw / ScopeX Boundary](docs/architecture/06-openclaw-scopex-boundary.md)
-- [Complex Task Validation and Next Plan](docs/architecture/07-complex-task-validation-and-next-plan.md)
+- [Product Requirements](docs/01-requirements.md) — 当前需求基线；
+- [Delivery & Acceptance](docs/02-delivery-and-acceptance.md) — 已交付/待完成与验收；
+- [OpenClaw / ScopeX Boundary](docs/architecture/06-openclaw-scopex-boundary.md) — 架构所有权边界；
+- [Complex Task Validation and Next Plan](docs/architecture/07-complex-task-validation-and-next-plan.md) — 当前实施路线；
+- [Local Usage & Handoff](docs/08-local-usage-and-handoff.md) — 本地启动、使用和新会话接手。
 
 ## 产品技术栈
 
@@ -104,6 +107,7 @@ scripts/                    # validation/profiling/runbook scripts; not Agent co
 
 ```bash
 cd /home/yanlan/workspaces/code/scopex
+git checkout main
 git pull --ff-only
 python3 -m unittest discover -s tests -v
 ```
@@ -134,6 +138,8 @@ GET  /tasks/{id}/evidence
 GET  /tasks/{id}/result
 ```
 
+完整本地启动、analysis sandbox、curl 示例和 audit 路径见 `docs/08-local-usage-and-handoff.md`。
+
 ## v0.1 产品边界
 
 - 单用户；同一时间一个主要任务；
@@ -157,3 +163,5 @@ GET  /tasks/{id}/result
 6. vLLM speculative decoding / decode-throughput 优化降为可选性能项，仅在后续真实 SLA 再次成为瓶颈时启动。
 
 详细验收条件、顺序和已知非阻塞项统一维护在 `docs/architecture/07-complex-task-validation-and-next-plan.md`。
+
+新会话接手时，直接让新会话先读取 README + `docs/01-requirements.md` + `docs/architecture/06-openclaw-scopex-boundary.md` + `docs/architecture/07-complex-task-validation-and-next-plan.md` + `docs/08-local-usage-and-handoff.md`，再开始 Step 7。

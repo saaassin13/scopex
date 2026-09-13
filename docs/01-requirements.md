@@ -1,60 +1,136 @@
-# 需求基线
+# ScopeX 产品需求基线
 
-状态：2026-09-10 用户已接受下述首版边界。模型与运行时未定型。
+状态：**2026-09-13 当前有效基线**。旧 POC 需求已收口为当前产品要求；后续需求变化应在本文件和架构/路线文档中同步更新。
 
 ## 1. 项目目标
 
-在现有 NVIDIA DGX Spark 上，交付离线、对话式、本机工作助手。用户给出目标，模型自主选择工具、调查步骤与验证方式；执行可见，可打断、纠正、继续。优先复用开源运行时，不从零开发通用 Agent。
+在 NVIDIA DGX Spark 上交付一个本地、可交互、证据可追溯的工业诊断 Agent Runtime。
 
-用户提供的硬约束：Spark 不换；模型、量化、推理后端、Agent 均可换。Web 或终端都可。不是另外建设任务监控平台。
+当前固定实现基线：
+
+- Agent Runtime：OpenClaw；
+- 本地模型：`qwen3.8-27b-nvfp4`；
+- 推理服务：vLLM OpenAI-compatible `/v1`；
+- 产品层：ScopeX Runtime + FastAPI + Vue；
+- 默认本地运行，业务数据、日志、图片、审计记录不依赖公网服务。
+
+核心边界：
+
+> **OpenClaw owns execution. ScopeX owns product control and trust.**
+
+OpenClaw + 模型负责自主调查、工具选择、执行、动作后验证和停止；ScopeX 负责能力/数据挂载、权限边界、Task 生命周期、Stop/Resume/Steer、预算护栏、Evidence、可信 Finalizer、审计和产品 API/UI。
+
+**不得在 ScopeX 中重新实现第二套 Agent Loop / Workflow Engine / Decision Engine / Action Engine。**
 
 ## 2. 必须具备的能力
 
-| ID | 需求 | 怎样证明 |
+| ID | 需求 | 当前验收口径 |
 |---|---|---|
-| R01 | 完整任务链离线 | 断网后聊天、读图、工具、摘要、知识使用仍能完成；安装下载与离线运行分开验收 |
-| R02 | 通用对话与本机操作 | 不需要工具就直接回答；需要时读取文件、查找、执行授权命令或临时编程 |
-| R03 | 日志提取与业务判断 | 提取可逐项核对；业务结论关联规则与原始证据；不知道就说明证据缺口 |
-| R04 | 按时间找文件与图片理解 | 时间字段含义正确、文件选对、图片像素实际送入本地视觉能力；不能只返回路径 |
-| R05 | 服务和资源检查 | 读取真实状态；没有历史数据就不宣称已分析历史趋势 |
-| R06 | 项目增强 | 使用项目说明、业务知识、Skill、少量稳定脚本；新增能力不依赖修改运行时核心 |
-| R07 | 自主执行 | 模型选择下一步，允许一般错误恢复；不把完整调查过程写死，也不让用户逐步教操作 |
-| R08 | 对话式可接管 | 看到真实进展、工具动作和行动理由摘要；可以中断、纠正、利用有效上下文继续 |
-| R09 | 权限边界 | 修改生产配置、重启服务等操作先确认；普通读取分析无需反复确认；不授予无限 root 权限 |
-| R10 | 时间与正确性 | 常见简单任务约两分钟；“生成回答”或“停止了”不等于正确完成 |
-| R11 | 可维护与可复测 | 固定版本、部署说明、私有运行记录、样本与评分规则，升级可回归 |
+| R01 | 本地任务链 | OpenClaw、vLLM、文件/Shell/图片、Evidence、Finalizer 均在 Spark 本地完成；运行期 Sandbox 默认无网络 |
+| R02 | 自主调查 | 用户给目标后，模型自主决定调查顺序与工具，不要求用户逐步教操作 |
+| R03 | 大数据工作集 | 大日志/CSV 不直接灌入 Context；Agent 用 Shell/Python 等做筛选、计算和有界摘要 |
+| R04 | 多图分析 | 大图片集可先筛选，最终依赖的只读原图必须实际 `view_image`；最终 claim-grade 原图集合保持有界 |
+| R05 | 可执行动作 | 业务动作只能通过明确 capability / permission boundary；动作前验证前置条件 |
+| R06 | 动作后验证 | 命令 exit code 0 不等于业务成功；必须再次查询真实业务状态 |
+| R07 | 上下文持续 | 长任务使用 OpenClaw 原生 compaction；Context 是工作记忆，不是原始数据存储 |
+| R08 | 任务可接管 | 支持 Stop / Resume / Steering，并保留同一 OpenClaw Session 的有效上下文 |
+| R09 | 防失控 | Hard request/time budget 单一来源；OpenClaw 原生 loopDetection 防止重复工具循环 |
+| R10 | 可信输出 | 用户可见事实必须来自 claim-grade Evidence / 原图重新验证，不允许“模型自己说过的话”反向成为事实依据 |
+| R11 | 结果优先 | 产品主界面优先展示结论、说明、执行情况和建议；Evidence 是可展开的支撑材料 |
+| R12 | 可审计/可复测 | 每次关键验证保留 Task/Trace/Evidence/Claims/Result/Probe 指标，升级后可重复回归 |
 
-不依赖展示完整内部推理。干预是兜底能力，不替代自主完成；自主完成与人工介入后完成分别统计。
+## 3. 数据、文件与 Sandbox 规则
 
-## 3. 已接受的首版范围
+- 外部业务数据以只读 bind 暴露，例如 `/agent-data`；
+- 每个 Task 自动获得 host-backed、task-local、可写 `/task-scratch`；
+- `/task-scratch` 用于临时脚本、筛选结果、缩略图/接触表、JSON/CSV 中间产物；
+- Scratch 派生图片不能自动升级为原始 claim-grade Image Evidence；
+- Runtime Sandbox 默认 `network=none`；通用依赖应在镜像 build 阶段准备，而不是任务中在线安装；
+- 当前轻量 analysis sandbox 只基于真实缺口增加 Pillow，不预装重型数据栈。
 
-单用户、同时一个主要任务。多会话可保留，不承诺并发任务仍满足相同耗时。简单任务两分钟左右；复杂业务诊断按约 2–5 分钟预算单独验证。未准备过的新任务允许尝试，不承诺与常用任务相同完成率。
+## 4. Evidence / Final Result 要求
 
-不承担机器人实时控制、不自动改控制参数、不替代安全保护。定时巡检、日报、周报留作后续复用能力，不是首轮 POC 通过条件。不默认引入多 Agent 编排、独立向量数据库、任务队列或运维大屏。
+可信链固定为：
 
-## 4. 已知旧验证与未知信息
+```text
+Raw Tool Result / Original Image
+        ↓
+Evidence Snapshot
+        ↓
+Fresh Structured Finalizer
+        ↓
+Validated Claims
+        ↓
+Deterministic Renderer
+        ↓
+Step 7 constrained Answer Composer
+```
 
-| 信息 | 证据性质 |
-|---|---|
-| OpenCode 之前已验证 | 用户明确反馈；本仓库尚无完整原始轨迹 |
-| OpenClaw + vLLM + 用户所称“千问3.8 27b fp8”表现差 | 用户反馈：简单日志三次仅一次成功，一次二十多次工具调用，十分钟以上未结束 |
-| 用户认为尚未开启 thinking | 待对照真实请求、服务端模板和解析设置；界面状态不是唯一证据 |
-| 精确模型仓库 ID、模型 revision、服务镜像、工具/推理解析器 | 未知；不得依据口头名称补写 |
+关键规则：
 
-不能据此单独归因于 OpenClaw、vLLM 或模型；也不能反过来忽略用户已验证的失败。OpenCode 不再当作“新方案”无条件推荐。复测必须说明改变量、对应旧问题、预期证据。
+1. Evidence 是 OpenClaw Trace 的最小 claim-grade 投影，不是第二份 Transcript；
+2. `read` / `exec` 的真实输出可以成为 Evidence，OpenClaw runtime-control warning/guard 文本不能成为业务 Evidence；
+3. 图片 Evidence 记录原图身份和 SHA；Fresh Finalizer 必须重新解析并校验原图；
+4. Finalizer 只能基于已有 Evidence 形成 Claims；
+5. Answer Composer 只能改变表达方式，不能新增未经 Claims 支持的事实/因果判断；
+6. deterministic renderer 始终保留为 audit/trust fallback。
 
-## 5. 完成定义与反例
+## 5. 产品运行边界
 
-日志提取：无漏项、无多项、字段正确；不能容许每次提取结果错 5%，再声称任务正确率 95%。
+v0.1 当前范围：
 
-业务判断：区分异常识别、可能原因、已证实根因。数据不足时准确说明缺口可算正确诊断行为；但明明存在的数据没找到不能算成功。
+- 单用户；
+- 同一时间一个主要 Task；
+- PAUSED Task 仍占用任务槽位并保留 Session；
+- Runtime API 只绑定 loopback；
+- 原始数据默认只读；
+- 不做多 Agent 编排、任务队列、Kubernetes、工作流编辑器、独立重型监控平台；
+- Memory Search 暂不启用，只有出现真实跨任务长期召回需求时再引入；
+- 高风险机器人/设备/配置动作必须另有明确 capability 和权限策略。
 
-图片分析：文件名或 JSON 提示不替代画面读取；需测试交换图片或同名换内容时结果随实际画面变化。
+## 6. 当前性能与复杂任务 Gate
 
-系统检查：当前快照不等于趋势。命令执行成功不等于诊断成立。取消执行不等于撤销已发生的副作用。
+复杂任务产品默认预算：
 
-## 6. 数据与权限原则
+```text
+OpenClaw turn timeout = 600 s
+model requests / turn = 16
+```
 
-本仓库公开。生产日志、图片、模型、设备配置、原始模型请求与响应均留在本地。`.gitignore` 不是自动脱敏；禁止强制添加私有目录。需要分享时，另制人工审核过的脱敏摘要。
+Step 6F 已用同一综合任务真实通过：
 
-在生产 Spark 上，先只读、小样本、单任务。未经另行授权，不安装驱动、不重启模型服务、不停止业务、不调整防火墙或断开管理网络。
+- 120,000 行 telemetry；
+- 15,000+ 行日志；
+- 48 张原始图片；
+- constrained recovery；
+- recovery 后独立状态验证；
+- `371.1 s / 14 requests`；
+- `within_product_default_budget = true`。
+
+这证明当前本地 OpenClaw + Qwen 27B 路径已具备复杂任务能力，并能进入当前定义的产品默认预算；不代表所有未知业务任务都自动满足相同 SLA。
+
+## 7. 完成定义
+
+一个诊断/执行任务只有同时满足以下条件才算正确完成：
+
+- 找到并使用了任务所需的真实数据；
+- 结论区分观察事实、推断和未证实项；
+- 需要动作时，前置条件经过证据验证；
+- 动作只执行允许的次数和范围；
+- 动作后有独立真实状态验证；
+- 最终结果通过 Fresh Finalizer / Claim Validator；
+- 任务没有依赖未记录的云端调用或隐藏业务 Handler；
+- 原始只读输入未被修改。
+
+## 8. 当前主需求
+
+Step 6 已冻结。当前产品主需求进入 **Step 7：Product Answer + Result-first UI**：
+
+1. 在 Validated Claims 之上增加 constrained Answer Composer；
+2. 产品结果固定为“结论 / 说明 / 执行情况 / 建议 / 相关证据”；
+3. Evidence/Finding 降为支撑视图，不抢占主结果；
+4. 完成真实 Spark FastAPI + Vue 产品联调；
+5. 用真实业务任务从 API/UI 跑完整闭环验收；
+6. speculative decoding 等 vLLM 性能优化仅在真实 SLA 再次成为瓶颈时启动。
+
+详细架构边界见 `docs/architecture/06-openclaw-scopex-boundary.md`；实施与剩余工作见 `docs/architecture/07-complex-task-validation-and-next-plan.md`。

@@ -1,4 +1,13 @@
-# POC 路线与阶段门
+# POC 路线与阶段门（历史归档）
+
+> **ARCHIVED / 仅用于回看早期验证设计。** 当前 Runtime、需求、实施顺序和剩余工作不再以本文件为准。请优先读取：
+>
+> - `docs/01-requirements.md` — 当前产品需求；
+> - `docs/architecture/06-openclaw-scopex-boundary.md` — 当前架构边界；
+> - `docs/architecture/07-complex-task-validation-and-next-plan.md` — 当前实施路线；
+> - `docs/08-local-usage-and-handoff.md` — 本地使用与接手。
+
+以下内容保留用于追溯 POC01–POC05 当时的阶段门，不应据此否定后来已经通过的 Step 6A–6F 结果。
 
 不预设任何 Agent/模型胜出。继承 OpenCode/OpenClaw 旧验证；先取证，后控制变量。基础探针不是自研 Agent 产品。
 
