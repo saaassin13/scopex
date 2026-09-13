@@ -35,6 +35,7 @@ class LocalRuntimeConfig:
     exec_host: str = "sandbox"
     exec_mode: str = "full"
     enable_view_image: bool = False
+    enable_progress_card: bool = False
 
 
 class OpenClawRuntimeFactory:
@@ -74,6 +75,8 @@ class OpenClawRuntimeFactory:
         tools = ["read", "exec", "process"]
         if self.config.enable_view_image:
             tools.append("view_image")
+        if self.config.enable_progress_card:
+            tools.append("progress_card")
         spec = OpenClawTaskSpec(
             cli_path=self.config.cli_path,
             model_id=self.config.model_id,
