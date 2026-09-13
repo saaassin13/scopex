@@ -5,6 +5,7 @@ import tempfile
 import unittest
 
 from scopex.api.factory import LocalRuntimeConfig, OpenClawRuntimeFactory
+from scopex.evidence.projector import OpenClawEvidenceProjector
 from scopex.events.progress import InMemoryEventSink
 from scopex.runtime.session import Session
 from scopex.runtime.task import Task
@@ -67,6 +68,10 @@ class RuntimeApiFactoryTests(unittest.TestCase):
             self.assertEqual(
                 coordinator.agent.spec.tools,
                 ("read", "exec", "process", "view_image", "progress_card"),
+            )
+            self.assertIsInstance(
+                coordinator.evidence_pipeline,
+                OpenClawEvidenceProjector,
             )
             self.assertEqual(coordinator.convergence_policy.max_elapsed_s, 181.0)
             self.assertEqual(coordinator.convergence_policy.max_model_requests, 6)
