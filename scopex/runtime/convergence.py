@@ -5,15 +5,21 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True, slots=True)
 class ConvergencePolicy:
-    max_model_requests: int = 8
-    max_tool_calls: int = 20
-    max_elapsed_s: float = 300.0
-    max_context_chars: int = 64_000
+    """Product-level convergence policy only.
+
+    Hard budgets such as model-request count, task timeout, exec timeout and
+    model context window are enforced by the OpenClaw/ModelProxy runtime that
+    actually owns those resources. ScopeX convergence must not duplicate those
+    limits with a second set of approximate counters.
+    """
+
     max_stale_rounds: int = 3
 
 
 @dataclass(frozen=True, slots=True)
 class ConvergenceSnapshot:
+    # The operational metrics remain available for audit/measurement. They are
+    # intentionally not interpreted as hard stop budgets here.
     model_requests: int
     tool_calls: int
     elapsed_s: float
@@ -29,23 +35,18 @@ class ConvergenceDecision:
 
 
 def evaluate(policy: ConvergencePolicy, snapshot: ConvergenceSnapshot) -> ConvergenceDecision:
-    """Evaluate generic runtime stop/finalize conditions.
+    """Evaluate only product-level convergence signals.
 
-    This function intentionally contains no business semantics. A caller may set
-    ``goal_satisfied`` after its own evidence/acceptance logic is satisfied.
+    OpenClaw remains responsible for the investigation path. ScopeX may stop a
+    task because the goal is already satisfied or because repeated rounds are
+    no longer producing new claim-grade information. Resource budgets are
+    enforced closer to the resource owner and are handled separately from this
+    convergence decision.
     """
 
     reasons: list[str] = []
     if snapshot.goal_satisfied:
         reasons.append("goal_satisfied")
-    if snapshot.model_requests >= policy.max_model_requests:
-        reasons.append("model_request_budget")
-    if snapshot.tool_calls >= policy.max_tool_calls:
-        reasons.append("tool_call_budget")
-    if snapshot.elapsed_s >= policy.max_elapsed_s:
-        reasons.append("elapsed_budget")
-    if snapshot.context_chars >= policy.max_context_chars:
-        reasons.append("context_budget")
     if snapshot.stale_rounds >= policy.max_stale_rounds:
         reasons.append("no_new_evidence")
     return ConvergenceDecision(bool(reasons), tuple(reasons))

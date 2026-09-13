@@ -80,6 +80,7 @@ class InvestigationCoordinator:
         self._max_context_chars = 0
         self._stale_rounds = 0
         self._last_evidence_count = 0
+        self._finalization_reasons: tuple[str, ...] = ()
 
     @classmethod
     def for_openclaw(
@@ -239,13 +240,51 @@ class InvestigationCoordinator:
             ),
         )
 
+    @property
+    def finalization_reasons(self) -> tuple[str, ...]:
+        return self._finalization_reasons
+
     def begin_finalization(self, *, goal_satisfied: bool = False) -> ConvergenceDecision:
         decision = self.convergence(goal_satisfied=goal_satisfied)
         if not decision.should_finalize:
             raise ValueError("convergence policy does not allow finalization yet")
+        self._finalization_reasons = decision.reasons
         self.controller.begin_finalization(reasons=decision.reasons)
         self._snapshot()
         return decision
+
+    def begin_runtime_limit_finalization(self, reason: str) -> tuple[str, ...]:
+        """Finalize from collected Evidence after a hard runtime budget boundary.
+
+        Runtime budgets are not convergence signals and do not decide what the
+        Agent should investigate next. They only say that this OpenClaw turn may
+        not consume more of the constrained resource.
+        """
+
+        if not isinstance(reason, str) or not reason:
+            raise ValueError("runtime limit reason is required")
+        reasons = ("budget_reached", reason)
+        self._finalization_reasons = reasons
+        self.controller.begin_finalization(reasons=reasons)
+        self._snapshot()
+        return reasons
+
+    def begin_runtime_guard_finalization(self, reason: str) -> tuple[str, ...]:
+        """Finalize current facts after an OpenClaw-owned safety/convergence guard.
+
+        The guard remains part of the Agent runtime. ScopeX does not reproduce
+        its detector or decide a replacement investigation step; it only turns a
+        terminal guard boundary into a trustworthy product result when Evidence
+        already exists.
+        """
+
+        if not isinstance(reason, str) or not reason:
+            raise ValueError("runtime guard reason is required")
+        reasons = ("runtime_guard_reached", reason)
+        self._finalization_reasons = reasons
+        self.controller.begin_finalization(reasons=reasons)
+        self._snapshot()
+        return reasons
 
     def finish_finalization(
         self,
@@ -353,6 +392,7 @@ class InvestigationCoordinator:
             {
                 "valid": result.valid,
                 "errors": list(result.errors),
+                "investigation_reasons": list(self._finalization_reasons),
                 "task_state": published_state.value,
             },
             rendered=result.rendered,
@@ -379,6 +419,7 @@ class InvestigationCoordinator:
                 "finish_reasons": list(result.transport.finish_reasons),
                 "normalizations": list(result.normalizations),
                 "image_evidence_refs": list(result.image_evidence_refs),
+                "investigation_reasons": list(self._finalization_reasons),
                 "task_state": published_state.value,
             },
             rendered=rendered,

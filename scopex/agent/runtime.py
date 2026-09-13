@@ -10,15 +10,16 @@ import threading
 from typing import Callable
 
 from scopex.agent.environment import build_openclaw_env
-from scopex.agent.model_proxy import ModelProxy
+from scopex.agent.model_proxy import ModelProxy, RUNTIME_LIMIT_TURN_TIMEOUT
 from scopex.agent.openclaw import OpenClawCommandBuilder
 from scopex.agent.openclaw_config import (
     ModelRequestSettings,
     OpenClawConfigSpec,
+    TASK_SCRATCH_PATH,
     build_openclaw_config,
 )
 from scopex.agent.openclaw_runner import OpenClawProcessResult, OpenClawTurnRunner
-from scopex.agent.outcome import CliOutcome, parse_cli_outcome
+from scopex.agent.outcome import CliOutcome, classify_cli_runtime_guard, parse_cli_outcome
 from scopex.agent.proxy_control import RuntimeRequestHook
 from scopex.agent.request_policy import OpenClawRequestPolicy
 from scopex.agent.sandbox import SandboxCleanupResult, SandboxManager
@@ -44,15 +45,19 @@ class OpenClawTaskSpec:
     agent_id: str
     uid: int
     gid: int
-    timeout_s: int = 300
-    max_requests: int = 12
+    # Hard model budgets are per OpenClaw turn. A user resume/steer starts a new
+    # turn with a fresh turn budget while task-level counters remain audit-only.
+    timeout_s: int = 600
+    max_requests: int = 16
     max_tokens: int = 2048
     skills: tuple[str, ...] = ()
     tools: tuple[str, ...] = ("read", "exec", "process")
     sandbox_binds: tuple[str, ...] = ()
+    task_scratch_bind: str | None = None
     exec_host: str = "sandbox"
     exec_mode: str = "full"
     docker_bin: str = "docker"
+    compaction_enabled: bool = True
 
 
 @dataclass(frozen=True, slots=True)
@@ -62,6 +67,8 @@ class OpenClawTurnResult:
     cli_outcome: CliOutcome | None
     proxy_records: tuple[dict, ...]
     audit_dir: Path
+    runtime_limit_reason: str | None = None
+    runtime_guard_reason: str | None = None
 
 
 def validate_session_key_agent(session_key: str, agent_id: str) -> None:
@@ -155,9 +162,11 @@ class OpenClawTaskRuntime:
                     skills=self.spec.skills,
                     tools=self.spec.tools,
                     sandbox_binds=self.spec.sandbox_binds,
+                    task_scratch_bind=self.spec.task_scratch_bind,
                     exec_host=self.spec.exec_host,
                     exec_mode=self.spec.exec_mode,
                     container_prefix="scopex-",
+                    compaction_enabled=self.spec.compaction_enabled,
                 )
             )
             self.config_path.write_text(
@@ -177,19 +186,31 @@ class OpenClawTaskRuntime:
             )
             process = runner.run(
                 session_key=self.session_key,
-                message=message,
+                message=self._runtime_message(message),
                 timeout_s=self.spec.timeout_s,
                 audit_dir=audit,
             )
 
             cli_outcome = None
-            if process.returncode == 0 and process.stop_reason is None:
+            runtime_guard_reason = None
+            stdout_text = ""
+            if process.stop_reason is None:
                 try:
-                    cli_outcome = parse_cli_outcome(
-                        process.stdout_path.read_text(encoding="utf-8")
-                    )
-                except (ValueError, UnicodeError):
-                    cli_outcome = None
+                    stdout_text = process.stdout_path.read_text(encoding="utf-8")
+                except (OSError, UnicodeError):
+                    stdout_text = ""
+                if stdout_text:
+                    runtime_guard_reason = classify_cli_runtime_guard(stdout_text)
+                    try:
+                        cli_outcome = parse_cli_outcome(stdout_text)
+                    except ValueError:
+                        cli_outcome = None
+
+            runtime_limit_reason = proxy.runtime_limit_reason
+            # The runner and proxy use the same turn timeout. If the outer runner
+            # wins the race, preserve the same semantic stop reason.
+            if runtime_limit_reason is None and process.stop_reason == "timeout":
+                runtime_limit_reason = RUNTIME_LIMIT_TURN_TIMEOUT
 
             return OpenClawTurnResult(
                 turn_name=turn_name,
@@ -197,12 +218,45 @@ class OpenClawTaskRuntime:
                 cli_outcome=cli_outcome,
                 proxy_records=tuple(dict(row) for row in proxy.records),
                 audit_dir=audit,
+                runtime_limit_reason=runtime_limit_reason,
+                runtime_guard_reason=runtime_guard_reason,
             )
         finally:
             proxy.cancel()
             proxy.shutdown()
             proxy.server_close()
             thread.join(timeout=3)
+
+    def _runtime_message(self, message: str) -> str:
+        """Attach capability context without prescribing an investigation workflow."""
+        notes: list[str] = []
+        if self.spec.task_scratch_bind is not None and self.spec.exec_host == "sandbox":
+            notes.append(
+                f"{TASK_SCRATCH_PATH} is writable, task-local scratch space for intermediate "
+                "scripts and reduced analysis artifacts. External input mounts such as "
+                "/agent-data remain read-only. For large inputs, prefer using tools to "
+                "process bounded slices or summaries into task scratch instead of emitting "
+                "the full raw dataset into model context."
+            )
+        if "view_image" in self.spec.tools:
+            notes.append(
+                "For large image sets, keep the visual working set bounded: metadata, "
+                "multi-image view_image calls, or scratch-derived previews may be used for "
+                "screening. When the final conclusion depends on images, narrow to the "
+                "smallest useful read-only original set and inspect that final set in a "
+                "bounded view_image call of at most 4 originals. ScopeX can independently "
+                "SHA-verify those originals again in the Fresh Finalizer; singleton re-open "
+                "calls are not required solely for evidence bookkeeping."
+            )
+        if not notes:
+            return message
+        note = (
+            "[ScopeX runtime capability]\n"
+            + "\n".join(notes)
+            + "\nThis is capability/evidence context, not a required investigation sequence.\n"
+            "[/ScopeX runtime capability]"
+        )
+        return note + "\n\n" + message
 
     def close(self) -> SandboxCleanupResult:
         manager = SandboxManager(

@@ -31,7 +31,9 @@ class OpenClawConfigTests(unittest.TestCase):
         sandbox = defaults["sandbox"]
         docker = sandbox["docker"]
         self.assertEqual(defaults["thinkingDefault"], "off")
-        self.assertFalse(defaults["compaction"]["enabled"])
+        self.assertTrue(defaults["compaction"]["enabled"])
+        self.assertFalse(defaults["compaction"]["memoryFlush"]["enabled"])
+        self.assertFalse(cfg["agents"]["entries"]["sx1"]["memory"]["search"]["enabled"])
         self.assertEqual(sandbox["workspaceAccess"], "ro")
         self.assertEqual(docker["network"], "none")
         self.assertTrue(docker["readOnlyRoot"])
@@ -47,6 +49,11 @@ class OpenClawConfigTests(unittest.TestCase):
         extra = defaults["models"]["vllm/qwen-local"]["params"]["extra_body"]
         self.assertEqual(extra["chat_template_kwargs"]["enable_thinking"], False)
         self.assertEqual(defaults["skills"], ["camera-diagnosis"])
+
+    def test_compaction_can_be_disabled_for_regression_debugging(self):
+        cfg = build_openclaw_config(replace(self.spec(), compaction_enabled=False))
+        self.assertFalse(cfg["agents"]["defaults"]["compaction"]["enabled"])
+        self.assertFalse(cfg["agents"]["entries"]["sx1"]["memory"]["search"]["enabled"])
 
     def test_read_only_data_binds_use_openclaw_docker_binds(self):
         cfg = build_openclaw_config(
@@ -67,6 +74,48 @@ class OpenClawConfigTests(unittest.TestCase):
             ],
         )
         self.assertTrue(docker["dangerouslyAllowExternalBindSources"])
+
+    def test_task_scratch_is_the_only_writable_external_bind(self):
+        cfg = build_openclaw_config(
+            replace(
+                self.spec(),
+                sandbox_binds=("/srv/logs:/agent-data/logs:ro",),
+                task_scratch_bind="/srv/scopex/task-1/scratch:/task-scratch:rw",
+            )
+        )
+        docker = cfg["agents"]["defaults"]["sandbox"]["docker"]
+        self.assertEqual(
+            docker["binds"],
+            [
+                "/srv/logs:/agent-data/logs:ro",
+                "/srv/scopex/task-1/scratch:/task-scratch:rw",
+            ],
+        )
+
+    def test_task_scratch_requires_fixed_path_and_rw_mode(self):
+        with self.assertRaises(ValueError):
+            build_openclaw_config(
+                replace(
+                    self.spec(),
+                    task_scratch_bind="/srv/scratch:/tmp/scratch:rw",
+                )
+            )
+        with self.assertRaises(ValueError):
+            build_openclaw_config(
+                replace(
+                    self.spec(),
+                    task_scratch_bind="/srv/scratch:/task-scratch:ro",
+                )
+            )
+
+    def test_data_bind_cannot_overlap_task_scratch(self):
+        with self.assertRaises(ValueError):
+            build_openclaw_config(
+                replace(
+                    self.spec(),
+                    sandbox_binds=("/srv/data:/task-scratch/input:ro",),
+                )
+            )
 
     def test_gateway_exec_uses_openclaw_native_exec_host(self):
         cfg = build_openclaw_config(

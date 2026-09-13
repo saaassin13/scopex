@@ -5,6 +5,9 @@ import json
 from typing import Any
 
 
+NATIVE_TOOL_LOOP_GUARD = "native_tool_loop_guard"
+
+
 @dataclass(frozen=True, slots=True)
 class CliOutcome:
     blockers: tuple[str, ...]
@@ -18,13 +21,49 @@ class CliOutcome:
         return not self.blockers and self.answer is not None
 
 
-def parse_cli_outcome(text: str) -> CliOutcome:
+def _cli_value(text: str) -> dict[str, Any]:
     try:
         value = json.loads(text)
     except (TypeError, ValueError) as exc:
         raise ValueError("unrecognized OpenClaw CLI JSON envelope") from exc
     if not isinstance(value, dict):
         raise ValueError("OpenClaw CLI result must be an object")
+    return value
+
+
+def classify_cli_runtime_guard(text: str) -> str | None:
+    """Classify a framework-owned terminal guard from the CLI JSON envelope.
+
+    This intentionally recognizes only OpenClaw terminal shapes observed or
+    documented as tool-loop guards. It is not a generic error-message mapper and
+    it does not decide what the Agent should do next.
+    """
+
+    try:
+        value = _cli_value(text)
+    except ValueError:
+        return None
+    meta = value.get("meta")
+    if not isinstance(meta, dict):
+        return None
+    error = meta.get("error")
+    if isinstance(error, dict):
+        message = error.get("message")
+    else:
+        message = error
+    if not isinstance(message, str):
+        return None
+    normalized = message.strip().lower()
+    if (
+        "tool-loop recovery encountered another critical loop" in normalized
+        or "compaction_loop_persisted" in normalized
+    ):
+        return NATIVE_TOOL_LOOP_GUARD
+    return None
+
+
+def parse_cli_outcome(text: str) -> CliOutcome:
+    value = _cli_value(text)
 
     meta = value.get("meta") or {}
     if not isinstance(meta, dict):

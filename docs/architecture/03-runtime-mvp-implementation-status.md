@@ -1,203 +1,139 @@
 # Runtime MVP Implementation Status
 
-POC01-POC06 are frozen regression baselines. Production code lives under
-`scopex/`. The first real end-to-end Runtime MVP integration against OpenClaw +
-local vLLM has now passed.
+Production code lives under `scopex/`. POC01–POC06 remain frozen regression
+baselines; Step 6A–6E are now the current validated Runtime checkpoint.
 
-## Validated checkpoint
-
-Real Spark integration result:
+## Current validated chain
 
 ```text
-PASS_RUNTIME_MVP_SMOKE
-```
-
-Validated in one production Runtime path:
-
-```text
-Task
-  -> OpenClaw Investigation
-  -> local ModelProxy / vLLM
-  -> real read/exec tools
-  -> EvidenceExtractionPipeline
-  -> EvidenceCatalog
+Goal / Trigger
+  -> OpenClaw + local qwen3.8-27b-nvfp4
+  -> autonomous investigation / tool use / action / verification
+  -> ScopeX Trace observation
+  -> claim-grade Evidence projection
   -> Fresh Structured Finalizer
   -> Generic Claim Validator
-  -> Deterministic Renderer
+  -> deterministic Renderer
   -> Runtime Audit
   -> Task COMPLETED
-  -> task-scope sandbox cleanup
 ```
 
-The passing run proved all three fixture files were actually read, Evidence was
-created automatically, the fresh finalizer ended with `finish_reason=stop`, the
-structured output validated, the Task reached `COMPLETED`, and the task-owned
-sandbox container was cleaned without warnings.
+The Runtime MVP core chain, long-context handling, large-data/multi-image working
+set, hard budgets, native loop convergence and one integrated complex task have
+all passed real Spark validation.
 
-This closes the Runtime MVP **core execution-chain feasibility** milestone. Do
-not reopen it for output-format refinements unless a later regression provides
-new evidence that the control chain itself is broken.
+## Step 6 status
 
-## Implemented
+| Step | Result | What is proven |
+|---|---|---|
+| 6A Context / Compaction | **PASS** | one long-running OpenClaw session can compact and preserve critical structured state |
+| 6B Working Set | **PASS** | large CSV + many images can be reduced through tools/scratch without raw-data context dumping |
+| 6C Hard Budget | **PASS** | request/time limits have one enforcement path and budget exhaustion finalizes only from observed Evidence |
+| 6D Native Loop Convergence | **PASS** | OpenClaw owns repeated-tool detection/recovery/terminal guard; ScopeX only maps framework terminal semantics |
+| 6E Complex Task Gate | **CAPABILITY PASS** | diagnosis + multi-source correlation + constrained action + independent post-action verification works end to end |
 
-### M1 — Runtime domain/control
+6E used 120k telemetry rows, 15k+ log lines and 48 images. The Agent correctly
+identified the current overload incident, ignored a historical distractor,
+executed the permitted recovery exactly once, and independently re-queried the
+state until `RUNNING / NONE / generation=1` was observed. Fresh Finalizer then
+published a valid trusted result.
 
-- Task state machine;
-- same-task Session control history;
-- thread-safe TaskController;
-- runtime Progress events;
-- generic ConvergencePolicy;
-- permission policy;
-- deterministic safe-boundary gate with next-turn reset;
-- local AuditStore.
+## Runtime ownership
 
-### M2 — OpenClaw execution boundary
+### OpenClaw owns
 
-- same-session `--session-key` command builder;
-- session-key agent identity validation;
-- POC02-derived private OpenClaw environment;
-- POC02-derived sandbox/security config builder;
-- enforced `thinking=false` and approved tool surface;
-- exact-body loopback ModelProxy with local bearer token;
-- atomic wire request/response/meta audit;
-- request policy validation before forwarding;
-- Progress observer from real assistant/tool transcript state;
-- deterministic boundary before model forwarding;
-- CLI process-group timeout termination;
-- CLI outcome parser and no-auto-replay warning;
-- task-scope sandbox cleanup;
-- `OpenClawTaskRuntime` preserving HOME/STATE/session-key across turns.
+- Agent Loop and model-driven investigation order;
+- file / shell / process / image tools;
+- Skills and tool transcript;
+- sandbox execution semantics;
+- native tool-loop detection and recovery;
+- compaction of long current-task context.
 
-### M3 — Investigation coordinator
+### ScopeX owns
 
-`scopex.runtime.investigation.InvestigationCoordinator` wires:
+- product Task / Session / Stop / Resume / Steering;
+- hard product request/time boundaries around one OpenClaw turn;
+- immutable Evidence identity/provenance;
+- filtering OpenClaw runtime-control annotations out of claim-grade Evidence;
+- Fresh Finalizer + Claim validation;
+- audit/result persistence and API/UI surface.
+
+ScopeX must not grow into a second Decision Engine, Action Engine or Workflow
+Engine.
+
+## Evidence / trust checkpoint
+
+Current production path supports:
+
+- exact read-line Evidence;
+- bounded exec-line Evidence with full-result digest;
+- bounded 1–4 original-image claim-grade Evidence;
+- SHA verification and image re-open in Fresh Finalizer;
+- large image sets as investigation working sets without promoting every frame;
+- grouped finalizer Evidence representation so hundreds of E refs do not repeat
+  long command metadata;
+- OpenClaw loop warning/critical/recovery text retained in Trace but excluded
+  from business Evidence.
+
+Trust stack:
 
 ```text
-TaskController
-+ OpenClawTaskRuntime
-+ SafeStopGate
-+ Pending Steering
-+ Evidence Extraction/Catalog
-+ ConvergencePolicy
-+ Structured Finalization
-+ Runtime Audit
+Raw Tool Result / Original Image
+        ↓
+Evidence Snapshot
+        ↓
+Validated Claim
+        ↓
+Product conclusion / explanation
 ```
 
-Implemented control semantics:
+## Budget / convergence checkpoint
 
-- stop gate is armed before `PAUSING` is exposed, removing a model-forward race;
-- safe-boundary callback and API controls share a control lock;
-- Resume waits for the stopped OpenClaw turn to unwind before resetting the gate;
-- mid-turn Steering interrupts at the same model-request boundary but keeps the
-  Task RUNNING, then injects accumulated steering in the same session;
-- explicit Stop clears stale pending Steering;
-- multiple Steering instructions are preserved in order and newer instructions
-  are declared authoritative on conflict;
-- evidence stale-round accounting happens only after extraction completes;
-- configured evidence extractors run automatically against the turn wire audit;
-- no extractor is installed implicitly, avoiding hidden business Handler logic.
-
-### M4 — Evidence + structured finalization
-
-- stable E1/E2/... EvidenceCatalog with exact provenance;
-- generic `EvidenceExtractor` protocol;
-- deterministic `EvidenceExtractionPipeline` preserving tool-call order;
-- bounded opt-in `ReadResultExtractor` for whole-result evidence;
-- opt-in `ReadLineExtractor` for exact line/event evidence without business
-  parsing;
-- repeated equal lines at different observed positions keep distinct evidence
-  identities;
-- loopback streaming Fresh Finalizer client;
-- compact generic evidence-calibration prompt;
-- explicit truncation/incomplete-stream detection;
-- Claim schema;
-- generic validator;
-- duplicate user-visible claim rejection;
-- deterministic concise renderer;
-- one-call `StructuredFinalizer` orchestrator;
-- no automatic retry.
-
-### M5 — Audit
-
-One task directory can contain:
+Hard request/time budgets are not ScopeX Convergence signals. ModelProxy /
+OpenClaw / Runner enforce the resource boundary. ScopeX reacts only after that
+boundary:
 
 ```text
-task.json
-session.json
-events.jsonl
-evidence.json
-claims.json
-result.json
-final.txt
+budget reached + Evidence     -> Fresh Finalizer
+budget reached + no Evidence  -> explicit failure
 ```
 
-`RuntimeAudit` owns task/session/evidence/claim/result snapshots and
-`AuditEventSink` persists progress events while optionally forwarding them to a
-live UI sink.
+OpenClaw native loop detection remains inside the Agent Loop. ScopeX does not
+maintain a second result-fingerprint loop detector.
 
-## Important engineering boundaries
+## Current product gap
 
-- production `scopex/` modules must not import `scripts/poc*.py`;
-- Skills/domain adapters may decide what evidence is meaningful;
-- Runtime owns evidence identity/provenance and epistemic validation;
-- no automatic retry after ambiguous OpenClaw/model failures;
-- fact prose is rendered from runtime-owned evidence, not model free text;
-- no business-specific error strings or CowDisinfect logic in generic Runtime;
-- the Investigation Agent's free final prose is not the product diagnosis; only
-  validated structured claims are rendered to the user.
+Complex-task **capability is proven**, but complex-task **usability is not yet
+product-pass**.
 
-## Output-quality follow-up after core PASS
+The passing 6E task took about 1008.5 s and 23 forwarded model requests, versus
+the current product default of 600 s / 16 requests. Offline profiling shows
+about 90% of wall time in model requests and strong dependence on completion
+length. The largest prompt was still below 19k tokens and no compaction occurred,
+so the immediate bottleneck is not a 32k context wall.
 
-The first passing smoke exposed two presentation-quality issues without
-invalidating the core Runtime chain:
+Step 6F therefore remains an experiment branch. It is intentionally not part of
+this validated main checkpoint until the same 6E Gate passes within the product
+budget.
 
-1. whole-file Evidence made each fact expand an entire log;
-2. the model could emit two structurally equivalent facts that rendered the same
-   evidence twice.
-
-The product path now supports line-level evidence and rejects duplicate rendered
-claim identities. `scripts/runtime_mvp_refinalize.py` can validate these changes
-against a previously passed wire trace without rerunning OpenClaw or tools.
-
-## Fast regression for evidence/output changes
+## Regression
 
 ```bash
 cd /home/yanlan/workspaces/code/scopex
 git pull --ff-only
-
-python3 -m unittest \
-  tests/test_runtime_mvp_core.py \
-  tests/test_evidence_extractor.py \
-  tests/test_structured_finalizer.py \
-  tests/test_runtime_end_to_end_smoke.py \
-  -v
-
 python3 -m unittest discover -s tests -v
 ```
 
-For a previously passed Runtime smoke, validate only the new evidence/finalizer
-path without another Investigation:
-
-```bash
-python3 scripts/runtime_mvp_refinalize.py \
-  --run <existing .local/runtime-mvp-smoke/... directory> \
-  --model qwen3.8-27b-nvfp4 \
-  --base-url http://127.0.0.1:18002/v1
-```
-
-Expected:
-
-```text
-PASS_RUNTIME_MVP_REFINALIZE
-```
+High-value Step 6 real probes live under `scripts/step6*.py`. They are validation
+harnesses, not production workflow logic.
 
 ## Next product phase
 
-After the evidence/output regression is clean:
+See [Complex Task Validation and Next Plan](07-complex-task-validation-and-next-plan.md).
 
-1. implement the local Runtime API: task create/status/control/events/evidence/result;
-2. build the minimal local Web UI over that API;
-3. then validate a real CowDisinfect task through the product surface, not
-   through POC scripts;
-4. performance tuning is measured separately: the core smoke is a complex
-   diagnostic path and should not redefine the simple-task ~120s target.
+Order:
+
+1. 6F generic execution-efficiency pass under the unchanged 600 s / 16-request Gate;
+2. if still slow, controlled vLLM decode-throughput / speculative-decoding tests;
+3. Step 7 constrained Answer Composer and result-first UI;
+4. real Spark FastAPI + Vue product integration and, only if useful, SSE.

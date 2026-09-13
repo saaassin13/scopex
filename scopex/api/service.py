@@ -292,7 +292,69 @@ class TaskService:
                     action = "steer"
                     turn_name = handle.next_turn_name()
                 elif state is TaskState.RUNNING:
-                    if not coordinator.catalog.items:
+                    runtime_limit_reason = current_turn.runtime_limit_reason
+                    runtime_guard_reason = current_turn.runtime_guard_reason
+                    if runtime_limit_reason is not None:
+                        handle.audit.store.write_json(
+                            handle.task.id,
+                            "runtime-limit.json",
+                            {
+                                "reason": runtime_limit_reason,
+                                "turn_name": current_turn.turn_name,
+                                "returncode": current_turn.process.returncode,
+                                "stop_reason": current_turn.process.stop_reason,
+                                "forwarded_model_requests": sum(
+                                    1
+                                    for row in current_turn.proxy_records
+                                    if row.get("forwarded") is True
+                                ),
+                            },
+                        )
+                        if coordinator.catalog.items:
+                            coordinator.begin_runtime_limit_finalization(runtime_limit_reason)
+                            action = "finalize"
+                        else:
+                            coordinator.controller.fail(
+                                "budget_reached_without_evidence"
+                            )
+                            handle.audit.snapshot_control(
+                                handle.task,
+                                handle.session,
+                                coordinator.catalog,
+                            )
+                            return
+                    elif runtime_guard_reason is not None:
+                        handle.audit.store.write_json(
+                            handle.task.id,
+                            "runtime-guard.json",
+                            {
+                                "reason": runtime_guard_reason,
+                                "turn_name": current_turn.turn_name,
+                                "returncode": current_turn.process.returncode,
+                                "stop_reason": current_turn.process.stop_reason,
+                                "cli_blockers": list(current_turn.cli_outcome.blockers)
+                                if current_turn.cli_outcome is not None else ["missing_cli_outcome"],
+                                "forwarded_model_requests": sum(
+                                    1
+                                    for row in current_turn.proxy_records
+                                    if row.get("forwarded") is True
+                                ),
+                            },
+                        )
+                        if coordinator.catalog.items:
+                            coordinator.begin_runtime_guard_finalization(runtime_guard_reason)
+                            action = "finalize"
+                        else:
+                            coordinator.controller.fail(
+                                "runtime_guard_reached_without_evidence"
+                            )
+                            handle.audit.snapshot_control(
+                                handle.task,
+                                handle.session,
+                                coordinator.catalog,
+                            )
+                            return
+                    elif not coordinator.catalog.items:
                         coordinator.controller.fail(
                             "investigation_completed_without_evidence"
                         )
@@ -302,8 +364,7 @@ class TaskService:
                             coordinator.catalog,
                         )
                         return
-
-                    if self._turn_completed_normally(current_turn):
+                    elif self._turn_completed_normally(current_turn):
                         coordinator.begin_finalization(goal_satisfied=True)
                         action = "finalize"
                     else:
@@ -321,6 +382,8 @@ class TaskService:
                                 {
                                     "returncode": current_turn.process.returncode,
                                     "stop_reason": current_turn.process.stop_reason,
+                                    "runtime_limit_reason": current_turn.runtime_limit_reason,
+                                    "runtime_guard_reason": current_turn.runtime_guard_reason,
                                     "cli_blockers": list(current_turn.cli_outcome.blockers)
                                     if current_turn.cli_outcome is not None else ["missing_cli_outcome"],
                                 },

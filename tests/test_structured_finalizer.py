@@ -2,7 +2,11 @@ import unittest
 
 from scopex.evidence.catalog import EvidenceCatalog
 from scopex.finalizer.client import FinalizerResponse
-from scopex.finalizer.structured import StructuredFinalizer, parse_structured_payload
+from scopex.finalizer.structured import (
+    StructuredFinalizer,
+    build_structured_prompts,
+    parse_structured_payload,
+)
 
 
 class FakeClient:
@@ -101,6 +105,33 @@ class StructuredFinalizerTests(unittest.TestCase):
         self.assertIn("[E2 · L2] source=spark-host", rendered)
         self.assertIn("[E3 · L3] purpose=openclaw-readonly-bind-validation", rendered)
         self.assertNotIn("事实｜组件范围", rendered)
+
+    def test_finalizer_prompt_groups_line_evidence_without_repeating_long_command(self):
+        catalog = EvidenceCatalog("t1", "s1")
+        long_command = "python - <<'PY'\n" + ("print('working-set')\n" * 260) + "PY"
+        for line in range(1, 41):
+            catalog.add(
+                source="exec:c-long",
+                raw=f"row={line} value={line * 2}",
+                tool_call_id="c-long",
+                metadata={
+                    "evidence_type": "command_line",
+                    "exec_host": "sandbox",
+                    "command": long_command,
+                    "line_number": line,
+                    "result_sha256": "a" * 64,
+                },
+            )
+
+        _system, user = build_structured_prompts("analyze", catalog)
+
+        self.assertEqual(user.count("[evidence_block type=command_line"), 1)
+        self.assertEqual(user.count("command_preview="), 1)
+        self.assertEqual(user.count("command_sha256="), 1)
+        self.assertNotIn(long_command, user)
+        for ref in catalog.refs:
+            self.assertIn(ref + " |", user)
+        self.assertLess(len(user), 12000)
 
     def test_causal_hypothesis_kind_alias_is_safely_normalized_to_inference(self):
         content = '''{

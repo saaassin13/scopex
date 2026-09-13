@@ -11,6 +11,36 @@ from scopex.evidence.catalog import EvidenceItem
 from scopex.evidence.collector import EvidenceCollector
 
 
+_OPENCLAW_LOOP_WARNING_PREFIX = "[System note: Tool-loop warning after "
+_OPENCLAW_LOOP_RECOVERY_PREFIX = "Do not repeat this exact tool action."
+
+
+def _is_openclaw_runtime_control_line(raw_line: str) -> bool:
+    """Return True only for reserved OpenClaw loop-control annotations.
+
+    OpenClaw may append warning text to an otherwise successful tool result, or
+    replace a blocked tool result with a CRITICAL control message. Those strings
+    are runtime control-plane feedback to the model, not observations from the
+    underlying file/command and therefore must never become claim-grade Evidence.
+
+    The match is intentionally narrow and tied to OpenClaw's reserved messages;
+    ordinary tool output remains untouched.
+    """
+
+    line = raw_line.strip()
+    if line.startswith(_OPENCLAW_LOOP_WARNING_PREFIX):
+        return True
+    if line.startswith(_OPENCLAW_LOOP_RECOVERY_PREFIX):
+        return True
+    if line.startswith("CRITICAL:"):
+        lowered = line.lower()
+        return (
+            "session execution blocked" in lowered
+            and ("runaway loop" in lowered or "global circuit breaker" in lowered)
+        )
+    return False
+
+
 class EvidenceProjector(Protocol):
     @property
     def processed_call_ids(self) -> frozenset[str]: ...
@@ -73,6 +103,18 @@ class OpenClawEvidenceProjector:
     OpenClaw remains the source of truth for the full transcript. This class
     freezes only minimal material needed for stable citation. It contains no
     business diagnosis logic and does not execute tools.
+
+    Image working-set rule:
+    - large multi-image ``view_image`` calls are screening/context only;
+    - a final bounded original-image set (up to ``max_claim_images``) may become
+      immutable image Evidence in one call.
+
+    This lets an Agent inspect many images in coarse batches and then narrow to a
+    small final set without forcing singleton re-open calls solely for ScopeX's
+    evidence plumbing. Every promoted original is still independently resolved,
+    hashed and re-opened by the Fresh Finalizer. Scratch-derived previews remain
+    useful for investigation but cannot become strong image Evidence because they
+    are outside the configured read-only source binds.
     """
 
     def __init__(
@@ -86,6 +128,7 @@ class OpenClawEvidenceProjector:
         max_exec_lines: int = 256,
         max_exec_line_chars: int = 4096,
         max_exec_chars: int = 12_000,
+        max_claim_images: int = 4,
     ) -> None:
         if (
             max_read_lines <= 0
@@ -93,6 +136,7 @@ class OpenClawEvidenceProjector:
             or max_exec_lines <= 0
             or max_exec_line_chars <= 0
             or max_exec_chars <= 0
+            or max_claim_images <= 0
         ):
             raise ValueError("projection limits must be positive")
         self.collector = collector
@@ -103,6 +147,7 @@ class OpenClawEvidenceProjector:
         self.max_exec_lines = max_exec_lines
         self.max_exec_line_chars = max_exec_line_chars
         self.max_exec_chars = max_exec_chars
+        self.max_claim_images = max_claim_images
         self._processed_call_ids: set[str] = set()
 
     @property
@@ -132,7 +177,7 @@ class OpenClawEvidenceProjector:
         added: list[EvidenceItem] = []
         nonempty_seen = 0
         for line_number, raw_line in enumerate(result.content.splitlines(), 1):
-            if not raw_line.strip():
+            if not raw_line.strip() or _is_openclaw_runtime_control_line(raw_line):
                 continue
             nonempty_seen += 1
             if nonempty_seen > self.max_read_lines:
@@ -181,7 +226,7 @@ class OpenClawEvidenceProjector:
         output_truncated = False
 
         for line_number, raw_line in enumerate(content.splitlines(), 1):
-            if not raw_line.strip():
+            if not raw_line.strip() or _is_openclaw_runtime_control_line(raw_line):
                 continue
             if nonempty_seen >= self.max_exec_lines or projected_chars >= self.max_exec_chars:
                 output_truncated = True
@@ -223,7 +268,8 @@ class OpenClawEvidenceProjector:
 
         return tuple(added)
 
-    def _project_images(self, call: ToolCall) -> tuple[EvidenceItem, ...]:
+    @staticmethod
+    def _image_paths(call: ToolCall) -> tuple[str, ...]:
         paths: list[str] = []
         one = call.arguments.get("path")
         if isinstance(one, str) and one:
@@ -231,18 +277,23 @@ class OpenClawEvidenceProjector:
         many = call.arguments.get("paths")
         if isinstance(many, list):
             paths.extend(value for value in many if isinstance(value, str) and value)
+        return tuple(dict.fromkeys(paths))
+
+    def _project_images(self, call: ToolCall) -> tuple[EvidenceItem, ...]:
+        paths = self._image_paths(call)
+        if not paths or len(paths) > self.max_claim_images:
+            # Large image sets are a visual working set, not final claim-grade
+            # Evidence. The agent may narrow them in later calls.
+            return ()
 
         prompt = call.arguments.get("prompt")
         added: list[EvidenceItem] = []
-        seen_paths: set[str] = set()
         for path in paths:
-            if path in seen_paths:
-                continue
-            seen_paths.add(path)
             resolved = self.bind_resolver.resolve(path)
             if resolved is None:
-                # Strong image evidence requires immutable identity. A tool call
-                # alone is not enough if ScopeX cannot resolve/hash the file.
+                # Strong image evidence requires immutable identity. Scratch-derived
+                # previews/contact sheets and files outside read-only source roots are
+                # useful for investigation but intentionally not promoted.
                 continue
             digest = self._sha256_file(resolved.host_path)
             media_type = mimetypes.guess_type(resolved.host_path.name)[0] or "application/octet-stream"
@@ -259,6 +310,8 @@ class OpenClawEvidenceProjector:
                         "byte_size": stat.st_size,
                         "media_type": media_type,
                         "view_prompt": prompt if isinstance(prompt, str) else None,
+                        "evidence_role": "claim_grade_bounded_image_set",
+                        "view_set_size": len(paths),
                     },
                 )
             )

@@ -59,20 +59,32 @@ class RuntimeMvpCoreTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             task.transition(TaskState.PAUSED)
 
-    def test_convergence_policy_is_generic(self):
+    def test_convergence_policy_uses_product_signals_only(self):
         decision = evaluate(
-            ConvergencePolicy(max_model_requests=4, max_stale_rounds=2),
+            ConvergencePolicy(max_stale_rounds=2),
             ConvergenceSnapshot(
-                model_requests=4,
-                tool_calls=1,
-                elapsed_s=10,
-                context_chars=100,
+                model_requests=100,
+                tool_calls=100,
+                elapsed_s=10_000,
+                context_chars=1_000_000,
                 stale_rounds=2,
             ),
         )
         self.assertTrue(decision.should_finalize)
-        self.assertIn("model_request_budget", decision.reasons)
-        self.assertIn("no_new_evidence", decision.reasons)
+        self.assertEqual(decision.reasons, ("no_new_evidence",))
+
+        progressing = evaluate(
+            ConvergencePolicy(max_stale_rounds=2),
+            ConvergenceSnapshot(
+                model_requests=100,
+                tool_calls=100,
+                elapsed_s=10_000,
+                context_chars=1_000_000,
+                stale_rounds=0,
+            ),
+        )
+        self.assertFalse(progressing.should_finalize)
+        self.assertEqual(progressing.reasons, ())
 
     def test_permission_defaults_require_confirmation_for_side_effects(self):
         policy = PermissionPolicy()
