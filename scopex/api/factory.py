@@ -4,6 +4,7 @@ from dataclasses import dataclass
 import os
 from pathlib import Path
 
+from scopex.agent.openclaw_config import TASK_SCRATCH_PATH
 from scopex.agent.runtime import OpenClawTaskSpec
 from scopex.evidence.media import EvidenceMediaLoader
 from scopex.evidence.projector import OpenClawEvidenceProjector
@@ -74,6 +75,18 @@ class OpenClawRuntimeFactory:
         if not isinstance(agent_id, str) or not agent_id:
             raise ValueError("task metadata is missing agent_id")
         task_root = self.config.work_root / task.id
+        scratch_root = task_root / "scratch"
+        scratch_root.mkdir(parents=True, mode=0o700, exist_ok=True)
+        if scratch_root.is_symlink():
+            raise ValueError("task scratch symlink is not allowed")
+        resolved_work_root = self.config.work_root.resolve()
+        resolved_scratch = scratch_root.resolve()
+        try:
+            resolved_scratch.relative_to(resolved_work_root)
+        except ValueError as exc:
+            raise ValueError("task scratch escaped work_root") from exc
+        task_scratch_bind = f"{resolved_scratch}:{TASK_SCRATCH_PATH}:rw"
+
         tools = ["read", "exec", "process"]
         if self.config.enable_view_image:
             tools.append("view_image")
@@ -98,6 +111,7 @@ class OpenClawRuntimeFactory:
             skills=self.config.skills,
             tools=tuple(tools),
             sandbox_binds=self.config.data_binds,
+            task_scratch_bind=task_scratch_bind,
             exec_host=self.config.exec_host,
             exec_mode=self.config.exec_mode,
             compaction_enabled=self.config.enable_compaction,
