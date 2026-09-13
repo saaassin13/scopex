@@ -31,7 +31,9 @@ class OpenClawConfigTests(unittest.TestCase):
         sandbox = defaults["sandbox"]
         docker = sandbox["docker"]
         self.assertEqual(defaults["thinkingDefault"], "off")
-        self.assertFalse(defaults["compaction"]["enabled"])
+        self.assertTrue(defaults["compaction"]["enabled"])
+        self.assertFalse(defaults["compaction"]["memoryFlush"]["enabled"])
+        self.assertFalse(cfg["agents"]["entries"]["sx1"]["memory"]["search"]["enabled"])
         self.assertEqual(sandbox["workspaceAccess"], "ro")
         self.assertEqual(docker["network"], "none")
         self.assertTrue(docker["readOnlyRoot"])
@@ -47,6 +49,11 @@ class OpenClawConfigTests(unittest.TestCase):
         extra = defaults["models"]["vllm/qwen-local"]["params"]["extra_body"]
         self.assertEqual(extra["chat_template_kwargs"]["enable_thinking"], False)
         self.assertEqual(defaults["skills"], ["camera-diagnosis"])
+
+    def test_compaction_can_be_disabled_for_regression_debugging(self):
+        cfg = build_openclaw_config(replace(self.spec(), compaction_enabled=False))
+        self.assertFalse(cfg["agents"]["defaults"]["compaction"]["enabled"])
+        self.assertFalse(cfg["agents"]["entries"]["sx1"]["memory"]["search"]["enabled"])
 
     def test_read_only_data_binds_use_openclaw_docker_binds(self):
         cfg = build_openclaw_config(
