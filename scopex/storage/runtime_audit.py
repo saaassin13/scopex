@@ -6,6 +6,9 @@ from typing import Any
 
 from scopex.evidence.catalog import EvidenceCatalog
 from scopex.events.progress import EventSink, EventType, ProgressEvent
+from scopex.finalizer.answer import compose_product_answer
+from scopex.finalizer.claims import claim_set_from_dict
+from scopex.finalizer.validator import normalize_claim_payload, validate_claim_payload
 from scopex.runtime.session import Session
 from scopex.runtime.task import Task
 from scopex.storage.audit import AuditStore
@@ -65,7 +68,13 @@ class RuntimeAudit:
         self.store.write_json(self.task_id, "answer.json", payload)
 
     def persist_result(self, result: dict[str, Any], *, rendered: str | None = None) -> None:
-        self.store.write_json(self.task_id, "result.json", result)
+        payload = dict(result)
+        if payload.get("valid") is True:
+            answer = self._build_product_answer()
+            if answer is not None:
+                payload["answer"] = answer
+                self.persist_answer(answer)
+        self.store.write_json(self.task_id, "result.json", payload)
         if rendered is not None:
             self.store.write_text(self.task_id, "final.txt", rendered)
 
@@ -73,3 +82,45 @@ class RuntimeAudit:
         self.persist_task(task)
         self.persist_session(session)
         self.persist_evidence(catalog)
+
+    def _build_product_answer(self) -> dict[str, Any] | None:
+        """Re-validate persisted claims before creating the product projection.
+
+        This keeps Step 7 downstream of the existing trust boundary: answer.json
+        is derived only from claims that still validate against the frozen
+        Evidence snapshot. It never calls a model or tool.
+        """
+
+        try:
+            claim_payload = self.store.read_json(self.task_id, "claims.json")
+            evidence = self.store.read_json(self.task_id, "evidence.json")
+        except (FileNotFoundError, OSError, ValueError):
+            return None
+        if not isinstance(claim_payload, dict) or not isinstance(evidence, dict):
+            return None
+
+        session_key = evidence.get("session_key")
+        items = evidence.get("items")
+        if not isinstance(session_key, str) or not isinstance(items, list):
+            return None
+
+        catalog = EvidenceCatalog(self.task_id, session_key)
+        try:
+            for row in items:
+                if not isinstance(row, dict):
+                    return None
+                item = catalog.add(
+                    source=row["source"],
+                    raw=row["raw"],
+                    tool_call_id=row.get("tool_call_id"),
+                    metadata=row.get("metadata") if isinstance(row.get("metadata"), dict) else {},
+                )
+                if item.ref != row.get("ref"):
+                    return None
+            normalized, _ = normalize_claim_payload(claim_payload)
+            if validate_claim_payload(normalized, catalog):
+                return None
+            claims = claim_set_from_dict(normalized)
+            return compose_product_answer(claims, catalog).to_dict()
+        except (KeyError, TypeError, ValueError):
+            return None
