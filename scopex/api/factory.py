@@ -28,10 +28,14 @@ class LocalRuntimeConfig:
     work_root: Path
     sandbox_image: str
     docker_host: str
-    timeout_s: int = 180
-    max_requests: int = 8
+    # Per-OpenClaw-turn hard budgets. Step 6B's 48-image probe took ~439 s
+    # and 11 forwarded model requests, so the previous 180 s / 8 request POC
+    # defaults would reject a task that we have now proven useful and bounded.
+    timeout_s: int = 600
+    max_requests: int = 16
     max_tokens: int = 2048
     finalizer_max_tokens: int = 768
+    finalizer_timeout_s: int = 180
     skills: tuple[str, ...] = ()
     data_binds: tuple[str, ...] = ()
     exec_host: str = "sandbox"
@@ -56,12 +60,14 @@ class OpenClawRuntimeFactory:
             raise ValueError("workspace symlink is not allowed")
         if not config.docker_host.startswith("unix://"):
             raise ValueError("local Runtime API requires a Unix Docker socket")
-        if not 60 <= config.timeout_s <= 600:
-            raise ValueError("timeout_s must be between 60 and 600")
-        if not 2 <= config.max_requests <= 12:
-            raise ValueError("max_requests must be between 2 and 12")
+        if not 60 <= config.timeout_s <= 1200:
+            raise ValueError("timeout_s must be between 60 and 1200")
+        if not 2 <= config.max_requests <= 30:
+            raise ValueError("max_requests must be between 2 and 30")
         if not 256 <= config.finalizer_max_tokens <= 1024:
             raise ValueError("finalizer_max_tokens must be between 256 and 1024")
+        if not 30 <= config.finalizer_timeout_s <= 600:
+            raise ValueError("finalizer_timeout_s must be between 30 and 600")
         config.work_root.mkdir(parents=True, exist_ok=True)
 
     def coordinator(
@@ -137,7 +143,7 @@ class OpenClawRuntimeFactory:
             StreamingFinalizerClient(
                 self.config.base_url,
                 api_key=self.config.api_key,
-                timeout_s=120,
+                timeout_s=self.config.finalizer_timeout_s,
             ),
             model=self.config.model_id,
             max_tokens=self.config.finalizer_max_tokens,
