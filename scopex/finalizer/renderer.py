@@ -93,7 +93,7 @@ def render_claims(claims: ClaimSet, catalog: EvidenceCatalog) -> str:
             evidence = _refs_text(refs, catalog)
             lines.append(
                 f"时间关联｜可信度：{confidence}｜范围：{scope}\n"
-                f"- {evidence} 在当前调查范围内存在时间关联；这不表示已经证明因果。"
+                f"- {evidence} 在当前调查范围内存在时间关联；该结构不表示已证明因果。"
             )
             continue
 
