@@ -8,7 +8,7 @@ OpenClaw 负责模型驱动的 Agent Loop、工具和 Skill；ScopeX 负责 Task
 
 ## 当前状态
 
-POC01–POC06 已冻结为回归基线。Step 6 已完成复杂任务能力验证：
+POC01–POC06 已冻结为回归基线。Step 6 复杂任务能力与当前产品默认预算 Gate 已完成：
 
 | 阶段 | 能力 | 结果 |
 |---|---|---|
@@ -18,13 +18,13 @@ POC01–POC06 已冻结为回归基线。Step 6 已完成复杂任务能力验�
 | 6C | Hard Budget single source + trustworthy partial finalization | **PASS** |
 | 6D | OpenClaw native loop convergence + runtime-control Evidence filtering | **PASS** |
 | 6E | 120k telemetry + 15k logs + 48 images + constrained recovery + post-action verification | **CAPABILITY PASS** |
-| 6F | Complex-task usability / latency tuning | **IN PROGRESS（实验分支，不在 main）** |
+| 6F | Same complex task under product default 600 s / 16 requests | **PASS** |
 | Local Runtime API | Task/control/events/evidence/result | FastAPI 已落地，待完整 Spark HTTP 联调 |
-| Web UI | Task/Progress/Evidence/Result/Controls | Vue 3 MVP 已落地，待产品化联调 |
+| Web UI | Task/Progress/Evidence/Result/Controls | Vue 3 MVP 已落地，下一阶段产品化联调 |
 
-6E 已证明本地 `qwen3.8-27b-nvfp4` + OpenClaw 不仅能做简单问答：它能够自主完成大数据筛选、多源交叉验证、多图视觉确认、受约束动作执行和动作后的真实业务状态验证。
+6E 已证明本地 `qwen3.8-27b-nvfp4` + OpenClaw 可以自主完成大数据筛选、多源交叉验证、多图视觉确认、受约束动作执行和动作后的真实业务状态验证。
 
-当前主要未通过项是**复杂任务产品可用性**：已通过的 6E 综合任务约 1008.5 s / 23 次模型请求，超过当前产品默认 600 s / 16 requests。离线 profile 显示约 90% wall time 在模型请求，主要瓶颈是本地 decode/output 成本与通用 Sandbox 工具缺口，而不是 32K Context hard wall。
+6F 在**不降低任务要求**的前提下，把同一综合任务从约 `1008.5 s / 23 requests` 优化到约 `371.1 s / 14 requests`，进入当前产品默认 `600 s / 16 requests` 边界。主要优化来自通用执行环境和输出效率，而不是把业务流程写死进 ScopeX。
 
 详细结论和下一步计划见：
 
@@ -35,7 +35,7 @@ POC01–POC06 已冻结为回归基线。Step 6 已完成复杂任务能力验�
 
 ```text
 Vue 3 + TypeScript + Vite
-        ↓ HTTP / polling（后续 SSE）
+        ↓ HTTP / polling（后续按需要改 SSE）
 FastAPI + Uvicorn
         ↓
 TaskService / ScopeX Runtime
@@ -94,6 +94,7 @@ scopex/
 └── storage/                # filesystem audit
 
 frontend/                   # Vue 3 + TypeScript + Vite
+docker/                     # lightweight validated sandbox layers
 scripts/                    # validation/profiling/runbook scripts; not Agent control logic
 ```
 
@@ -146,9 +147,13 @@ GET  /tasks/{id}/result
 
 ## 下一阶段
 
-1. **6F Complex Task Usability**：用同一 6E Gate 验证轻量分析 Sandbox 和 concise handoff 是否能进入 600 s / 16 requests；
-2. 若仍超预算，做 vLLM decode throughput / speculative decoding 的控制变量实验；
-3. 复杂任务可用性达标后进入 **Step 7 Answer Composer + Result-first UI**；
-4. 完成真实 Spark FastAPI + Vue 产品联调，再根据需要把 polling 替换为 SSE。
+当前主阶段进入 **Step 7：Product Answer + Result-first UI**：
+
+1. 在 Validated Claims 之上增加 constrained Answer Composer；
+2. 保留 deterministic renderer 作为 audit/trust fallback；
+3. 把 UI 主视图改成“结论 / 说明 / 执行情况 / 建议”，Evidence 收到可展开区域；
+4. 完成真实 Spark FastAPI + Vue 产品联调；
+5. 再用真实业务任务做产品面验收，而不是继续只跑机制 Probe；
+6. vLLM speculative decoding / decode-throughput 优化降为可选性能项，仅在后续真实 SLA 再次成为瓶颈时启动。
 
 详细验收条件、顺序和已知非阻塞项统一维护在 `docs/architecture/07-complex-task-validation-and-next-plan.md`。
