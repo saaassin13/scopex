@@ -75,8 +75,6 @@ class OpenClawEvidenceProjector:
     business diagnosis logic and does not execute tools.
     """
 
-    _EXEC_HOSTS = frozenset({"sandbox", "gateway", "node"})
-
     def __init__(
         self,
         collector: EvidenceCollector,
@@ -85,15 +83,25 @@ class OpenClawEvidenceProjector:
         sandbox_binds: tuple[str, ...] = (),
         max_read_lines: int = 512,
         max_read_line_chars: int = 4096,
-        max_exec_chars: int = 4096,
+        max_exec_lines: int = 256,
+        max_exec_line_chars: int = 4096,
+        max_exec_chars: int = 12_000,
     ) -> None:
-        if max_read_lines <= 0 or max_read_line_chars <= 0 or max_exec_chars <= 0:
+        if (
+            max_read_lines <= 0
+            or max_read_line_chars <= 0
+            or max_exec_lines <= 0
+            or max_exec_line_chars <= 0
+            or max_exec_chars <= 0
+        ):
             raise ValueError("projection limits must be positive")
         self.collector = collector
         self.exec_host = exec_host
         self.bind_resolver = DataBindResolver(sandbox_binds)
         self.max_read_lines = max_read_lines
         self.max_read_line_chars = max_read_line_chars
+        self.max_exec_lines = max_exec_lines
+        self.max_exec_line_chars = max_exec_line_chars
         self.max_exec_chars = max_exec_chars
         self._processed_call_ids: set[str] = set()
 
@@ -148,36 +156,72 @@ class OpenClawEvidenceProjector:
         return tuple(added)
 
     def _project_exec(self, call: ToolCall, result: ToolResult) -> tuple[EvidenceItem, ...]:
+        """Freeze command output at claim-grade line granularity.
+
+        One shell command often reports several independent facts (CPU count,
+        memory, process rows, etc.). Treating the entire stdout as one E ref makes
+        distinct facts share the same evidence identity and collide in claim
+        validation. We therefore freeze bounded non-empty lines while retaining
+        one SHA-256 for the complete tool result on every line.
+        """
+
         content = result.content
         if not content.strip():
             return ()
+
         digest = hashlib.sha256(content.encode("utf-8", errors="replace")).hexdigest()
-        truncated = len(content) > self.max_exec_chars
-        excerpt = self._bounded_excerpt(content, self.max_exec_chars)
         command = call.arguments.get("command")
         title = call.arguments.get("title")
-        requested_host = call.arguments.get("host")
-        effective_host = (
-            requested_host
-            if isinstance(requested_host, str) and requested_host in self._EXEC_HOSTS
-            else self.exec_host
-        )
-        item = self.collector.add(
-            source=f"exec:{call.id}",
-            raw=excerpt,
-            tool_call_id=call.id,
-            metadata={
-                "evidence_type": "command_output",
-                "tool": "exec",
-                "exec_host": effective_host,
-                "command": command if isinstance(command, str) else None,
-                "title": title if isinstance(title, str) else None,
-                "result_sha256": digest,
-                "original_chars": len(content),
-                "truncated": truncated,
-            },
-        )
-        return (item,)
+        call_host = call.arguments.get("host")
+        actual_host = call_host if isinstance(call_host, str) and call_host else self.exec_host
+
+        added: list[EvidenceItem] = []
+        nonempty_seen = 0
+        projected_chars = 0
+        output_truncated = False
+
+        for line_number, raw_line in enumerate(content.splitlines(), 1):
+            if not raw_line.strip():
+                continue
+            if nonempty_seen >= self.max_exec_lines or projected_chars >= self.max_exec_chars:
+                output_truncated = True
+                break
+
+            nonempty_seen += 1
+            remaining = self.max_exec_chars - projected_chars
+            per_line_limit = min(self.max_exec_line_chars, remaining)
+            if per_line_limit <= 0:
+                output_truncated = True
+                break
+
+            line_truncated = len(raw_line) > per_line_limit
+            line = raw_line[:per_line_limit] if line_truncated else raw_line
+            projected_chars += len(line)
+            if line_truncated:
+                output_truncated = True
+
+            added.append(
+                self.collector.add(
+                    source=f"exec:{call.id}",
+                    raw=line,
+                    tool_call_id=call.id,
+                    metadata={
+                        "evidence_type": "command_line",
+                        "tool": "exec",
+                        "exec_host": actual_host,
+                        "command": command if isinstance(command, str) else None,
+                        "title": title if isinstance(title, str) else None,
+                        "line_number": line_number,
+                        "line_truncated": line_truncated,
+                        "original_line_chars": len(raw_line),
+                        "result_sha256": digest,
+                        "original_result_chars": len(content),
+                        "result_projection_truncated": output_truncated,
+                    },
+                )
+            )
+
+        return tuple(added)
 
     def _project_images(self, call: ToolCall) -> tuple[EvidenceItem, ...]:
         paths: list[str] = []
@@ -197,6 +241,8 @@ class OpenClawEvidenceProjector:
             seen_paths.add(path)
             resolved = self.bind_resolver.resolve(path)
             if resolved is None:
+                # Strong image evidence requires immutable identity. A tool call
+                # alone is not enough if ScopeX cannot resolve/hash the file.
                 continue
             digest = self._sha256_file(resolved.host_path)
             media_type = mimetypes.guess_type(resolved.host_path.name)[0] or "application/octet-stream"
@@ -217,16 +263,6 @@ class OpenClawEvidenceProjector:
                 )
             )
         return tuple(added)
-
-    @staticmethod
-    def _bounded_excerpt(content: str, limit: int) -> str:
-        if len(content) <= limit:
-            return content
-        marker = "\n... [truncated; full result retained in OpenClaw audit] ...\n"
-        remaining = max(2, limit - len(marker))
-        head = remaining // 2
-        tail = remaining - head
-        return content[:head] + marker + content[-tail:]
 
     @staticmethod
     def _sha256_file(path: Path) -> str:
