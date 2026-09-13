@@ -39,6 +39,7 @@ class RuntimeApiFactoryTests(unittest.TestCase):
                 exec_mode="full",
                 enable_view_image=True,
                 enable_progress_card=True,
+                enable_compaction=True,
             )
             factory = OpenClawRuntimeFactory(config)
 
@@ -59,6 +60,7 @@ class RuntimeApiFactoryTests(unittest.TestCase):
 
             self.assertEqual(coordinator.agent.spec.timeout_s, 181)
             self.assertEqual(coordinator.agent.spec.max_requests, 6)
+            self.assertTrue(coordinator.agent.spec.compaction_enabled)
             self.assertEqual(
                 coordinator.agent.spec.sandbox_binds,
                 ("/srv/logs:/agent-data/logs:ro",),
@@ -73,8 +75,9 @@ class RuntimeApiFactoryTests(unittest.TestCase):
                 coordinator.evidence_pipeline,
                 OpenClawEvidenceProjector,
             )
-            self.assertEqual(coordinator.convergence_policy.max_elapsed_s, 181.0)
-            self.assertEqual(coordinator.convergence_policy.max_model_requests, 6)
+            # Hard request/time budgets are propagated to OpenClaw/ModelProxy;
+            # ScopeX convergence no longer duplicates them.
+            self.assertEqual(coordinator.convergence_policy.max_stale_rounds, 3)
 
 
 if __name__ == "__main__":
