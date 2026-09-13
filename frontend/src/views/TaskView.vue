@@ -2,7 +2,13 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { RouterLink, useRoute } from 'vue-router'
 import { api, ApiError } from '../api'
-import type { EvidenceItem, ProgressEvent, ResultResponse, TaskSnapshot } from '../types'
+import type {
+  EvidenceItem,
+  ProductAnswerItem,
+  ProgressEvent,
+  ResultResponse,
+  TaskSnapshot,
+} from '../types'
 
 interface ProgressStep {
   step: string
@@ -24,6 +30,12 @@ let timer: number | undefined
 const isRunning = computed(() => task.value?.state === 'RUNNING')
 const isPaused = computed(() => task.value?.state === 'PAUSED')
 const isTerminal = computed(() => ['COMPLETED', 'FAILED', 'CANCELLED'].includes(task.value?.state ?? ''))
+const productAnswer = computed(() => result.value?.product_answer ?? null)
+const composerFallback = computed(() => (
+  result.value?.available
+  && Boolean(result.value?.rendered)
+  && result.value?.answer_composer?.valid === false
+))
 const lastTaskFailed = computed(() => {
   for (let index = events.value.length - 1; index >= 0; index -= 1) {
     if (events.value[index]?.type === 'TASK_FAILED') return events.value[index]
@@ -89,6 +101,13 @@ function progressSymbol(status: ProgressStep['status']): string {
   if (status === 'completed') return '✓'
   if (status === 'in_progress') return '→'
   return '○'
+}
+
+function claimBadge(item: ProductAnswerItem): string {
+  if (item.kind === 'fact') return '已验证'
+  if (item.relation === 'temporal_association') return '时间关联'
+  if (item.relation === 'causal_hypothesis') return '待验证假设'
+  return '尚未确定'
 }
 
 function eventTitle(event: ProgressEvent): string {
@@ -185,7 +204,128 @@ onBeforeUnmount(() => timer && window.clearInterval(timer))
 
     <div class="task-layout">
       <div class="main-column">
-        <section class="panel">
+        <section class="panel result-panel">
+          <div class="section-heading result-heading">
+            <div>
+              <div class="eyebrow">RESULT</div>
+              <h2>诊断结果</h2>
+            </div>
+            <span v-if="productAnswer" class="trust-state">Validated Claims</span>
+          </div>
+
+          <template v-if="productAnswer">
+            <section class="answer-section conclusion-section">
+              <div class="answer-label">结论</div>
+              <article v-for="item in productAnswer.conclusion" :key="item.claim_id" class="answer-item primary-answer">
+                <p>{{ item.text }}</p>
+                <div class="answer-meta">
+                  <span class="claim-badge" :data-kind="item.kind">{{ claimBadge(item) }}</span>
+                  <span>{{ item.claim_id }}</span>
+                  <span v-for="ref in item.evidence_refs" :key="ref" class="evidence-ref">{{ ref }}</span>
+                </div>
+              </article>
+            </section>
+
+            <section class="answer-section">
+              <div class="answer-label">说明</div>
+              <div v-if="productAnswer.explanation.length" class="answer-list">
+                <article v-for="item in productAnswer.explanation" :key="item.claim_id" class="answer-item">
+                  <p>{{ item.text }}</p>
+                  <div class="answer-meta">
+                    <span class="claim-badge" :data-kind="item.kind">{{ claimBadge(item) }}</span>
+                    <span>{{ item.claim_id }}</span>
+                    <span v-for="ref in item.evidence_refs" :key="ref" class="evidence-ref">{{ ref }}</span>
+                  </div>
+                </article>
+              </div>
+              <p v-else class="answer-empty">暂无额外说明。</p>
+            </section>
+
+            <div class="answer-two-column">
+              <section class="answer-section compact-section">
+                <div class="answer-label">执行情况</div>
+                <div v-if="productAnswer.execution.length" class="answer-list">
+                  <article v-for="item in productAnswer.execution" :key="item.claim_id" class="answer-item compact-answer">
+                    <p>{{ item.text }}</p>
+                    <div class="answer-meta">
+                      <span class="claim-badge" data-kind="fact">已验证</span>
+                      <span v-for="ref in item.evidence_refs" :key="ref" class="evidence-ref">{{ ref }}</span>
+                    </div>
+                  </article>
+                </div>
+                <p v-else class="answer-empty">本次结果中没有可发布的执行状态。</p>
+              </section>
+
+              <section class="answer-section compact-section">
+                <div class="answer-label">建议</div>
+                <div v-if="productAnswer.recommendation.length" class="answer-list">
+                  <article v-for="item in productAnswer.recommendation" :key="item.claim_id" class="answer-item compact-answer recommendation-answer">
+                    <p><strong>优先继续验证：</strong>{{ item.text }}</p>
+                    <div class="answer-meta">
+                      <span class="claim-badge" :data-kind="item.kind">{{ claimBadge(item) }}</span>
+                      <span v-for="ref in item.evidence_refs" :key="ref" class="evidence-ref">{{ ref }}</span>
+                    </div>
+                  </article>
+                </div>
+                <p v-else class="answer-empty">暂无额外验证建议。</p>
+              </section>
+            </div>
+
+            <details class="support-details evidence-details-main">
+              <summary>
+                <span>相关证据</span>
+                <span class="muted">{{ evidence.length }} 条</span>
+              </summary>
+              <div v-if="!evidence.length" class="empty-state">暂未形成 Evidence。</div>
+              <article v-for="item in evidence" :key="item.ref" class="evidence-card">
+                <div class="evidence-meta">
+                  <strong>{{ item.ref }}</strong>
+                  <span>{{ item.source }}<template v-if="item.metadata?.line_number">:L{{ item.metadata.line_number }}</template></span>
+                </div>
+                <code>{{ item.raw }}</code>
+              </article>
+            </details>
+
+            <details v-if="result?.rendered" class="support-details audit-details">
+              <summary>查看 deterministic audit fallback</summary>
+              <pre class="result-text">{{ result.rendered }}</pre>
+            </details>
+          </template>
+
+          <template v-else-if="result?.available && result.rendered">
+            <p v-if="composerFallback" class="fallback-note">
+              结构化产品答案未通过约束校验，当前显示可信的 deterministic fallback。
+            </p>
+            <pre class="result-text">{{ result.rendered }}</pre>
+            <details class="support-details evidence-details-main">
+              <summary>
+                <span>相关证据</span>
+                <span class="muted">{{ evidence.length }} 条</span>
+              </summary>
+              <article v-for="item in evidence" :key="item.ref" class="evidence-card">
+                <div class="evidence-meta">
+                  <strong>{{ item.ref }}</strong>
+                  <span>{{ item.source }}<template v-if="item.metadata?.line_number">:L{{ item.metadata.line_number }}</template></span>
+                </div>
+                <code>{{ item.raw }}</code>
+              </article>
+            </details>
+          </template>
+
+          <div v-else-if="isTerminal" class="empty-state">
+            <strong>{{ task?.state === 'FAILED' ? '任务失败，未生成可展示诊断结果。' : '任务已结束，但没有可展示诊断结果。' }}</strong>
+            <pre v-if="resultProblem" class="result-text">{{ resultProblem }}</pre>
+          </div>
+          <div v-else class="result-pending">
+            <span class="result-pulse"></span>
+            <div>
+              <strong>正在调查与验证</strong>
+              <p>最终结果会在 Evidence 校准和可信输出完成后显示；下方可查看实时进度。</p>
+            </div>
+          </div>
+        </section>
+
+        <section class="panel progress-panel">
           <div class="section-heading">
             <div>
               <div class="eyebrow">PROGRESS</div>
@@ -251,21 +391,6 @@ onBeforeUnmount(() => timer && window.clearInterval(timer))
             </div>
           </div>
         </section>
-
-        <section class="panel">
-          <div class="section-heading">
-            <div>
-              <div class="eyebrow">RESULT</div>
-              <h2>诊断结果</h2>
-            </div>
-          </div>
-          <pre v-if="result?.available && result.rendered" class="result-text">{{ result.rendered }}</pre>
-          <div v-else-if="isTerminal" class="empty-state">
-            <strong>{{ task?.state === 'FAILED' ? '任务失败，未生成可展示诊断结果。' : '任务已结束，但没有可展示诊断结果。' }}</strong>
-            <pre v-if="resultProblem" class="result-text">{{ resultProblem }}</pre>
-          </div>
-          <div v-else class="empty-state">调查完成并通过证据校准后显示最终结果。</div>
-        </section>
       </div>
 
       <aside class="side-column">
@@ -285,22 +410,18 @@ onBeforeUnmount(() => timer && window.clearInterval(timer))
           <p class="muted">Stop 在安全模型请求边界生效；已完成工具结果会保留。</p>
         </section>
 
-        <section class="panel evidence-panel">
-          <div class="section-heading">
-            <div>
-              <div class="eyebrow">EVIDENCE</div>
-              <h2>证据</h2>
-            </div>
-            <span class="muted">{{ evidence.length }}</span>
+        <section class="panel trust-panel">
+          <div class="eyebrow">TRUST</div>
+          <h2>可信输出</h2>
+          <p class="muted">最终展示只来自 Validated Claims。Evidence 和 deterministic renderer 保留为可追溯审计层。</p>
+          <div class="trust-stat">
+            <span>Evidence</span>
+            <strong>{{ evidence.length }}</strong>
           </div>
-          <div v-if="!evidence.length" class="empty-state">暂未形成 Evidence。</div>
-          <article v-for="item in evidence" :key="item.ref" class="evidence-card">
-            <div class="evidence-meta">
-              <strong>{{ item.ref }}</strong>
-              <span>{{ item.source }}<template v-if="item.metadata?.line_number">:L{{ item.metadata.line_number }}</template></span>
-            </div>
-            <code>{{ item.raw }}</code>
-          </article>
+          <div class="trust-stat">
+            <span>Composer</span>
+            <strong>{{ productAnswer ? 'PASS' : (composerFallback ? 'FALLBACK' : '—') }}</strong>
+          </div>
         </section>
       </aside>
     </div>
