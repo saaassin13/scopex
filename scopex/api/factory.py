@@ -48,6 +48,16 @@ class LocalRuntimeConfig:
     enable_compaction: bool = True
 
 
+class _UnavailableAnswerComposer:
+    """Defer factory setup failure into the non-fatal composer audit boundary."""
+
+    def __init__(self, error_type: str) -> None:
+        self.error_type = error_type
+
+    def run(self, **_kwargs):
+        raise RuntimeError(f"answer_composer_factory_error:{self.error_type}")
+
+
 class OpenClawRuntimeFactory:
     """Create per-task production coordinators and trusted output stages for the API."""
 
@@ -157,13 +167,18 @@ class OpenClawRuntimeFactory:
             media_loader=EvidenceMediaLoader(self.config.data_binds),
         )
 
-    def answer_composer(self) -> ConstrainedAnswerComposer:
-        return ConstrainedAnswerComposer(
-            StreamingFinalizerClient(
-                self.config.base_url,
-                api_key=self.config.api_key,
-                timeout_s=self.config.answer_composer_timeout_s,
-            ),
-            model=self.config.model_id,
-            max_tokens=self.config.answer_composer_max_tokens,
-        )
+    def answer_composer(self) -> ConstrainedAnswerComposer | _UnavailableAnswerComposer:
+        try:
+            return ConstrainedAnswerComposer(
+                StreamingFinalizerClient(
+                    self.config.base_url,
+                    api_key=self.config.api_key,
+                    timeout_s=self.config.answer_composer_timeout_s,
+                ),
+                model=self.config.model_id,
+                max_tokens=self.config.answer_composer_max_tokens,
+            )
+        except Exception as exc:
+            # A valid Fresh Finalizer result must never be lost because the
+            # optional product-presentation stage could not be constructed.
+            return _UnavailableAnswerComposer(type(exc).__name__)
