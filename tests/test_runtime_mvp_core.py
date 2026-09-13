@@ -46,6 +46,7 @@ class RuntimeMvpCoreTests(unittest.TestCase):
                 EventType.USER_STOP,
                 EventType.SAFE_STOP,
                 EventType.USER_RESUME,
+                EventType.INVESTIGATION_COMPLETED,
                 EventType.FINALIZATION_STARTED,
                 EventType.FINALIZATION_COMPLETED,
                 EventType.TASK_COMPLETED,
