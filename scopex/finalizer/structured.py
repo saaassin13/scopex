@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hashlib
 import json
 import re
 from typing import Any
@@ -44,23 +45,23 @@ def parse_structured_payload(text: str) -> dict[str, Any]:
     return value
 
 
+def _compact_preview(value: Any, *, max_chars: int = 320) -> str | None:
+    if not isinstance(value, str) or not value:
+        return None
+    one_line = value.replace("\r", "\\r").replace("\n", "\\n")
+    if len(one_line) <= max_chars:
+        return one_line
+    return one_line[:max_chars] + "…"
+
+
 def _evidence_prompt_line(item: EvidenceItem) -> str:
     evidence_type = item.metadata.get("evidence_type")
     if evidence_type == "file_line":
         line = item.metadata.get("line_number")
-        return (
-            f"{item.ref} | type=file_line | source={item.source} | "
-            f"line={line} | {item.raw}"
-        )
+        return f"{item.ref} | line={line} | {item.raw}"
     if evidence_type == "command_line":
-        host = item.metadata.get("exec_host")
-        command = item.metadata.get("command")
         line = item.metadata.get("line_number")
-        digest = item.metadata.get("result_sha256")
-        return (
-            f"{item.ref} | type=command_line | host={host} | command={command} | "
-            f"line={line} | result_sha256={digest} | {item.raw}"
-        )
+        return f"{item.ref} | line={line} | {item.raw}"
     if evidence_type == "image":
         digest = item.metadata.get("sha256")
         return (
@@ -70,10 +71,89 @@ def _evidence_prompt_line(item: EvidenceItem) -> str:
     return f"{item.ref} | source={item.source} | {item.raw}"
 
 
-def build_structured_prompts(user_request: str, catalog: EvidenceCatalog) -> tuple[str, str]:
-    """Build a compact generic finalizer prompt with bounded output size."""
+def _group_key(item: EvidenceItem) -> tuple[Any, ...] | None:
+    evidence_type = item.metadata.get("evidence_type")
+    if evidence_type in {"file_line", "command_line"}:
+        return evidence_type, item.tool_call_id, item.source
+    return None
 
-    evidence = "\n".join(_evidence_prompt_line(item) for item in catalog.items)
+
+def _render_evidence_group(items: list[EvidenceItem]) -> str:
+    first = items[0]
+    evidence_type = first.metadata.get("evidence_type")
+    rows = "\n".join(_evidence_prompt_line(item) for item in items)
+
+    if evidence_type == "file_line":
+        return (
+            f"[evidence_block type=file_line source={first.source} "
+            f"tool_call_id={first.tool_call_id or '-'}]\n"
+            f"{rows}\n"
+            "[/evidence_block]"
+        )
+
+    if evidence_type == "command_line":
+        host = first.metadata.get("exec_host")
+        command = first.metadata.get("command")
+        result_digest = first.metadata.get("result_sha256")
+        command_preview = _compact_preview(command)
+        command_digest = None
+        if isinstance(command, str) and command:
+            command_digest = hashlib.sha256(command.encode("utf-8", errors="replace")).hexdigest()
+        header = (
+            f"[evidence_block type=command_line source={first.source} "
+            f"tool_call_id={first.tool_call_id or '-'} host={host} "
+            f"result_sha256={result_digest}"
+        )
+        if command_digest is not None:
+            header += f" command_sha256={command_digest}"
+        if command_preview is not None:
+            header += " command_preview=" + json.dumps(command_preview, ensure_ascii=False)
+        header += "]"
+        return f"{header}\n{rows}\n[/evidence_block]"
+
+    return rows
+
+
+def build_evidence_prompt(catalog: EvidenceCatalog) -> str:
+    """Render all Evidence refs losslessly while avoiding repeated tool metadata.
+
+    Runtime Evidence remains line-granular for validation. The finalizer prompt is
+    only a compact projection: contiguous lines from the same tool call/source
+    share one metadata header, and long shell/Python commands are represented by
+    a bounded preview plus a full SHA-256. No Evidence ref or raw evidence line is
+    removed by this compaction.
+    """
+
+    blocks: list[str] = []
+    pending: list[EvidenceItem] = []
+    pending_key: tuple[Any, ...] | None = None
+
+    def flush() -> None:
+        nonlocal pending, pending_key
+        if pending:
+            blocks.append(_render_evidence_group(pending))
+            pending = []
+            pending_key = None
+
+    for item in catalog.items:
+        key = _group_key(item)
+        if key is None:
+            flush()
+            blocks.append(_evidence_prompt_line(item))
+            continue
+        if pending and key != pending_key:
+            flush()
+        if not pending:
+            pending_key = key
+        pending.append(item)
+    flush()
+    return "\n".join(blocks)
+
+
+def build_structured_prompts(user_request: str, catalog: EvidenceCatalog) -> tuple[str, str]:
+    """Build a compact generic finalizer prompt with bounded metadata overhead."""
+
+    evidence = build_evidence_prompt(catalog)
     system = """你是 ScopeX 证据校准器。调查已结束，没有工具。
 只能依据证据目录和本次直接附加的图片证据输出一个紧凑 JSON；不要继续调查，不要输出自然语言报告。
 
@@ -104,6 +184,7 @@ kind 与 relation 必须严格匹配：
 10. type=image 的 Evidence 已以原图直接附加。视觉 fact 必须基于你本次亲自看到的图片内容并引用对应图片 E ref；不要假定调查 Agent 之前的图片描述正确，因为这些描述不是证据。
 11. type=command_line 的 fact 只能陈述该行输出直接支持的信息；可以为同一次命令的不同输出行生成不同 fact，但不要把命令输出推断成未观察到的原因。
 12. 如果多张图片呈现与原任务相关的明显不同状态、质量或内容差异，优先按图片或证据子集分别生成视觉 fact；不要把有意义的差异压缩成一个宽泛的场景描述。只有图片内容实质相同时才合并。
+13. evidence_block 只是为了压缩重复的工具元数据；块内每个 E ref 仍是独立、精确的 Evidence。command_preview 可能被截断，完整命令只以 command_sha256 保持身份；不要根据被截断的命令内容推断额外事实。
 
 只输出 JSON 对象，可有或没有 json fence。"""
     user = f"""原任务：{user_request}
