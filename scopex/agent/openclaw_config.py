@@ -6,7 +6,7 @@ import ipaddress
 from urllib.parse import urlsplit
 
 
-APPROVED_TOOLS = frozenset({"read", "exec", "process", "view_image"})
+APPROVED_TOOLS = frozenset({"read", "exec", "process", "view_image", "progress_card"})
 EXEC_HOSTS = frozenset({"sandbox", "gateway", "node"})
 EXEC_MODES = frozenset({"deny", "allowlist", "ask", "auto", "full"})
 
@@ -205,6 +205,7 @@ def build_openclaw_config(spec: OpenClawConfigSpec) -> dict:
         },
         "tools": {
             "allow": tools,
+            "updatePlan": "progress_card" in tools,
             "elevated": {"enabled": False},
             "exec": {
                 "host": spec.exec_host,
