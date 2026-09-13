@@ -27,6 +27,17 @@ def _source_name(item: EvidenceItem) -> str:
     return Path(item.source).name or item.source
 
 
+def _source_title(item: EvidenceItem) -> str:
+    if item.metadata.get("evidence_type") == "command_output":
+        title = item.metadata.get("title")
+        command = item.metadata.get("command")
+        if isinstance(title, str) and title:
+            return title
+        if isinstance(command, str) and command:
+            return command
+    return _source_name(item)
+
+
 def _evidence_label(item: EvidenceItem) -> str:
     source = _source_name(item)
     line_number = item.metadata.get("line_number")
@@ -46,14 +57,31 @@ def _refs_text(refs: list[str], catalog: EvidenceCatalog) -> str:
     return "、".join(_evidence_label(catalog.get(ref)) for ref in refs)
 
 
+def _claim_has_image(claim, catalog: EvidenceCatalog) -> bool:
+    return any(
+        catalog.get(ref).metadata.get("evidence_type") == "image"
+        for ref in claim.evidence_refs
+    )
+
+
 def _render_observed_facts(claims: ClaimSet, catalog: EvidenceCatalog) -> list[str]:
-    """Group exact observed evidence by source without changing its meaning."""
+    """Render exact text/command facts and fresh visual observations safely.
+
+    Text and command facts keep runtime-owned raw Evidence so model prose cannot
+    silently rewrite them. Image bytes cannot be expanded as readable text; for
+    a visual fact the topic comes from the Fresh Finalizer that re-opened the
+    SHA-verified image in the same finalization call.
+    """
 
     grouped: OrderedDict[str, list[EvidenceItem]] = OrderedDict()
     seen_refs: set[str] = set()
+    visual_claims = []
 
     for claim in claims.claims:
         if claim.kind is not ClaimKind.FACT:
+            continue
+        if _claim_has_image(claim, catalog):
+            visual_claims.append(claim)
             continue
         for ref in claim.evidence_refs:
             if ref in seen_refs:
@@ -63,21 +91,27 @@ def _render_observed_facts(claims: ClaimSet, catalog: EvidenceCatalog) -> list[s
             grouped.setdefault(item.source, []).append(item)
 
     lines: list[str] = []
-    for source, items in grouped.items():
-        title = Path(source).name or source
+    for _, items in grouped.items():
+        title = _source_title(items[0])
         lines.append(f"直接观察｜{title}")
         for item in items:
             lines.append(f"- [{_compact_evidence_label(item)}] {item.raw}")
+
+    for claim in visual_claims:
+        image_refs = [
+            ref for ref in claim.evidence_refs
+            if catalog.get(ref).metadata.get("evidence_type") == "image"
+        ]
+        title = "、".join(_source_name(catalog.get(ref)) for ref in image_refs) or "图片"
+        evidence = _refs_text(list(claim.evidence_refs), catalog)
+        lines.append(f"视觉观察｜{title}")
+        lines.append(f"- {claim.topic}（相关证据：{evidence}）")
+
     return lines
 
 
 def render_claims(claims: ClaimSet, catalog: EvidenceCatalog) -> str:
-    """Render validated claims without upgrading their epistemic strength.
-
-    Observed facts keep exact runtime-owned evidence and are grouped by source so
-    simple read/query tasks remain readable. Inference wording stays
-    deterministic so presentation cannot silently strengthen model claims.
-    """
+    """Render validated claims without upgrading their epistemic strength."""
 
     lines: list[str] = _render_observed_facts(claims, catalog)
 
