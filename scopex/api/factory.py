@@ -37,6 +37,7 @@ class LocalRuntimeConfig:
     exec_mode: str = "full"
     enable_view_image: bool = False
     enable_progress_card: bool = False
+    enable_compaction: bool = True
 
 
 class OpenClawRuntimeFactory:
@@ -99,16 +100,16 @@ class OpenClawRuntimeFactory:
             sandbox_binds=self.config.data_binds,
             exec_host=self.config.exec_host,
             exec_mode=self.config.exec_mode,
+            compaction_enabled=self.config.enable_compaction,
         )
         return InvestigationCoordinator.for_openclaw(
             task=task,
             session=session,
             spec=spec,
             events=events,
-            convergence_policy=ConvergencePolicy(
-                max_model_requests=self.config.max_requests,
-                max_elapsed_s=float(self.config.timeout_s),
-            ),
+            # Hard request/time/context budgets belong to OpenClaw/ModelProxy.
+            # ScopeX convergence remains product-level only.
+            convergence_policy=ConvergencePolicy(),
             evidence_projector_factory=lambda collector: OpenClawEvidenceProjector(
                 collector,
                 exec_host=self.config.exec_host,
