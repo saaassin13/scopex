@@ -167,14 +167,23 @@ class StructuredFinalizer:
                 for image in images
             )
 
-        transport = self.client.complete(
-            model=self.model,
-            system_prompt=system,
-            user_prompt=user,
-            max_tokens=self.max_tokens,
-            temperature=0,
-            image_inputs=image_inputs,
-        )
+        try:
+            transport = self.client.complete(
+                model=self.model,
+                system_prompt=system,
+                user_prompt=user,
+                max_tokens=self.max_tokens,
+                temperature=0,
+                image_inputs=image_inputs,
+            )
+        except (OSError, ValueError) as exc:
+            return StructuredFinalizerResult(
+                _empty_transport(),
+                None,
+                "structured_finalizer_transport_error:" + str(exc),
+                None,
+                image_evidence_refs=image_evidence_refs,
+            )
 
         if not transport.done_seen:
             return StructuredFinalizerResult(
