@@ -1,7 +1,9 @@
 from pathlib import Path
+import json
 import unittest
 
 from scopex.agent.openclaw_config import OpenClawConfigSpec, build_openclaw_config
+from scopex.agent.outcome import NATIVE_TOOL_LOOP_GUARD, classify_cli_runtime_guard
 
 
 class OpenClawLoopDetectionTests(unittest.TestCase):
@@ -24,6 +26,47 @@ class OpenClawLoopDetectionTests(unittest.TestCase):
             cfg["tools"]["loopDetection"],
             {"enabled": True},
         )
+
+    def test_second_critical_loop_terminal_is_classified_as_runtime_guard(self):
+        envelope = {
+            "payloads": [
+                {
+                    "text": "OpenClaw stopped this run because tool-loop recovery encountered another critical loop.",
+                    "isError": True,
+                }
+            ],
+            "meta": {
+                "replayInvalid": True,
+                "livenessState": "abandoned",
+                "error": {
+                    "kind": "incomplete_turn",
+                    "message": (
+                        "OpenClaw stopped this run because tool-loop recovery "
+                        "encountered another critical loop. No blocked tool action was executed."
+                    ),
+                },
+                "executionTrace": {"fallbackUsed": False},
+            },
+        }
+        self.assertEqual(
+            classify_cli_runtime_guard(json.dumps(envelope)),
+            NATIVE_TOOL_LOOP_GUARD,
+        )
+
+    def test_unrelated_incomplete_turn_is_not_misclassified(self):
+        envelope = {
+            "payloads": [{"text": "provider failed", "isError": True}],
+            "meta": {
+                "replayInvalid": True,
+                "livenessState": "abandoned",
+                "error": {
+                    "kind": "incomplete_turn",
+                    "message": "provider connection closed",
+                },
+                "executionTrace": {"fallbackUsed": False},
+            },
+        }
+        self.assertIsNone(classify_cli_runtime_guard(json.dumps(envelope)))
 
 
 if __name__ == "__main__":
