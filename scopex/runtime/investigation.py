@@ -70,9 +70,6 @@ class InvestigationCoordinator:
         self.convergence_policy = convergence_policy
         self.events = events
         self.steering = steering or PendingSteeringQueue()
-        # Historical attribute name kept for compatibility. In production this
-        # is now the OpenClaw Trace -> Evidence Projector, not a second tool
-        # pipeline or transcript store.
         self.evidence_pipeline = evidence_pipeline
         self.audit = audit
         self._control_lock = control_lock or threading.RLock()
@@ -108,8 +105,6 @@ class InvestigationCoordinator:
         if evidence_projector_factory is not None:
             evidence_pipeline: EvidenceProjector | None = evidence_projector_factory(collector)
         elif configured_extractors:
-            # Compatibility path for existing regression tests/POCs. Product
-            # runtime uses one OpenClaw Evidence Projector instead.
             evidence_pipeline = EvidenceExtractionPipeline(collector, configured_extractors)
         else:
             evidence_pipeline = None
@@ -166,7 +161,6 @@ class InvestigationCoordinator:
         return self._run_turn(message, turn_name=turn_name)
 
     def request_stop(self, message: str = "") -> None:
-        """Arm the proxy gate before exposing PAUSING, without a forwarding race."""
         with self._control_lock:
             if self.controller.state is not TaskState.RUNNING:
                 raise ValueError("stop requires RUNNING task")
@@ -176,7 +170,6 @@ class InvestigationCoordinator:
             self._snapshot()
 
     def resume(self, message: str, *, turn_name: str) -> OpenClawTurnResult:
-        """Resume only after the stopped OpenClaw turn has fully unwound."""
         with self._turn_lock:
             with self._control_lock:
                 if self.controller.state is not TaskState.PAUSED:
@@ -187,7 +180,6 @@ class InvestigationCoordinator:
             return self._run_turn(message, turn_name=turn_name)
 
     def request_steer(self, message: str) -> None:
-        """Interrupt the current Agent turn at the next safe model boundary."""
         with self._control_lock:
             if self.controller.state is not TaskState.RUNNING:
                 raise ValueError("mid-turn steering requires RUNNING task")
@@ -197,7 +189,6 @@ class InvestigationCoordinator:
             self._snapshot()
 
     def continue_pending_steering(self, *, turn_name: str) -> OpenClawTurnResult:
-        """Run accumulated steering in the same session after the prior turn unwinds."""
         with self._turn_lock:
             with self._control_lock:
                 if self.controller.state is not TaskState.RUNNING:
@@ -227,8 +218,6 @@ class InvestigationCoordinator:
         return item
 
     def checkpoint_evidence_progress(self) -> int:
-        """Update stale-round state after configured projection has run."""
-
         current = len(self.catalog.items)
         if current > self._last_evidence_count:
             self._stale_rounds = 0
@@ -274,7 +263,6 @@ class InvestigationCoordinator:
             self.controller.fail("structured_finalizer_validation_failed")
             self._snapshot()
             return result
-
         self._persist_result(result, published_state=TaskState.COMPLETED)
         self.controller.finalization_completed()
         self.controller.complete()
@@ -285,8 +273,6 @@ class InvestigationCoordinator:
         self,
         finalizer: StructuredFinalizer,
     ) -> StructuredFinalizerResult:
-        """Execute a fresh no-tool finalizer after FINALIZING was claimed atomically."""
-
         if self.controller.state is not TaskState.FINALIZING:
             raise ValueError("task must be FINALIZING")
         result = finalizer.run(user_request=self.task.user_request, catalog=self.catalog)
@@ -297,7 +283,6 @@ class InvestigationCoordinator:
             self.controller.fail("fresh_structured_finalizer_failed")
             self._snapshot()
             return result
-
         self._persist_structured_result(result, published_state=TaskState.COMPLETED)
         self.controller.finalization_completed()
         self.controller.complete()
@@ -310,8 +295,6 @@ class InvestigationCoordinator:
         *,
         goal_satisfied: bool = False,
     ) -> StructuredFinalizerResult:
-        """Atomically end Investigation, then execute one fresh no-tool finalizer call."""
-
         self.begin_finalization(goal_satisfied=goal_satisfied)
         return self.finish_fresh_finalization(finalizer)
 
@@ -394,6 +377,8 @@ class InvestigationCoordinator:
                 "errors": errors,
                 "parse_error": result.parse_error,
                 "finish_reasons": list(result.transport.finish_reasons),
+                "normalizations": list(result.normalizations),
+                "image_evidence_refs": list(result.image_evidence_refs),
                 "task_state": published_state.value,
             },
             rendered=rendered,
