@@ -211,16 +211,30 @@ class OpenClawTaskRuntime:
 
     def _runtime_message(self, message: str) -> str:
         """Attach capability context without prescribing an investigation workflow."""
-        if self.spec.task_scratch_bind is None or self.spec.exec_host != "sandbox":
+        notes: list[str] = []
+        if self.spec.task_scratch_bind is not None and self.spec.exec_host == "sandbox":
+            notes.append(
+                f"{TASK_SCRATCH_PATH} is writable, task-local scratch space for intermediate "
+                "scripts and reduced analysis artifacts. External input mounts such as "
+                "/agent-data remain read-only. For large inputs, prefer using tools to "
+                "process bounded slices or summaries into task scratch instead of emitting "
+                "the full raw dataset into model context."
+            )
+        if "view_image" in self.spec.tools:
+            notes.append(
+                "For large image sets, keep the visual working set bounded: metadata, "
+                "multi-image view_image calls, or scratch-derived previews may be used for "
+                "screening. Multi-image views are screening only in ScopeX Evidence. Before "
+                "relying on an original image in the final conclusion, re-open the smallest "
+                "necessary set of exact read-only originals one at a time; those singleton "
+                "views can be SHA-verified again by the Fresh Finalizer."
+            )
+        if not notes:
             return message
         note = (
             "[ScopeX runtime capability]\n"
-            f"{TASK_SCRATCH_PATH} is writable, task-local scratch space for intermediate "
-            "scripts and reduced analysis artifacts. External input mounts such as "
-            "/agent-data remain read-only. For large inputs, prefer using tools to "
-            "process bounded slices or summaries into task scratch instead of emitting "
-            "the full raw dataset into model context. This is a capability note, not a "
-            "required investigation sequence.\n"
+            + "\n".join(notes)
+            + "\nThis is capability/evidence context, not a required investigation sequence.\n"
             "[/ScopeX runtime capability]"
         )
         return note + "\n\n" + message
