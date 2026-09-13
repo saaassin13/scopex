@@ -108,10 +108,12 @@ Evidence Snapshot <- 最终结论引用源
 生产 Runtime 已从 `ReadLineExtractor` 插件路径切换为单一 `OpenClawEvidenceProjector`：
 
 - `read` → 精确非空行，保留 source / line / tool_call_id；
-- `exec` → 有界输出快照 + command / host / full-result SHA256；
+- `exec` → **claim-grade command line Evidence**：每个非空输出行独立 E ref，同时保留 command / actual host / full-result SHA256 / 原始位置；不再把整段 stdout 作为一个大 E ref；
 - `view_image` → 只冻结图片身份：path / SHA256 / size / MIME；
 - `progress_card` → 不进入 Evidence；
 - 不执行工具，不解释业务，不保存第二套完整 transcript。
+
+之所以把 exec 改为行级 Evidence：一条系统查询命令可能同时输出 CPU 数量、内存、多个进程等独立事实。如果整段 stdout 只有一个 E ref，Fresh Finalizer 会被迫让多个不同 fact 共用同一个证据身份，触发 `duplicate_claim`，也不符合 claim-grade Evidence 的目标。
 
 旧 extractor 类暂时保留用于历史回归测试，但不再是产品默认路径。
 
@@ -130,13 +132,16 @@ Fresh Finalizer 现在会：
 
 这避免“调查 Agent 先说图片模糊 → ScopeX 把这句话当证据 → Finalizer 再证明图片模糊”的自证循环。
 
+实机已证明图片主链可工作：最终结果能够出现引用 image E ref 的“视觉观察”。目前观察到 Fresh Finalizer 有时会把多张图片压缩为过于宽泛的场景级事实，因此 prompt 已收紧：如果多张图片存在与原任务相关的明显差异，应按图片或证据子集分别生成视觉 fact，不要把有意义的差异合并成一个宽泛描述。
+
 ### Step 5 实机通过条件
 
 **CPU/内存任务**：
 
-- `exec host=gateway` 输出自动形成 command Evidence；
+- `exec host=gateway` 输出自动形成 command line Evidence；
 - 不再出现 `investigation_completed_without_evidence`；
-- Finalizer 只能从命令输出陈述直接观察事实。
+- 不再因为多个不同系统事实共用一个大 E ref 而触发 `duplicate_claim`；
+- Finalizer 只能从对应命令输出行陈述直接观察事实。
 
 **图片任务**：
 
@@ -188,5 +193,6 @@ Evidence
 
 1. 当前 Qwen/vLLM 一次 Fresh Finalizer 最适合附加多少张图片，需要 Spark 实测；实现会在超出配置上限时明确失败，不静默丢图。
 2. `progress_card` 的 durable current-state 读取接口需要在后续 refresh/restart 场景再验证；当前历史 Progress UI 不依赖该能力。
+3. 单任务混用 `exec host=gateway` 与 `exec host=sandbox` 的 per-call 路由还需要实机验证；Evidence provenance 已记录实际 call host 优先，不影响当前架构。
 
-这两点不影响 Step 5A 的架构结论，也不需要暂停当前实施。
+这些细节不影响 Step 5 的架构结论，也不需要暂停当前实施。
