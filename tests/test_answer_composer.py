@@ -91,13 +91,18 @@ class AnswerComposerTests(unittest.TestCase):
         self.assertEqual(client.calls[0]["temperature"], 0)
         self.assertEqual(client.calls[0]["max_tokens"], 256)
 
-    def test_composer_prompt_contains_no_raw_evidence_or_tool_transcript(self):
+    def test_composer_prompt_uses_trust_rendered_claim_view_not_untrusted_fact_topic(self):
         catalog, claims = self.fixture()
-        _system, user = build_answer_prompts("diagnose failure", claims)
-        for item in catalog.items:
-            self.assertNotIn(item.raw, user)
-        self.assertIn("GPU OOM caused everything", user)
+        _system, user = build_answer_prompts("diagnose failure", claims, catalog)
+        self.assertNotIn("GPU OOM caused everything", user)
+        self.assertIn("worker exited status=137", user)
+        self.assertIn("task failed target_pose_unavailable", user)
+        self.assertIn("尚不能据此证明因果", user)
+        self.assertIn("restart recovery remains unverified（尚不能确定）", user)
+        self.assertNotIn("restart verification is incomplete", user)
         self.assertIn('"evidence_refs":["E1"]', user)
+        self.assertNotIn("tool_call_id", user)
+        self.assertNotIn("observed_at", user)
 
     def test_unknown_claim_id_is_rejected(self):
         catalog, claims = self.fixture()
