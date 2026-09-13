@@ -53,6 +53,7 @@ class OpenClawTaskSpec:
     exec_host: str = "sandbox"
     exec_mode: str = "full"
     docker_bin: str = "docker"
+    compaction_enabled: bool = True
 
 
 @dataclass(frozen=True, slots=True)
@@ -158,6 +159,7 @@ class OpenClawTaskRuntime:
                     exec_host=self.spec.exec_host,
                     exec_mode=self.spec.exec_mode,
                     container_prefix="scopex-",
+                    compaction_enabled=self.spec.compaction_enabled,
                 )
             )
             self.config_path.write_text(
