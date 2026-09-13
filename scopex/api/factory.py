@@ -9,6 +9,7 @@ from scopex.agent.runtime import OpenClawTaskSpec
 from scopex.evidence.media import EvidenceMediaLoader
 from scopex.evidence.projector import OpenClawEvidenceProjector
 from scopex.events.progress import EventSink
+from scopex.finalizer.answer import ConstrainedAnswerComposer
 from scopex.finalizer.client import StreamingFinalizerClient
 from scopex.finalizer.structured import StructuredFinalizer
 from scopex.runtime.convergence import ConvergencePolicy
@@ -36,6 +37,8 @@ class LocalRuntimeConfig:
     max_tokens: int = 2048
     finalizer_max_tokens: int = 768
     finalizer_timeout_s: int = 180
+    answer_composer_max_tokens: int = 256
+    answer_composer_timeout_s: int = 60
     skills: tuple[str, ...] = ()
     data_binds: tuple[str, ...] = ()
     exec_host: str = "sandbox"
@@ -45,8 +48,18 @@ class LocalRuntimeConfig:
     enable_compaction: bool = True
 
 
+class _UnavailableAnswerComposer:
+    """Defer factory setup failure into the non-fatal composer audit boundary."""
+
+    def __init__(self, error_type: str) -> None:
+        self.error_type = error_type
+
+    def run(self, **_kwargs):
+        raise RuntimeError(f"answer_composer_factory_error:{self.error_type}")
+
+
 class OpenClawRuntimeFactory:
-    """Create per-task production coordinators and fresh finalizers for the API."""
+    """Create per-task production coordinators and trusted output stages for the API."""
 
     def __init__(self, config: LocalRuntimeConfig) -> None:
         self.config = config
@@ -68,6 +81,10 @@ class OpenClawRuntimeFactory:
             raise ValueError("finalizer_max_tokens must be between 256 and 1024")
         if not 30 <= config.finalizer_timeout_s <= 600:
             raise ValueError("finalizer_timeout_s must be between 30 and 600")
+        if not 128 <= config.answer_composer_max_tokens <= 512:
+            raise ValueError("answer_composer_max_tokens must be between 128 and 512")
+        if not 10 <= config.answer_composer_timeout_s <= 180:
+            raise ValueError("answer_composer_timeout_s must be between 10 and 180")
         config.work_root.mkdir(parents=True, exist_ok=True)
 
     def coordinator(
@@ -149,3 +166,19 @@ class OpenClawRuntimeFactory:
             max_tokens=self.config.finalizer_max_tokens,
             media_loader=EvidenceMediaLoader(self.config.data_binds),
         )
+
+    def answer_composer(self) -> ConstrainedAnswerComposer | _UnavailableAnswerComposer:
+        try:
+            return ConstrainedAnswerComposer(
+                StreamingFinalizerClient(
+                    self.config.base_url,
+                    api_key=self.config.api_key,
+                    timeout_s=self.config.answer_composer_timeout_s,
+                ),
+                model=self.config.model_id,
+                max_tokens=self.config.answer_composer_max_tokens,
+            )
+        except Exception as exc:
+            # A valid Fresh Finalizer result must never be lost because the
+            # optional product-presentation stage could not be constructed.
+            return _UnavailableAnswerComposer(type(exc).__name__)

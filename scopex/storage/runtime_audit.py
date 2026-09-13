@@ -61,6 +61,9 @@ class RuntimeAudit:
     def persist_claims(self, payload: dict[str, Any]) -> None:
         self.store.write_json(self.task_id, "claims.json", payload)
 
+    def persist_answer(self, payload: dict[str, Any]) -> None:
+        self.store.write_json(self.task_id, "answer.json", payload)
+
     def persist_result(self, result: dict[str, Any], *, rendered: str | None = None) -> None:
         self.store.write_json(self.task_id, "result.json", result)
         if rendered is not None:

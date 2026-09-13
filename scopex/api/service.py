@@ -10,6 +10,7 @@ from typing import Callable, Protocol
 
 from scopex.agent.runtime import OpenClawTurnResult
 from scopex.events.progress import EventSink, InMemoryEventSink
+from scopex.finalizer.answer import ConstrainedAnswerComposer
 from scopex.finalizer.structured import StructuredFinalizer
 from scopex.runtime.investigation import InvestigationCoordinator
 from scopex.runtime.session import Session
@@ -41,6 +42,7 @@ class CoordinatorFactory(Protocol):
 
 
 FinalizerFactory = Callable[[], StructuredFinalizer]
+AnswerComposerFactory = Callable[[], ConstrainedAnswerComposer]
 
 
 @dataclass(slots=True)
@@ -79,10 +81,12 @@ class TaskService:
         audit_root: Path,
         coordinator_factory: CoordinatorFactory,
         finalizer_factory: FinalizerFactory,
+        answer_composer_factory: AnswerComposerFactory | None = None,
     ) -> None:
         self.store = AuditStore(Path(audit_root))
         self.coordinator_factory = coordinator_factory
         self.finalizer_factory = finalizer_factory
+        self.answer_composer_factory = answer_composer_factory
         self._lock = threading.RLock()
         self._handles: dict[str, TaskHandle] = {}
         self._active_task_id: str | None = None
@@ -199,16 +203,49 @@ class TaskService:
                 "state": task.get("state"),
                 "available": False,
             }
+
         rendered = None
         try:
             rendered = self.store.read_text(task_id, "final.txt")
         except FileNotFoundError:
             pass
+
+        product_answer = None
+        answer_composer = None
+        try:
+            answer_payload = self.store.read_json(task_id, "answer.json")
+        except FileNotFoundError:
+            answer_payload = None
+        except (json.JSONDecodeError, OSError):
+            answer_payload = {
+                "valid": False,
+                "errors": ["answer_audit_unreadable"],
+                "answer": None,
+            }
+        if isinstance(answer_payload, dict):
+            answer_composer = {
+                key: answer_payload.get(key)
+                for key in (
+                    "valid",
+                    "errors",
+                    "parse_error",
+                    "finish_reasons",
+                    "elapsed_s",
+                    "usage",
+                )
+                if key in answer_payload
+            }
+            answer = answer_payload.get("answer")
+            if answer_payload.get("valid") is True and isinstance(answer, dict):
+                product_answer = answer
+
         return {
             "task_id": task_id,
             "state": task.get("state"),
             "available": True,
             "result": result,
+            "product_answer": product_answer,
+            "answer_composer": answer_composer,
             "rendered": rendered,
         }
 
@@ -411,7 +448,14 @@ class TaskService:
                 continue
 
             if action == "finalize":
-                coordinator.finish_fresh_finalization(self.finalizer_factory())
+                finalizer = self.finalizer_factory()
+                if self.answer_composer_factory is None:
+                    coordinator.finish_fresh_finalization(finalizer)
+                else:
+                    coordinator.finish_fresh_finalization(
+                        finalizer,
+                        answer_composer=self.answer_composer_factory(),
+                    )
                 return
 
     @staticmethod
