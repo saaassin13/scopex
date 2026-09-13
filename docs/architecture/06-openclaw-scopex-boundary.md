@@ -2,45 +2,47 @@
 
 ## Purpose
 
-This document freezes the post-POC07 architecture boundary so ScopeX does not
-slowly reimplement OpenClaw.
+This document freezes the architecture boundary so ScopeX does not slowly
+reimplement OpenClaw.
 
-Core rule:
+> **OpenClaw owns execution. ScopeX owns product control and trust.**
 
-> OpenClaw owns execution. ScopeX owns product control and trust.
+> **OpenClaw + 模型负责自主调查、决策、执行和验证；我们只提供能力、权限、上下文和审计，不重新实现 Agent Loop。**
+
+> **Evidence 模型只解决“Agent 为什么这么做”的可信依据；绝不能把系统架构收缩成 Evidence Viewer。**
+
+## Ownership
 
 ```text
-                 OpenClaw
-       ┌────────────────────────┐
-       │ Agent loop             │
-       │ Session transcript     │
-       │ Tools / Skills         │
-       │ Sandbox / exec host    │
-       │ Exec approvals         │
-       │ progress_card          │
-       └───────────┬────────────┘
+Goal / Trigger
+    ↓
+┌──────────── OpenClaw + Model ────────────┐
+│ Agent Loop                               │
+│ investigation order                     │
+│ file / exec / process / image tools     │
+│ Skills                                   │
+│ tool-loop detection / recovery           │
+│ compaction                               │
+│ action + verification decision           │
+└──────────────────┬───────────────────────┘
                    │ trace
                    ▼
-┌──────────────── ScopeX ────────────────┐
-│ 1. Task Runtime                        │
-│    task / stop / resume / steer        │
-│                                        │
-│ 2. Observation Bridge                  │
-│    OpenClaw trace -> product events    │
-│                                        │
-│ 3. Evidence Projection                 │
-│    stable E refs + minimal snapshot    │
-│                                        │
-│ 4. Convergence                         │
-│    enough / stale / finalize           │
-│                                        │
-│ 5. Trust Pipeline                      │
-│    Fresh Finalizer / Claim Validator   │
-│                                        │
-│ 6. Product                             │
-│    Answer Composer / API / UI          │
-└────────────────────────────────────────┘
+┌──────────────── ScopeX ──────────────────┐
+│ Task / Session / Stop / Resume / Steer   │
+│ hard product runtime boundary            │
+│ Trace -> Evidence projection             │
+│ permission / capability boundary         │
+│ Fresh Finalizer / Claim Validator        │
+│ Audit / API / UI                         │
+└──────────────────────────────────────────┘
 ```
+
+Litmus test:
+
+- if ScopeX code contains lots of `Agent must do X next`, the architecture is
+  drifting into a second Agent;
+- capability, permission, risk, Evidence, audit and product lifecycle code is
+  appropriate ScopeX responsibility.
 
 ## What must stay in OpenClaw
 
@@ -54,164 +56,125 @@ ScopeX must not implement a second version of:
 - Skill loading;
 - full assistant/tool transcript;
 - sandbox lifecycle semantics already provided by OpenClaw;
-- exec allowlist/approval semantics;
-- durable progress plan state when `progress_card` is available.
+- native tool-loop detection/recovery;
+- current-task compaction;
+- exec allowlist/approval semantics already provided by OpenClaw.
 
-If an OpenClaw capability is sufficient, ScopeX should configure, observe or
-project it rather than replace it.
+If an OpenClaw capability is sufficient, ScopeX configures, observes or projects
+it rather than replacing it.
 
-## ScopeX-owned state
+## ScopeX-owned product state
 
-### Task Runtime
-
-ScopeX owns the product task lifecycle and user control operations. This is not
-an OpenClaw conversation replacement.
-
-ScopeX Session stores only product control history:
+ScopeX Task/Session state is product control history, not a conversation clone.
+It stores only what the product must own, such as:
 
 ```text
 USER
 STEER
 STOP
 RESUME
+Task state / audit state
 ```
 
-OpenClaw remains the source of truth for the full agent/tool transcript.
+OpenClaw remains the source of truth for the full Agent/tool transcript.
 
-### Progress
+## Progress
 
-Two different concepts must remain separate:
+Keep two concepts separate:
 
 ```text
-Current plan/status
--> OpenClaw progress_card when available
+Agent's current execution / tool activity
+-> OpenClaw trace, optionally progress_card
 
-Historical activity timeline
+Historical product timeline
 -> ScopeX projection of real Tool Call / Tool Result / control events
 ```
 
 ScopeX must not create a second plan state machine.
 
-### Permissions
+## Permissions and actions
 
-Commands executed through OpenClaw `exec` use OpenClaw's own host policy,
-allowlist and approval mechanisms.
+Commands executed through OpenClaw `exec` use OpenClaw's tool/sandbox policy.
+ScopeX permission abstractions are for product/business capabilities outside that
+shell surface, for example future robot/device/config APIs.
 
-ScopeX permission abstractions are reserved for product/business actions outside
-OpenClaw exec, for example future robot/device/config APIs.
+Do not enforce one action through two unrelated approval engines.
 
-Do not enforce the same shell command through two independent approval systems.
+A successful command is not the same thing as successful recovery:
+
+```text
+execute action
+   ↓
+query independent business state
+   ↓
+verify expected outcome
+   ↓
+only then claim recovery
+```
+
+Step 6E validated this pattern end to end.
 
 ## Evidence is not a second transcript
 
-OpenClaw trace answers:
+OpenClaw Trace answers:
 
-> What did the agent do and see?
+> What did the Agent do and see?
 
 ScopeX Evidence answers:
 
-> What exact immutable source is claim C3 allowed to cite?
-
-Therefore Evidence remains necessary, but it must be a **projection**, not a
-copy of the transcript.
+> What exact immutable source is a final claim allowed to cite?
 
 ```text
-OpenClaw Trace  <- execution source of truth
+OpenClaw Trace
       │
       │ project only claim-grade source material
       ▼
-Evidence Snapshot  <- final-answer trust source of truth
+Evidence Snapshot
+      │
+      ▼
+Fresh Finalizer / Validated Claims
 ```
 
-Evidence projection rules:
+Projection rules:
 
 1. Do not execute tools.
 2. Do not infer business meaning.
-3. Do not save a second full transcript.
-4. Freeze only the minimum material required for stable citation.
-5. Preserve provenance back to OpenClaw tool-call identity.
+3. Do not copy the full transcript.
+4. Freeze only enough material for stable citation.
+5. Preserve provenance back to tool-call identity.
+6. Runtime-control feedback is not business Evidence.
 
-### Read evidence
+### Read Evidence
 
-A log/text line may be frozen directly because the underlying file may later
-rotate, change or disappear.
+Freeze exact bounded source lines. A rotating log may change later, so the
+observed raw line belongs in Evidence.
 
-```text
-E1
-kind = file_line
-source = /agent/app.log
-line = 123
-raw = "task failed ..."
-tool_call_id = ...
-```
+### Exec Evidence
 
-### Exec evidence
+One command can report several independent facts. Freeze bounded non-empty
+output lines as separate E refs and retain one digest for the complete tool
+result.
 
-A single command can report several independent facts. Therefore whole stdout
-must not be treated as one E ref. Project bounded non-empty output lines while
-keeping provenance back to one complete tool result.
+### Image Evidence
 
-```text
-E4
-kind = command_line
-host = gateway
-command = "free -h"
-line = 2
-raw = "Mem: ..."
-result_sha256 = digest of complete tool result
-tool_call_id = ...
-```
+The original image is Evidence; the investigation Agent's description is not.
+Strong visual claims require the Fresh Finalizer to re-open the original from a
+configured read-only data root and re-check its SHA-256.
 
-A different output line becomes a different E ref even when it came from the
-same exec call. This lets CPU count, memory state and process rows support
-separate facts without weakening duplicate-claim validation.
+Large image sets are an investigation working set. A final `view_image` call of
+1–4 read-only originals may promote those originals to claim-grade Evidence.
+Scratch-derived contact sheets/previews are useful for investigation but are not
+strong original-image Evidence.
 
-The complete tool result remains in OpenClaw/audit trace. ScopeX only freezes a
-bounded claim-grade projection, not another full stdout copy.
+### Runtime-control feedback
 
-### Image evidence
+OpenClaw may append warning/block/recovery text to Tool Results, for example
+native loop-detection messages. Those lines stay in Trace/Progress but must not
+become claim-grade Evidence for the device/system being diagnosed.
 
-The image itself is evidence. A model description of the image is not raw
-image evidence.
+## Fresh Finalizer
 
-```text
-E7
-kind = image
-source = /agent-data/.../frame.jpg
-sha256 = ...
-byte_size = ...
-media_type = image/jpeg
-tool_call_id = ...
-```
-
-Do **not** freeze `"image is blurry"` as raw evidence merely because the
-investigation Agent said it. That would make the finalizer validate one model's
-claim using the same model's earlier prose.
-
-For strong visual claims, the Fresh Finalizer must receive the immutable image
-itself and inspect it again.
-
-## Fresh Finalizer rule
-
-Text evidence can be passed as a compact evidence directory.
-
-Image evidence must be re-attached to the Fresh Finalizer from the configured
-read-only host data root, and its current SHA-256 must match the Evidence
-snapshot before the finalizer sees it.
-
-If the image changed or can no longer be resolved, finalization must not silently
-use the earlier Agent description as a substitute.
-
-vLLM's OpenAI-compatible chat endpoint supports multimodal `image_url` content,
-including base64 data URLs. ScopeX may use that protocol in the Fresh Finalizer;
-this is transport, not a new image-analysis tool.
-
-## Renderer / Answer Composer split
-
-The current deterministic renderer remains the trust-safe fallback and audit
-view. It should not become the only end-user response format.
-
-Target flow:
+Target trust flow:
 
 ```text
 Evidence
@@ -221,97 +184,81 @@ Evidence
   -> constrained Answer Composer
 ```
 
-`Claims` define what may be said. `Answer Composer` controls how it is said.
-The composer must not introduce uncited new factual or causal claims.
+`Claims` define what may be said. The future Answer Composer controls how it is
+said and must not add new uncited factual/causal claims.
 
-Until the composer exists, deterministic rendering remains authoritative.
+Until the composer is complete, deterministic rendering remains the trusted
+fallback/audit view.
 
-## Budget convergence
+## Context, working set and memory
 
-Avoid independent duplicated budget sources.
+Context window is working memory, not storage.
 
-Hard budgets should have one configuration source and be propagated to the
-components that enforce them:
+- raw logs / CSV / image collections stay in read-only external data roots;
+- the Agent uses tools and `/task-scratch` to create bounded intermediate
+  results;
+- OpenClaw native compaction handles current-task context pressure;
+- Memory Search remains disabled until a real cross-task recall requirement
+  exists.
+
+Step 6A/6B validated this split.
+
+## Budget vs convergence
+
+Keep the concepts separate:
 
 ```text
-timeout
-model-request count
-exec timeout
-model/context limits
+Budget
+= this constrained resource may not be consumed further
+
+Convergence
+= the product has a reason the investigation no longer needs to continue
 ```
 
-ScopeX Convergence should increasingly focus on product-level stopping signals:
+Hard request/time budgets have one enforcement path through ModelProxy /
+OpenClaw / Runner. ScopeX does not independently estimate those same budgets in
+Convergence.
+
+When a hard limit is reached:
 
 ```text
-goal satisfied
-no new claim-grade evidence
-stale rounds
-finalize requested / hard budget reached
+Evidence exists     -> Fresh Finalizer from observed facts
+No Evidence         -> explicit failure
 ```
 
-Do not build a second token/context estimator when OpenClaw/vLLM already expose
-usable context-budget information.
+Native repeated-tool convergence belongs to OpenClaw `tools.loopDetection`.
+ScopeX does not maintain a second result-fingerprint detector; it only maps the
+observed OpenClaw terminal shape to product finalization when necessary.
 
-## ModelProxy status
+## ModelProxy scope
 
-The local ModelProxy currently remains because it provides validated product
-behaviour that OpenClaw does not yet expose to ScopeX in an equally stable hook:
+The local ModelProxy remains because it currently provides stable product hooks
+not exposed equivalently by OpenClaw:
 
 - deterministic Stop/Steer boundary before the next model request;
-- exact request count budget;
-- wire audit used by current regression tests.
+- exact per-turn model request budget;
+- wire audit used by regression and performance profiling.
 
-Freeze its scope. Do not turn it into a second model gateway with routing,
-fallback, prompt rewriting, caching or tool injection.
+Freeze its scope. Do not add routing, fallback orchestration, prompt rewriting,
+business tool injection or caching. If OpenClaw later exposes stable equivalent
+hooks, remove the proxy rather than expanding it.
 
-If OpenClaw later exposes stable before-request/cancel hooks covering these
-requirements, remove the proxy rather than expanding it.
+## Validated Step 6 checkpoint
 
-## POC07 implementation sequence after boundary freeze
+- **6A PASS** — native compaction + structured state retention;
+- **6B PASS** — task scratch + large-data/multi-image bounded working set;
+- **6C PASS** — hard-budget single source + graceful evidence-grounded exit;
+- **6D PASS** — OpenClaw native loop convergence + runtime-control Evidence filtering;
+- **6E CAPABILITY PASS** — multi-source diagnosis + constrained action + independent recovery verification.
 
-### Step 5A — Trace -> Evidence Projection
+This proves complex-task capability. It does **not** yet prove acceptable product
+latency.
 
-- production uses one generic OpenClaw Evidence Projector;
-- `read` -> exact line Evidence;
-- `exec` -> claim-grade command-line Evidence with full-result digest;
-- `view_image` -> immutable image identity only;
-- retain legacy extractor classes only for compatibility/regression until no
-  production path depends on them;
-- do not project `progress_card` into Evidence.
+## Next work
 
-### Step 5B — Multimodal Fresh Finalizer
+Step 6F usability optimization remains on an experiment branch until the same
+6E task passes within the current 600 s / 16-request product budget. After that,
+Step 7 is the constrained Answer Composer and result-first UI.
 
-- re-resolve image Evidence only through configured read-only data binds;
-- verify SHA-256 before finalization;
-- attach image bytes to the existing Fresh Finalizer request;
-- validate visual facts against image E refs;
-- never substitute investigation-Agent prose for missing image bytes.
-
-### Step 6 — Budget convergence cleanup
-
-- collapse hard budget configuration;
-- remove duplicated context-char budget when OpenClaw context status is usable;
-- keep stale/no-new-evidence convergence in ScopeX.
-
-### Step 7 — End-user answer composition
-
-- keep Validated Claims authoritative;
-- add a constrained natural-language Answer Composer;
-- preserve exact Evidence refs and epistemic strength;
-- keep deterministic rendering available as audit/trust view.
-
-## Remaining uncertainty
-
-Only implementation details remain, not architectural uncertainty:
-
-1. Maximum useful image count for one Fresh Finalizer request with the current
-   served Qwen/vLLM configuration must be measured on Spark.
-2. A stable OpenClaw API for reading the current durable `progress_card` outside
-   the transcript should be verified before ScopeX depends on it for refresh
-   recovery.
-3. A single investigation that alternates between `gateway` host inspection and
-   sandbox `/agent-data` inspection still needs an explicit real-run check of
-   OpenClaw per-call exec-host routing. Evidence provenance already records an
-   explicit per-call host when present, so this does not change the architecture.
-
-None of these blocks the current Step 5 validation.
+The authoritative order, acceptance conditions and known non-blocking gaps are
+maintained in [07-complex-task-validation-and-next-plan.md](07-complex-task-validation-and-next-plan.md).
