@@ -16,6 +16,8 @@ from urllib.parse import urlsplit
 
 REQUEST_LIMIT = 4 * 1024 * 1024
 RESPONSE_LIMIT = 8 * 1024 * 1024
+RUNTIME_LIMIT_MODEL_REQUESTS = "model_request_budget"
+RUNTIME_LIMIT_TURN_TIMEOUT = "turn_timeout_budget"
 
 
 class StopBeforeForward(RuntimeError):
@@ -95,7 +97,13 @@ RequestHook = Callable[[int, dict[str, Any]], None]
 
 
 class ModelProxy(ThreadingHTTPServer):
-    """Loopback OpenAI proxy with exact request forwarding and local wire audit."""
+    """Loopback OpenAI proxy with exact request forwarding and local wire audit.
+
+    ``max_requests`` and ``deadline_s`` are per OpenClaw turn. The proxy is the
+    authoritative enforcement point for those hard model budgets; callers may
+    inspect ``runtime_limit_reason`` after the turn unwinds instead of trying to
+    reconstruct budget exhaustion from approximate counters.
+    """
 
     daemon_threads = True
     allow_reuse_address = False
@@ -128,6 +136,7 @@ class ModelProxy(ThreadingHTTPServer):
         self.lock = threading.Lock()
         self.connections: set[http.client.HTTPConnection] = set()
         self.stopping = False
+        self.runtime_limit_reason: str | None = None
         super().__init__(("127.0.0.1", 0), _ProxyHandler)
 
     @property
@@ -189,6 +198,8 @@ class _ProxyHandler(BaseHTTPRequestHandler):
             nonlocal record_persisted
             if record is None or record_persisted:
                 return
+            if proxy.runtime_limit_reason is not None:
+                record["runtime_limit_reason"] = proxy.runtime_limit_reason
             record["end_s"] = round(time.monotonic() - proxy.started, 4)
             _save_json(proxy.audit_dir / f"wire-{record['index']:02d}-meta.json", record)
             record_persisted = True
@@ -208,8 +219,12 @@ class _ProxyHandler(BaseHTTPRequestHandler):
                 if proxy.stopping:
                     raise StopBeforeForward("proxy is stopping")
                 if time.monotonic() >= proxy.deadline:
+                    if proxy.runtime_limit_reason is None:
+                        proxy.runtime_limit_reason = RUNTIME_LIMIT_TURN_TIMEOUT
                     raise RequestRejected("task deadline reached")
                 if len(proxy.records) >= proxy.max_requests:
+                    if proxy.runtime_limit_reason is None:
+                        proxy.runtime_limit_reason = RUNTIME_LIMIT_MODEL_REQUESTS
                     raise RequestRejected("model request budget reached")
                 index = len(proxy.records) + 1
                 record = {
@@ -228,6 +243,9 @@ class _ProxyHandler(BaseHTTPRequestHandler):
 
             remaining = proxy.deadline - time.monotonic()
             if remaining <= 0:
+                with proxy.lock:
+                    if proxy.runtime_limit_reason is None:
+                        proxy.runtime_limit_reason = RUNTIME_LIMIT_TURN_TIMEOUT
                 raise RequestRejected("task deadline reached")
             upstream = proxy.upstream_connection(remaining)
             with proxy.lock:
@@ -255,8 +273,13 @@ class _ProxyHandler(BaseHTTPRequestHandler):
             count = 0
             with (proxy.audit_dir / f"wire-{index:02d}-response.bin").open("xb") as trace:
                 while True:
-                    if proxy.stopping or time.monotonic() >= proxy.deadline:
-                        raise TimeoutError("task stopped or deadline reached")
+                    if proxy.stopping:
+                        raise TimeoutError("task stopped")
+                    if time.monotonic() >= proxy.deadline:
+                        with proxy.lock:
+                            if proxy.runtime_limit_reason is None:
+                                proxy.runtime_limit_reason = RUNTIME_LIMIT_TURN_TIMEOUT
+                        raise TimeoutError("task deadline reached")
                     chunk = response.read1(16384)
                     if not chunk:
                         break
