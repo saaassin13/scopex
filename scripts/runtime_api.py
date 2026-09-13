@@ -102,10 +102,13 @@ def main(argv=None) -> int:
     parser.add_argument("--api-key-env", default="SCOPEX_API_KEY")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8787)
-    parser.add_argument("--timeout", type=int, default=180)
-    parser.add_argument("--max-requests", type=int, default=8)
+    # Per-turn defaults are sized from the Step 6B complex-image probe
+    # (~439 s, 11 forwarded model requests) with modest headroom.
+    parser.add_argument("--timeout", type=int, default=600)
+    parser.add_argument("--max-requests", type=int, default=16)
     parser.add_argument("--max-tokens", type=int, default=2048)
     parser.add_argument("--finalizer-max-tokens", type=int, default=768)
+    parser.add_argument("--finalizer-timeout", type=int, default=180)
     parser.add_argument("--skill", action="append", default=[])
     args = parser.parse_args(argv)
 
@@ -135,6 +138,7 @@ def main(argv=None) -> int:
         max_requests=args.max_requests,
         max_tokens=args.max_tokens,
         finalizer_max_tokens=args.finalizer_max_tokens,
+        finalizer_timeout_s=args.finalizer_timeout,
         skills=tuple(args.skill),
         data_binds=tuple(args.data_dir),
         exec_host=args.exec_host,
@@ -160,6 +164,13 @@ def main(argv=None) -> int:
     print(f"workspace: {config.workspace}", flush=True)
     print(f"audit root: {data_root / 'tasks'}", flush=True)
     print(f"exec: host={config.exec_host} mode={config.exec_mode}", flush=True)
+    print(
+        "budgets: "
+        f"turn_timeout={config.timeout_s}s "
+        f"model_requests_per_turn={config.max_requests} "
+        f"finalizer_timeout={config.finalizer_timeout_s}s",
+        flush=True,
+    )
     print(f"view_image: {'enabled' if config.enable_view_image else 'disabled'}", flush=True)
     print(f"progress_card: {'enabled' if config.enable_progress_card else 'disabled'}", flush=True)
     print(f"compaction: {'enabled' if config.enable_compaction else 'disabled'}", flush=True)
