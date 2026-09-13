@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 
 from scopex.agent.runtime import OpenClawTaskSpec
+from scopex.evidence.media import EvidenceMediaLoader
 from scopex.evidence.projector import OpenClawEvidenceProjector
 from scopex.events.progress import EventSink
 from scopex.finalizer.client import StreamingFinalizerClient
@@ -125,4 +126,5 @@ class OpenClawRuntimeFactory:
             ),
             model=self.config.model_id,
             max_tokens=self.config.finalizer_max_tokens,
+            media_loader=EvidenceMediaLoader(self.config.data_binds),
         )
