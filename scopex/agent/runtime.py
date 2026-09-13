@@ -19,7 +19,7 @@ from scopex.agent.openclaw_config import (
     build_openclaw_config,
 )
 from scopex.agent.openclaw_runner import OpenClawProcessResult, OpenClawTurnRunner
-from scopex.agent.outcome import CliOutcome, parse_cli_outcome
+from scopex.agent.outcome import CliOutcome, classify_cli_runtime_guard, parse_cli_outcome
 from scopex.agent.proxy_control import RuntimeRequestHook
 from scopex.agent.request_policy import OpenClawRequestPolicy
 from scopex.agent.sandbox import SandboxCleanupResult, SandboxManager
@@ -68,6 +68,7 @@ class OpenClawTurnResult:
     proxy_records: tuple[dict, ...]
     audit_dir: Path
     runtime_limit_reason: str | None = None
+    runtime_guard_reason: str | None = None
 
 
 def validate_session_key_agent(session_key: str, agent_id: str) -> None:
@@ -191,13 +192,19 @@ class OpenClawTaskRuntime:
             )
 
             cli_outcome = None
-            if process.returncode == 0 and process.stop_reason is None:
+            runtime_guard_reason = None
+            stdout_text = ""
+            if process.stop_reason is None:
                 try:
-                    cli_outcome = parse_cli_outcome(
-                        process.stdout_path.read_text(encoding="utf-8")
-                    )
-                except (ValueError, UnicodeError):
-                    cli_outcome = None
+                    stdout_text = process.stdout_path.read_text(encoding="utf-8")
+                except (OSError, UnicodeError):
+                    stdout_text = ""
+                if stdout_text:
+                    runtime_guard_reason = classify_cli_runtime_guard(stdout_text)
+                    try:
+                        cli_outcome = parse_cli_outcome(stdout_text)
+                    except ValueError:
+                        cli_outcome = None
 
             runtime_limit_reason = proxy.runtime_limit_reason
             # The runner and proxy use the same turn timeout. If the outer runner
@@ -212,6 +219,7 @@ class OpenClawTaskRuntime:
                 proxy_records=tuple(dict(row) for row in proxy.records),
                 audit_dir=audit,
                 runtime_limit_reason=runtime_limit_reason,
+                runtime_guard_reason=runtime_guard_reason,
             )
         finally:
             proxy.cancel()
