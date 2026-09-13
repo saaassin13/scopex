@@ -10,12 +10,12 @@ from scopex.finalizer.claims import Claim, ClaimKind, ClaimRelation, ClaimSet
 from scopex.finalizer.client import FinalizerResponse, StreamingFinalizerClient
 
 
-_SELECTION_FIELDS = {
+_SELECTION_FIELDS = (
     "conclusion_claim_ids",
     "explanation_claim_ids",
     "execution_claim_ids",
     "recommendation_claim_ids",
-}
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -110,44 +110,89 @@ def parse_answer_selection(text: str) -> dict[str, Any]:
     return value
 
 
-def build_answer_prompts(user_request: str, claims: ClaimSet) -> tuple[str, str]:
-    """Build an IDs-only presentation prompt from validated claims.
+def _dedupe_text(items: list[EvidenceItem]) -> list[str]:
+    rows: list[str] = []
+    seen: set[str] = set()
+    for item in items:
+        raw = item.raw.strip()
+        if not raw or raw in seen:
+            continue
+        seen.add(raw)
+        rows.append(raw)
+    return rows
 
-    Claim topics are included only as routing hints. For text/command facts they
-    are not trusted user-facing prose; the composer is therefore forbidden from
-    returning any prose at all. Runtime materializes selected claim IDs using
-    the same epistemic rules as the deterministic renderer.
+
+def _materialized_text(claim: Claim, catalog: EvidenceCatalog) -> str:
+    """Materialize one validated claim with the existing renderer trust semantics."""
+
+    items = [catalog.get(ref) for ref in claim.evidence_refs]
+
+    if claim.kind is ClaimKind.FACT:
+        if any(item.metadata.get("evidence_type") == "image" for item in items):
+            # Existing trust semantics: image fact prose is allowed only because
+            # Fresh Finalizer re-opened the SHA-verified original image.
+            return claim.topic.strip()
+        # Existing trust semantics: text/command fact topic is NOT publishable;
+        # publish the exact claim-grade Evidence instead.
+        rows = _dedupe_text(items)
+        return "；".join(rows) if rows else "已验证事实（无可展示文本）"
+
+    if claim.relation is ClaimRelation.TEMPORAL_ASSOCIATION:
+        rows = _dedupe_text(items)
+        evidence_text = "；".join(rows) if rows else "相关证据"
+        return evidence_text + "。这些证据在当前调查范围内存在时间关联，但尚不能据此证明因果。"
+
+    if claim.relation is ClaimRelation.CAUSAL_HYPOTHESIS:
+        return claim.topic.strip() + "（待验证假设）"
+
+    return claim.topic.strip() + "（尚不能确定）"
+
+
+def _claim_view(claim: Claim, catalog: EvidenceCatalog) -> dict[str, Any]:
+    """Return the only claim representation the presentation model may inspect.
+
+    Text/command fact ``topic`` is deliberately absent. The model sees the same
+    trust-materialized statement ScopeX would be willing to publish, plus typed
+    epistemic metadata and stable references. It never sees the full Evidence
+    catalog, Agent transcript, tool trace, or any unvalidated observation.
     """
 
-    rows = [
-        {
-            "id": claim.id,
-            "kind": claim.kind.value,
-            "topic": claim.topic,
-            "confidence": claim.confidence.value,
-            "scope": claim.scope.value,
-            "relation": claim.relation.value,
-            "evidence_refs": list(claim.evidence_refs),
-        }
-        for claim in claims.claims
-    ]
+    return {
+        "id": claim.id,
+        "statement": _materialized_text(claim, catalog),
+        "kind": claim.kind.value,
+        "confidence": claim.confidence.value,
+        "scope": claim.scope.value,
+        "relation": claim.relation.value,
+        "evidence_refs": list(claim.evidence_refs),
+    }
+
+
+def build_answer_prompts(
+    user_request: str,
+    claims: ClaimSet,
+    catalog: EvidenceCatalog,
+) -> tuple[str, str]:
+    """Build an IDs-only presentation prompt from trust-rendered validated claims."""
+
+    rows = [_claim_view(claim, catalog) for claim in claims.claims]
     system = """你是 ScopeX 最终答案编排器，不是诊断 Agent。没有工具，也不允许继续调查。
-输入已经是 Validated Claims。你唯一的任务是把 claim ID 分配到产品展示区；绝不能复述、改写或新增任何事实、原因、结论、动作或建议文本。
+输入只包含 Validated Claims 的 ScopeX 可信展示视图。你唯一的任务是把 claim ID 分配到产品展示区；绝不能复述、改写或新增任何事实、原因、结论、动作或建议文本。
 
 严格规则：
 1. 只输出 JSON，且顶层字段只能是 conclusion_claim_ids、explanation_claim_ids、execution_claim_ids、recommendation_claim_ids。
 2. 每个字段的值只能是 claim ID 数组，不得输出任何自然语言字段。
 3. conclusion_claim_ids 必须 1-2 个，且只能来自 summary_claim_ids。
 4. explanation_claim_ids 最多 4 个，用于补充关键依据或限定条件。
-5. execution_claim_ids 最多 4 个，只能选择 kind=fact 的 claim；只有当 claim 标签明显描述已执行动作、动作结果或动作后状态时才放这里。
-6. recommendation_claim_ids 最多 3 个，只能选择 relation=causal_hypothesis 或 kind=unknown 的 claim；它表示“下一步优先验证什么”，不是授权执行动作。
+5. execution_claim_ids 最多 4 个，只能选择 kind=fact 的 claim；只有当可信 statement 明确描述已执行动作、动作结果或动作后验证状态时才放这里。不要仅因它来自命令输出就判断为已执行动作。
+6. recommendation_claim_ids 最多 3 个，只能选择 relation=causal_hypothesis 或 kind=unknown 的 claim；它只用于向用户展示仍值得确认的未知项/假设，不得设计新的调查流程或授权动作。
 7. 同一个 claim ID 最多出现在一个展示区；summary_claim_ids 中的每个 ID 都必须至少被选择一次。
-8. 不要根据常识补充流程，不要设计新的调查步骤，不要把假设升级成事实。
+8. 不要根据常识补充流程，不要把假设升级成事实，不要推断未在 statement 中明确表达的执行状态。
 
 只输出 JSON 对象。"""
     user = (
         f"原任务：{user_request}\n\n"
-        "Validated Claims（topic 仅用于分类，禁止复制到输出）：\n"
+        "Validated Claim Views：\n"
         + json.dumps(rows, ensure_ascii=False, separators=(",", ":"))
         + "\n\nsummary_claim_ids："
         + json.dumps(list(claims.summary_claim_ids), ensure_ascii=False)
@@ -162,7 +207,7 @@ def validate_answer_selection(payload: Any, claims: ClaimSet) -> list[str]:
     errors: list[str] = []
     if not isinstance(payload, Mapping):
         return ["top_level_object"]
-    if set(payload) != _SELECTION_FIELDS:
+    if set(payload) != set(_SELECTION_FIELDS):
         errors.append("top_level_fields")
 
     by_id = claims.by_id()
@@ -224,42 +269,6 @@ def validate_answer_selection(payload: Any, claims: ClaimSet) -> list[str]:
     return errors
 
 
-def _dedupe_text(items: list[EvidenceItem]) -> list[str]:
-    rows: list[str] = []
-    seen: set[str] = set()
-    for item in items:
-        raw = item.raw.strip()
-        if not raw or raw in seen:
-            continue
-        seen.add(raw)
-        rows.append(raw)
-    return rows
-
-
-def _materialized_text(claim: Claim, catalog: EvidenceCatalog) -> str:
-    items = [catalog.get(ref) for ref in claim.evidence_refs]
-
-    if claim.kind is ClaimKind.FACT:
-        if any(item.metadata.get("evidence_type") == "image" for item in items):
-            # Existing trust semantics: image fact prose is allowed only because
-            # Fresh Finalizer re-opened the SHA-verified original image.
-            return claim.topic.strip()
-        # Existing trust semantics: text/command fact topic is NOT publishable;
-        # publish the exact claim-grade Evidence instead.
-        rows = _dedupe_text(items)
-        return "；".join(rows) if rows else "已验证事实（无可展示文本）"
-
-    if claim.relation is ClaimRelation.TEMPORAL_ASSOCIATION:
-        rows = _dedupe_text(items)
-        evidence_text = "；".join(rows) if rows else "相关证据"
-        return evidence_text + "。这些证据在当前调查范围内存在时间关联，但尚不能据此证明因果。"
-
-    if claim.relation is ClaimRelation.CAUSAL_HYPOTHESIS:
-        return claim.topic.strip() + "（待验证假设）"
-
-    return claim.topic.strip() + "（尚不能确定）"
-
-
 def _materialize_item(claim: Claim, catalog: EvidenceCatalog) -> ProductAnswerItem:
     return ProductAnswerItem(
         claim_id=claim.id,
@@ -310,7 +319,7 @@ class ConstrainedAnswerComposer:
         claims: ClaimSet,
         catalog: EvidenceCatalog,
     ) -> AnswerCompositionResult:
-        system, user = build_answer_prompts(user_request, claims)
+        system, user = build_answer_prompts(user_request, claims, catalog)
         try:
             transport = self.client.complete(
                 model=self.model,
