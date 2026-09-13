@@ -13,12 +13,18 @@ ARG BASE_IMAGE
 FROM ${BASE_IMAGE}
 
 USER root
-ENV PIP_BREAK_SYSTEM_PACKAGES=1 \
-    PIP_DISABLE_PIP_VERSION_CHECK=1 \
-    PIP_NO_CACHE_DIR=1
 
-RUN python3 -m pip install "Pillow>=11,<12" \
-    && python3 - <<'PY'
-from PIL import Image
-print("Pillow ready:", Image.__version__)
-PY
+# The validated base sandbox has Python but may intentionally omit pip. Prefer
+# the distro package for Pillow so the runtime image does not need pip at all.
+# This keeps the added toolbox small and makes the build fail clearly on a
+# non-Debian/Ubuntu base instead of silently changing the runtime environment.
+RUN set -eux; \
+    if python3 -c 'from PIL import Image' >/dev/null 2>&1; then \
+        python3 -c 'from PIL import Image; print("Pillow already available:", Image.__version__)'; \
+    else \
+        command -v apt-get >/dev/null 2>&1 || { echo 'Pillow missing and apt-get unavailable in base image' >&2; exit 1; }; \
+        apt-get update; \
+        DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends python3-pil; \
+        rm -rf /var/lib/apt/lists/*; \
+        python3 -c 'from PIL import Image; print("Pillow ready:", Image.__version__)'; \
+    fi
