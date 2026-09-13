@@ -293,6 +293,7 @@ class TaskService:
                     turn_name = handle.next_turn_name()
                 elif state is TaskState.RUNNING:
                     runtime_limit_reason = current_turn.runtime_limit_reason
+                    runtime_guard_reason = current_turn.runtime_guard_reason
                     if runtime_limit_reason is not None:
                         handle.audit.store.write_json(
                             handle.task.id,
@@ -315,6 +316,37 @@ class TaskService:
                         else:
                             coordinator.controller.fail(
                                 "budget_reached_without_evidence"
+                            )
+                            handle.audit.snapshot_control(
+                                handle.task,
+                                handle.session,
+                                coordinator.catalog,
+                            )
+                            return
+                    elif runtime_guard_reason is not None:
+                        handle.audit.store.write_json(
+                            handle.task.id,
+                            "runtime-guard.json",
+                            {
+                                "reason": runtime_guard_reason,
+                                "turn_name": current_turn.turn_name,
+                                "returncode": current_turn.process.returncode,
+                                "stop_reason": current_turn.process.stop_reason,
+                                "cli_blockers": list(current_turn.cli_outcome.blockers)
+                                if current_turn.cli_outcome is not None else ["missing_cli_outcome"],
+                                "forwarded_model_requests": sum(
+                                    1
+                                    for row in current_turn.proxy_records
+                                    if row.get("forwarded") is True
+                                ),
+                            },
+                        )
+                        if coordinator.catalog.items:
+                            coordinator.begin_runtime_guard_finalization(runtime_guard_reason)
+                            action = "finalize"
+                        else:
+                            coordinator.controller.fail(
+                                "runtime_guard_reached_without_evidence"
                             )
                             handle.audit.snapshot_control(
                                 handle.task,
@@ -351,6 +383,7 @@ class TaskService:
                                     "returncode": current_turn.process.returncode,
                                     "stop_reason": current_turn.process.stop_reason,
                                     "runtime_limit_reason": current_turn.runtime_limit_reason,
+                                    "runtime_guard_reason": current_turn.runtime_guard_reason,
                                     "cli_blockers": list(current_turn.cli_outcome.blockers)
                                     if current_turn.cli_outcome is not None else ["missing_cli_outcome"],
                                 },
