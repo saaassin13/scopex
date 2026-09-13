@@ -10,7 +10,7 @@ import threading
 from typing import Callable
 
 from scopex.agent.environment import build_openclaw_env
-from scopex.agent.model_proxy import ModelProxy
+from scopex.agent.model_proxy import ModelProxy, RUNTIME_LIMIT_TURN_TIMEOUT
 from scopex.agent.openclaw import OpenClawCommandBuilder
 from scopex.agent.openclaw_config import (
     ModelRequestSettings,
@@ -45,8 +45,10 @@ class OpenClawTaskSpec:
     agent_id: str
     uid: int
     gid: int
-    timeout_s: int = 300
-    max_requests: int = 12
+    # Hard model budgets are per OpenClaw turn. A user resume/steer starts a new
+    # turn with a fresh turn budget while task-level counters remain audit-only.
+    timeout_s: int = 600
+    max_requests: int = 16
     max_tokens: int = 2048
     skills: tuple[str, ...] = ()
     tools: tuple[str, ...] = ("read", "exec", "process")
@@ -65,6 +67,7 @@ class OpenClawTurnResult:
     cli_outcome: CliOutcome | None
     proxy_records: tuple[dict, ...]
     audit_dir: Path
+    runtime_limit_reason: str | None = None
 
 
 def validate_session_key_agent(session_key: str, agent_id: str) -> None:
@@ -196,12 +199,19 @@ class OpenClawTaskRuntime:
                 except (ValueError, UnicodeError):
                     cli_outcome = None
 
+            runtime_limit_reason = proxy.runtime_limit_reason
+            # The runner and proxy use the same turn timeout. If the outer runner
+            # wins the race, preserve the same semantic stop reason.
+            if runtime_limit_reason is None and process.stop_reason == "timeout":
+                runtime_limit_reason = RUNTIME_LIMIT_TURN_TIMEOUT
+
             return OpenClawTurnResult(
                 turn_name=turn_name,
                 process=process,
                 cli_outcome=cli_outcome,
                 proxy_records=tuple(dict(row) for row in proxy.records),
                 audit_dir=audit,
+                runtime_limit_reason=runtime_limit_reason,
             )
         finally:
             proxy.cancel()
