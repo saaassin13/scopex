@@ -11,18 +11,17 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def run_script(path: Path, *args: str):
-    proc = subprocess.run(
+    return subprocess.run(
         [sys.executable, str(path), *args],
         cwd=ROOT,
         capture_output=True,
         text=True,
         timeout=20,
     )
-    return proc
 
 
 class BusinessSkillToolTests(unittest.TestCase):
-    def test_nipple_stats_uses_final_2d_frame_and_caps_each_cow_at_four(self):
+    def test_nipple_stats_uses_final_2d_frame_caps_at_four_and_keeps_details_out_of_stdout(self):
         script = ROOT / 'skills/nipple-recognition-analysis/scripts/nipple_stats.py'
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
@@ -44,29 +43,25 @@ class BusinessSkillToolTests(unittest.TestCase):
             )
 
             artifacts = root / 'artifacts'
-            artifacts.mkdir()
-            (artifacts / '20260914-070000100.json').write_text(
+            hour = artifacts / '20260914' / '07'
+            hour.mkdir(parents=True)
+            (hour / '20260914-070000100.json').write_text(
                 json.dumps({
                     'ImgTimeStamp': '20260914-070000100',
-                    'DisinfectTrack': {
-                        'CowNipplePosInCamSys': {
-                            'Pt1st': {'IsValid': True},
-                            'Pt2nd': {'IsValid': True},
-                            'Pt3rd': {'IsValid': True},
-                            'Pt4th': {'IsValid': True},
-                        }
-                    },
+                    'DisinfectTrack': {'CowNipplePosInCamSys': {
+                        'Pt1st': {'IsValid': True}, 'Pt2nd': {'IsValid': True},
+                        'Pt3rd': {'IsValid': True}, 'Pt4th': {'IsValid': True},
+                    }},
                     'Markers': {'Rect': [{'Text': '1'}, {'Text': '2'}]},
                 }),
                 encoding='utf-8',
             )
-            (artifacts / '20260914-070000100.jpg').write_bytes(b'not-an-image-needed-for-this-test')
-            (artifacts / '20260914-070001000.json').write_text(
+            (hour / '20260914-070000100.jpg').write_bytes(b'not-an-image-needed-for-this-test')
+            (hour / '20260914-070001000.json').write_text(
                 json.dumps({'ImgTimeStamp': '20260914-070001000', 'Markers': {'Rect': [
                     {'Text': '1'}, {'Text': '2'}, {'Text': '3'}, {'Text': '4'}
-                ]}}),
-                encoding='utf-8',
-            )
+                ]}}), encoding='utf-8')
+            details = root / 'details.json'
 
             proc = run_script(
                 script,
@@ -74,9 +69,13 @@ class BusinessSkillToolTests(unittest.TestCase):
                 '--artifact-dir', str(artifacts),
                 '--start', '2026-09-14 07:00:00:000',
                 '--end', '2026-09-14 08:00:00:000',
+                '--details-out', str(details),
             )
             self.assertEqual(proc.returncode, 0, proc.stderr)
             data = json.loads(proc.stdout)
+            self.assertEqual(data['scopex_role'], 'business_facts')
+            self.assertNotIn('cows', data)
+            self.assertLess(len(proc.stdout), 5000)
             summary = data['summary']
             self.assertEqual(summary['total_cows'], 3)
             self.assertEqual(summary['cows_with_final_2d_result'], 2)
@@ -87,7 +86,7 @@ class BusinessSkillToolTests(unittest.TestCase):
             self.assertAlmostEqual(summary['nipple_recognition_rate'], 0.5, places=6)
             self.assertEqual(data['quality']['unfinished_cycles_in_window'], 1)
             self.assertEqual(data['quality']['over_four_2d_detections'], 1)
-            cows = {row['cow_occured_count']: row for row in data['cows']}
+            cows = {row['cow_occured_count']: row for row in json.loads(details.read_text(encoding='utf-8'))['cows']}
             self.assertEqual(cows[10]['selected_2d_nipple_count'], 2)
             self.assertEqual(cows[11]['selected_2d_nipple_count'], 4)
             self.assertIsNone(cows[12]['selected_2d_nipple_count'])
@@ -95,7 +94,7 @@ class BusinessSkillToolTests(unittest.TestCase):
             self.assertTrue(cows[10]['artifact_2d_count_matches_log'])
             self.assertTrue(cows[11]['artifact_2d_count_matches_log'])
 
-    def test_encoder_health_does_not_bridge_invalid_sample(self):
+    def test_encoder_health_does_not_bridge_invalid_sample_and_outputs_compact_facts(self):
         script = ROOT / 'skills/encoder-health/scripts/encoder_health.py'
         invalid = 2 ** 63
         with tempfile.TemporaryDirectory() as td:
@@ -110,18 +109,43 @@ class BusinessSkillToolTests(unittest.TestCase):
                     '2026-09-14 07:00:00:220 [INFO] Get EncoderVal, raw[95], filtered[95]',
                     '2026-09-14 07:00:00:240 [INFO] Get EncoderVal, raw[95], filtered[95]',
                     '2026-09-14 07:00:00:260 [INFO] Get EncoderVal, raw[95], filtered[95]',
-                ]) + '\n',
-                encoding='utf-8',
-            )
+                ]) + '\n', encoding='utf-8')
             proc = run_script(script, str(log), '--flat-ms', '30', '--gap-min-ms', '50')
             self.assertEqual(proc.returncode, 0, proc.stderr)
             data = json.loads(proc.stdout)
-            self.assertEqual(data['summary']['invalid_samples'], 1)
-            events = data['events']
-            self.assertTrue(any(e['type'] == 'negative_jump' and e['raw_from'] == 90 and e['raw_to'] == 85 for e in events))
-            self.assertFalse(any(e.get('raw_from') == 110 and e.get('raw_to') == 90 for e in events))
-            self.assertTrue(any(e['type'] == 'sampling_gap' for e in events))
-            self.assertTrue(any(e['type'] == 'flat_raw_candidate' for e in events))
+            self.assertEqual(data['scopex_role'], 'business_facts')
+            facts = data['facts']
+            self.assertEqual(facts['invalid_samples'], 1)
+            self.assertEqual(facts['negative_jump_count'], 1)
+            self.assertEqual(facts['negative_jump_abs_max_pulses'], 5.0)
+            self.assertEqual(facts['sampling_gap_count'], 1)
+            self.assertEqual(facts['flat_raw_candidate_count'], 1)
+            self.assertLess(len(proc.stdout), 5000)
+
+    def test_encoder_health_log_dir_analyzes_multiple_hour_rotation_files_in_one_call(self):
+        script = ROOT / 'skills/encoder-health/scripts/encoder_health.py'
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / 'CowDisinfect-20260914-030001.log').write_text(
+                '2026-09-14 03:00:00:000 [INFO] Get EncoderVal, raw[100], filtered[100]\n'
+                '2026-09-14 03:00:00:020 [INFO] Get EncoderVal, raw[110], filtered[110]\n', encoding='utf-8')
+            (root / 'CowDisinfect-20260914-030001.log.1').write_text(
+                '2026-09-14 03:00:00:040 [INFO] Get EncoderVal, raw[109], filtered[109]\n'
+                '2026-09-14 03:00:00:060 [INFO] Get EncoderVal, raw[120], filtered[120]\n', encoding='utf-8')
+            (root / 'CowDisinfect-20260914-040001.log').write_text(
+                '2026-09-14 04:00:00:000 [INFO] Get EncoderVal, raw[999], filtered[999]\n', encoding='utf-8')
+            proc = run_script(
+                script,
+                '--log-dir', str(root),
+                '--start', '2026-09-14 03:00:00:000',
+                '--end', '2026-09-14 04:00:00:000',
+            )
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            data = json.loads(proc.stdout)
+            self.assertEqual(len(data['logs']), 2)
+            self.assertEqual(data['facts']['samples_in_window'], 4)
+            self.assertEqual(data['facts']['negative_jump_count'], 1)
+            self.assertEqual(data['facts']['negative_jump_abs_max_pulses'], 1.0)
 
     def test_log_context_is_bounded_and_preserves_raw_lines(self):
         script = ROOT / 'skills/log-context/scripts/log_context.py'
@@ -133,9 +157,7 @@ class BusinessSkillToolTests(unittest.TestCase):
                     '2026-09-14 07:00:01:000 [WARN] ResetEncoderValOnSerialPort',
                     '2026-09-14 07:00:02:000 [INFO] after',
                 ]) + '\n', encoding='utf-8')
-            proc = run_script(
-                script, str(log), '--center', '2026-09-14 07:00:01:000', '--window-s', '0.5',
-                '--keyword', 'ResetEncoder', '--before', '1', '--after', '1', '--max-lines', '10')
+            proc = run_script(script, str(log), '--center', '2026-09-14 07:00:01:000', '--window-s', '0.5', '--keyword', 'ResetEncoder', '--before', '1', '--after', '1', '--max-lines', '10')
             self.assertEqual(proc.returncode, 0, proc.stderr)
             data = json.loads(proc.stdout)
             self.assertEqual(data['anchors'], 1)
@@ -155,8 +177,7 @@ class BusinessSkillToolTests(unittest.TestCase):
                     '2026-09-14 07:00:01:000 [WARN] TARGET_ANCHOR',
                     '2026-09-14 07:00:01:500 [INFO] after',
                 ]) + '\n', encoding='utf-8')
-            proc = run_script(
-                script, str(log), '--keyword', 'TARGET_ANCHOR', '--before', '2', '--after', '1', '--max-lines', '1')
+            proc = run_script(script, str(log), '--keyword', 'TARGET_ANCHOR', '--before', '2', '--after', '1', '--max-lines', '1')
             self.assertEqual(proc.returncode, 0, proc.stderr)
             data = json.loads(proc.stdout)
             rows = data['sources'][0]['lines']
