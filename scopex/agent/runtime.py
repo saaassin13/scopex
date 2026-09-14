@@ -25,6 +25,7 @@ from scopex.agent.request_policy import OpenClawRequestPolicy
 from scopex.agent.sandbox import SandboxCleanupResult, SandboxManager
 from scopex.events.observer import AgentProgressObserver
 from scopex.events.progress import EventSink
+from scopex.model_capabilities import render_image_capacity_context
 from scopex.runtime.stop import SafeStopGate, StopBoundary
 
 
@@ -270,11 +271,9 @@ class OpenClawTaskRuntime:
                 "large image sets, keep the visual working set bounded: metadata, multi-image "
                 "view_image calls, or scratch-derived previews may be used for screening. When "
                 "the final conclusion depends on images, narrow to the smallest useful read-only "
-                "original set and inspect that final set in a bounded view_image call of at most "
-                "4 originals. ScopeX can independently SHA-verify those originals again in the "
-                "Fresh Finalizer; singleton re-open calls are not required solely for evidence "
-                "bookkeeping."
+                "original set. Do not re-open originals solely for evidence bookkeeping."
             )
+            notes.append(render_image_capacity_context())
         if self.spec.concise_terminal_handoff:
             notes.append(
                 "ScopeX independently composes the user-facing product result from observed "

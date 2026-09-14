@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from scopex.agent.model_proxy import RequestRejected
+from scopex.model_capabilities import resolve_image_limit, validate_request_images
 
 
 @dataclass(frozen=True, slots=True)
@@ -11,6 +12,8 @@ class OpenClawRequestPolicy:
     model_id: str
     max_tokens: int
     approved_tools: frozenset[str] = frozenset({"read", "exec", "process"})
+
+    max_images_per_prompt: int = field(default_factory=resolve_image_limit)
 
     def validate(self, payload: dict[str, Any]) -> None:
         """Validate model/runtime invariants without blocking OpenClaw utility calls.
@@ -60,6 +63,11 @@ class OpenClawRequestPolicy:
 
         if payload.get("tool_choice") not in (None, "auto"):
             problems.append("tool_choice must be auto/omitted")
+
+        try:
+            validate_request_images(payload, self.max_images_per_prompt)
+        except ValueError as exc:
+            problems.append(str(exc))
 
         if problems:
             raise RequestRejected("; ".join(problems))

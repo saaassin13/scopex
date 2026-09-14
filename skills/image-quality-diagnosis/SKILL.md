@@ -76,6 +76,36 @@ A negative conclusion requires direct visual coverage across different times/sce
 
 If one or more directly inspected originals clearly show a persistent diffuse veil or droplets, report that visible feature even if sharpness metrics look normal.
 
+## Whole-prompt image capacity
+
+Use the image capacity declared in the ScopeX Runtime Context. It applies to
+**all image attachments across the full conversation prompt**, not one tool call.
+With a capacity of 4, calls containing 2 + 2 images exhaust the allowance; a third
+2-image call creates a 6-image prompt and is not allowed. Splitting into smaller
+calls does not reset the budget. Reopening the same image can also consume a slot.
+
+Plan the representative set before viewing it. Choose at most the declared
+capacity, then view in batches of at most 2 (or fewer if the remaining capacity
+is smaller). Do not try to raise model-server limits from the sandbox.
+If coverage remains insufficient, report that limitation. Never publish an
+unsampled whole-hour “all normal” conclusion merely to fit the capacity.
+
+For location/screening, request a small path list directly instead of requesting
+256 paths and then writing Python to sample them again. For example:
+
+```bash
+python3 /workspace/skills/data-locator/scripts/data_locator.py \
+  --source left_camera_multimodal --kind jpg \
+  --start "2026-09-14 13:00:00" --end "2026-09-14 14:00:00" --max-files 12
+```
+
+This is a list of paths, not 12 attached images. The locator already returns a
+bounded sample across the window; choose the visual set within the Runtime
+capacity. If using the optional metrics helper, its result is an object with an
+`images` array, not `results`. Read that bounded JSON directly; do not rerun the
+metrics or generate pipelines just to discover its schema. Do not use `head` or
+`tail` to cut JSON into unparseable fragments.
+
 ## Claim-grade visual evidence
 
 - Use **at most 2 original images per `view_image` call**.

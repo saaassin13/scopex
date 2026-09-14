@@ -76,8 +76,16 @@ def _unique_strings(value: Any) -> tuple[bool, list[str]]:
     return True, value
 
 
-def _claim_signature(claim: Mapping[str, Any], refs: list[str]) -> tuple[Any, ...] | None:
-    """Return the identity of the text the deterministic renderer would show."""
+def _claim_signature(
+    claim: Mapping[str, Any], refs: list[str], catalog: EvidenceCatalog
+) -> tuple[Any, ...] | None:
+    """Deduplicate claims without confusing an aggregate source with one fact.
+
+    A structured result can support several distinct propositions. Reference
+    reuse is not a semantic duplicate in that case. Exact topic/ref duplicates
+    are still rejected; this check does not prove that a topic is entailed.
+    Legacy line-evidence duplicate behaviour is preserved.
+    """
 
     kind = claim.get("kind")
     relation = claim.get("relation")
@@ -89,7 +97,16 @@ def _claim_signature(claim: Mapping[str, Any], refs: list[str]) -> tuple[Any, ..
 
     canonical_refs = tuple(sorted(refs))
     if kind == "fact" and relation == "observed":
-        # Fact topic/confidence are intentionally not rendered.
+        aggregate = any(
+            catalog.has(ref)
+            and catalog.get(ref).metadata.get("evidence_type") == "structured_business_facts"
+            for ref in canonical_refs
+        )
+        if aggregate:
+            if not isinstance(topic, str):
+                return None
+            return "aggregate_fact", scope, canonical_refs, " ".join(topic.split())
+        # Preserve the Step 6 line-evidence rendering identity.
         return "fact", scope, canonical_refs
     if relation == "temporal_association":
         return "temporal_association", scope, confidence, canonical_refs
@@ -194,7 +211,7 @@ def validate_claim_payload(payload: Any, catalog: EvidenceCatalog) -> list[str]:
             if confidence != "unknown":
                 errors.append(prefix + ".unknown_confidence")
 
-        signature = _claim_signature(claim, refs)
+        signature = _claim_signature(claim, refs, catalog)
         if signature is not None:
             if signature in seen_signatures:
                 errors.append(prefix + ".duplicate_claim")
