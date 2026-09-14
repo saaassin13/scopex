@@ -18,6 +18,7 @@ from scopex.agent.docker_host import resolve_local_docker_host
 from scopex.agent.skills import DEFAULT_BUILTIN_SKILLS, prepare_workspace_skills
 from scopex.api.factory import LocalRuntimeConfig, OpenClawRuntimeFactory
 from scopex.api.fastapi_app import create_app
+from scopex.api.schedules import ScheduleService
 from scopex.api.service import TaskService
 
 
@@ -79,21 +80,9 @@ def main(argv=None) -> int:
         default="full",
         help="OpenClaw native exec policy; current local validation uses full inside sandbox",
     )
-    parser.add_argument(
-        "--enable-view-image",
-        action="store_true",
-        help="allow OpenClaw's native view_image tool for local image inspection",
-    )
-    parser.add_argument(
-        "--enable-progress-card",
-        action="store_true",
-        help="allow OpenClaw's native progress_card tool for multi-step task status",
-    )
-    parser.add_argument(
-        "--disable-compaction",
-        action="store_true",
-        help="disable OpenClaw session compaction for regression/debugging only",
-    )
+    parser.add_argument("--enable-view-image", action="store_true")
+    parser.add_argument("--enable-progress-card", action="store_true")
+    parser.add_argument("--disable-compaction", action="store_true")
     parser.add_argument(
         "--web-dist",
         type=Path,
@@ -108,17 +97,8 @@ def main(argv=None) -> int:
     parser.add_argument("--max-tokens", type=int, default=2048)
     parser.add_argument("--finalizer-max-tokens", type=int, default=768)
     parser.add_argument("--finalizer-timeout", type=int, default=180)
-    parser.add_argument(
-        "--skill",
-        action="append",
-        default=[],
-        help="additional OpenClaw skill name; repeatable",
-    )
-    parser.add_argument(
-        "--no-default-skills",
-        action="store_true",
-        help="do not expose ScopeX built-in product skills by default",
-    )
+    parser.add_argument("--skill", action="append", default=[])
+    parser.add_argument("--no-default-skills", action="store_true")
     args = parser.parse_args(argv)
 
     if not sys.platform.startswith("linux") or os.geteuid() == 0:
@@ -134,10 +114,7 @@ def main(argv=None) -> int:
         raise ValueError("invalid API key environment value")
 
     workspace = args.workspace.expanduser().resolve()
-    requested_skills = (
-        (() if args.no_default_skills else DEFAULT_BUILTIN_SKILLS)
-        + tuple(args.skill)
-    )
+    requested_skills = (() if args.no_default_skills else DEFAULT_BUILTIN_SKILLS) + tuple(args.skill)
     skills = prepare_workspace_skills(
         workspace=workspace,
         skill_names=requested_skills,
@@ -173,9 +150,11 @@ def main(argv=None) -> int:
         coordinator_factory=factory.coordinator,
         finalizer_factory=factory.finalizer,
     )
+    schedules = ScheduleService(data_root / "scheduler", service)
     static_dir = args.web_dist.expanduser().resolve()
     app = create_app(
         service,
+        schedules=schedules,
         static_dir=static_dir if static_dir.is_dir() else None,
         shutdown_timeout_s=max(args.timeout, 120) + 10,
     )
@@ -183,6 +162,7 @@ def main(argv=None) -> int:
     print(f"ScopeX FastAPI: http://{args.host}:{args.port}", flush=True)
     print(f"workspace: {config.workspace}", flush=True)
     print(f"audit root: {data_root / 'tasks'}", flush=True)
+    print(f"schedule root: {data_root / 'scheduler'}", flush=True)
     print(f"exec: host={config.exec_host} mode={config.exec_mode}", flush=True)
     print(
         "budgets: "
@@ -199,10 +179,7 @@ def main(argv=None) -> int:
         print("data binds:", flush=True)
         for bind in config.data_binds:
             print(f"  {bind}", flush=True)
-    print(
-        f"web: {static_dir if static_dir.is_dir() else 'not built; API-only mode'}",
-        flush=True,
-    )
+    print(f"web: {static_dir if static_dir.is_dir() else 'not built; API-only mode'}", flush=True)
 
     uvicorn.run(
         app,
