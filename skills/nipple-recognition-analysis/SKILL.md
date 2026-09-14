@@ -34,14 +34,25 @@ Selection policy must match confirmed data semantics:
 
 Never sum all frame-level nipple detections as though they were different physical nipples.
 
+## Coverage before KPI
+
+Keep two denominators separate:
+
+- `total_cows`: unique cow keys represented by a valid timestamp + cow identity in the JSON window;
+- `cows_with_selected_result`: cows for which the configured policy produced a usable nipple result.
+
+Always surface `selected_result_coverage_rate` and `cows_without_selected_result`. A KPI must not silently look better just because cows with missing/bad final results disappeared from the denominator.
+
+Completely missing cows that generated **no JSON record at all** still cannot be discovered from JSON alone. If an independent log/RFID/business source later provides the actual passed-cow count, report that as a separate cross-source coverage metric instead of pretending JSON observed it.
+
 ## First-version KPIs
 
 For the selected record of each cow:
 
-- total cows = number of unique selected cow keys;
 - exact four-nipple cows = selected nipple count exactly 4;
-- complete four-nipple rate = exact four-nipple cows / total cows;
-- nipple recognition rate = sum(min(selected count, 4)) / (total cows × 4);
+- `complete_four_nipple_rate` uses all JSON-observed cows as the conservative denominator; a cow without usable selected result is therefore not counted as complete;
+- `nipple_recognition_rate = sum(min(selected count, 4)) / (total JSON-observed cows × 4)`;
+- selected-only variants are also exposed for diagnosis, but must be shown together with result coverage;
 - count > 4 is reported separately as over-detection and must not inflate recognition rate above 100%;
 - distribution of selected nipple count is always shown.
 
@@ -52,6 +63,7 @@ These definitions are product metrics, not proof of why recognition failed.
 Use `log-context` only when needed, for example:
 
 - JSON has a gap or malformed/missing records;
+- a cow is represented in JSON but has no usable final result;
 - a time slice shows a meaningful recognition drop;
 - the user asks what happened around a particular cow/time;
 - you need to distinguish inference absence from task stop/restart/camera/runtime events.
