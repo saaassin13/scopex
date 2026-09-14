@@ -7,7 +7,12 @@ import sys
 import tempfile
 import unittest
 
-from scopex.data_catalog import load_data_catalog, provision_workspace_catalog, render_runtime_catalog_summary
+from scopex.data_catalog import (
+    load_data_catalog,
+    provision_locator_catalog,
+    provision_workspace_catalog,
+    render_runtime_catalog_summary,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -28,14 +33,26 @@ class DataCatalogTests(unittest.TestCase):
         self.assertIn('left_camera_multimodal', summary)
         self.assertIn('Do not use recursive', summary)
 
-    def test_workspace_catalog_is_copied_not_symlinked(self):
+    def test_workspace_and_locator_catalog_are_copied_not_symlinked(self):
         with tempfile.TemporaryDirectory() as td:
             workspace = Path(td) / 'workspace'
-            workspace.mkdir()
-            target = provision_workspace_catalog(workspace=workspace, catalog_path=ROOT / 'config/data-catalog.json')
-            self.assertTrue(target.is_file())
-            self.assertFalse(target.is_symlink())
-            self.assertEqual(json.loads(target.read_text(encoding='utf-8'))['schema'], 1)
+            locator_skill = workspace / 'skills' / 'data-locator'
+            locator_skill.mkdir(parents=True)
+            catalog_path = ROOT / 'config/data-catalog.json'
+
+            host_target = provision_workspace_catalog(workspace=workspace, catalog_path=catalog_path)
+            locator_target = provision_locator_catalog(workspace=workspace, catalog_path=catalog_path)
+
+            self.assertEqual(host_target, workspace / 'scopex-data-catalog.json')
+            self.assertEqual(locator_target, workspace / 'skills/data-locator/references/data-catalog.json')
+            for target in (host_target, locator_target):
+                self.assertTrue(target.is_file())
+                self.assertFalse(target.is_symlink())
+                self.assertEqual(json.loads(target.read_text(encoding='utf-8'))['schema'], 1)
+
+            locator_script = (ROOT / 'skills/data-locator/scripts/data_locator.py').read_text(encoding='utf-8')
+            self.assertIn("/workspace/skills/data-locator/references/data-catalog.json", locator_script)
+            self.assertNotIn("CATALOG_DEFAULT = Path('/workspace/scopex-data-catalog.json')", locator_script)
 
     def test_locator_uses_file_start_intervals_and_only_target_multimodal_hour(self):
         script = ROOT / 'skills/data-locator/scripts/data_locator.py'
@@ -77,7 +94,6 @@ class DataCatalogTests(unittest.TestCase):
                 },
             }), encoding='utf-8')
 
-            # 11:00 is still inside the file group that started at 10:23:36.
             proc = subprocess.run([
                 sys.executable, str(script), '--catalog', str(catalog_path),
                 '--source', 'cowdisinfect_logs', '--start', '2026-09-14 11:00:00', '--end', '2026-09-14 11:10:00',
