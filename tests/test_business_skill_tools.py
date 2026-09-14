@@ -42,12 +42,39 @@ class BusinessSkillToolTests(unittest.TestCase):
             data = json.loads(proc.stdout)
             summary = data['summary']
             self.assertEqual(summary['total_cows'], 3)
+            self.assertEqual(summary['cows_with_selected_result'], 3)
             self.assertEqual(summary['exactly_four_cows'], 1)
             self.assertEqual(summary['over_four_cows'], 1)
             self.assertEqual(summary['raw_detected_nipples'], 12)
             self.assertEqual(summary['capped_detected_nipples'], 11)
             self.assertEqual(summary['expected_nipples'], 12)
             self.assertAlmostEqual(summary['nipple_recognition_rate'], 11 / 12, places=6)
+
+    def test_nipple_stats_keeps_missing_final_results_in_conservative_denominator(self):
+        script = ROOT / 'skills/nipple-recognition-analysis/scripts/nipple_stats.py'
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            rows = [
+                {'ts': '2026-09-14T07:01:00', 'cow': 'c1', 'nipples': [1, 2, 3, 4], 'selected': True},
+                {'ts': '2026-09-14T07:10:00', 'cow': 'c2', 'nipples': [1, 2, 3], 'selected': False},
+                {'ts': '2026-09-14T07:20:00', 'cow': 'c3', 'selected': True},
+            ]
+            (root / 'r.json').write_text(json.dumps(rows), encoding='utf-8')
+            proc = run_script(
+                script, str(root),
+                '--time-field', 'ts', '--cow-field', 'cow', '--nipple-field', 'nipples',
+                '--selected-field', 'selected', '--policy', 'selected',
+                '--start', '2026-09-14T07:00:00', '--end', '2026-09-14T08:00:00',
+            )
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            data = json.loads(proc.stdout)
+            summary = data['summary']
+            self.assertEqual(summary['total_cows'], 3)
+            self.assertEqual(summary['cows_with_selected_result'], 1)
+            self.assertAlmostEqual(summary['selected_result_coverage_rate'], 1 / 3, places=6)
+            self.assertAlmostEqual(summary['nipple_recognition_rate'], 4 / 12, places=6)
+            self.assertEqual(summary['nipple_recognition_rate_selected_only'], 1.0)
+            self.assertEqual(set(data['quality']['cows_without_selected_result']), {'c2', 'c3'})
 
     def test_encoder_health_does_not_bridge_invalid_sample(self):
         script = ROOT / 'skills/encoder-health/scripts/encoder_health.py'
