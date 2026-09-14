@@ -40,9 +40,7 @@ async function createSchedule() {
   error.value = ''
   try {
     const payload: Parameters<typeof api.createSchedule>[0] = {
-      name: name.value.trim(),
-      message: message.value.trim(),
-      kind: kind.value,
+      name: name.value.trim(), message: message.value.trim(), kind: kind.value,
     }
     if (kind.value === 'interval') payload.interval_minutes = intervalMinutes.value
     if (kind.value === 'daily') payload.daily_time = dailyTime.value
@@ -73,7 +71,7 @@ async function runNow(row: ScheduleSnapshot) {
 }
 
 async function remove(row: ScheduleSnapshot) {
-  if (!window.confirm(`删除定时任务“${row.name}”？`)) return
+  if (!window.confirm(`删除定时任务“${row.name}”？历史 Run 不会因此删除。`)) return
   await api.deleteSchedule(row.id)
   await refresh()
 }
@@ -90,13 +88,10 @@ onBeforeUnmount(() => timer && window.clearInterval(timer))
     <div class="panel schedule-compose-panel">
       <div class="eyebrow">SCHEDULE</div>
       <h1>定时任务</h1>
-      <p class="muted">定时配置只负责到点触发普通 ScopeX Task，不定义工作流或额外分析步骤。</p>
+      <p class="muted">到点只触发普通业务 Task；设备断电或 ScopeX 未运行期间错过的历史时间点直接跳过，不补跑。</p>
 
       <form class="schedule-form" @submit.prevent="createSchedule">
-        <label>
-          <span>任务名称</span>
-          <input v-model="name" placeholder="例如：编码器30分钟检查" />
-        </label>
+        <label><span>任务名称</span><input v-model="name" placeholder="例如：编码器30分钟检查" /></label>
         <label class="wide-field">
           <span>任务内容</span>
           <textarea v-model="message" rows="4" placeholder="例如：检查过去30分钟编码器是否存在丢数、毛刺、回退或不稳定。"></textarea>
@@ -109,22 +104,11 @@ onBeforeUnmount(() => timer && window.clearInterval(timer))
             <option value="once">一次执行</option>
           </select>
         </label>
-        <label v-if="kind === 'interval'">
-          <span>间隔（分钟）</span>
-          <input v-model.number="intervalMinutes" type="number" min="1" max="10080" />
-        </label>
-        <label v-else-if="kind === 'daily'">
-          <span>每天时间</span>
-          <input v-model="dailyTime" type="time" />
-        </label>
-        <label v-else>
-          <span>执行时间</span>
-          <input v-model="runAt" type="datetime-local" />
-        </label>
+        <label v-if="kind === 'interval'"><span>间隔（分钟）</span><input v-model.number="intervalMinutes" type="number" min="1" max="10080" /></label>
+        <label v-else-if="kind === 'daily'"><span>每天时间</span><input v-model="dailyTime" type="time" /></label>
+        <label v-else><span>执行时间</span><input v-model="runAt" type="datetime-local" /></label>
         <div class="schedule-submit">
-          <button class="primary-button" :disabled="busy || !name.trim() || !message.trim()">
-            {{ busy ? '保存中…' : '保存定时任务' }}
-          </button>
+          <button class="primary-button" :disabled="busy || !name.trim() || !message.trim()">{{ busy ? '保存中…' : '保存定时任务' }}</button>
         </div>
       </form>
       <p v-if="error" class="error-banner">{{ error }}</p>
@@ -132,10 +116,7 @@ onBeforeUnmount(() => timer && window.clearInterval(timer))
 
     <div class="panel">
       <div class="section-heading">
-        <div>
-          <div class="eyebrow">CONFIGURED</div>
-          <h2>已配置任务</h2>
-        </div>
+        <div><div class="eyebrow">CONFIGURED</div><h2>已配置任务</h2></div>
         <button class="ghost-button" @click="refresh">刷新</button>
       </div>
       <div v-if="!schedules.length" class="empty-state">还没有定时任务。</div>
@@ -150,6 +131,7 @@ onBeforeUnmount(() => timer && window.clearInterval(timer))
             <span>{{ ruleText(row) }}</span>
             <span>上次：{{ fmt(row.last_run_at) }} · {{ row.last_status || '—' }}</span>
             <span>下次：{{ fmt(row.next_run_at) }}</span>
+            <span v-if="row.missed_count">离线跳过：{{ row.missed_count }} 次 · 最近 {{ fmt(row.last_missed_at) }}</span>
           </div>
         </div>
         <div class="schedule-actions">
