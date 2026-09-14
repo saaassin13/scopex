@@ -1,0 +1,47 @@
+{
+  "schema": 1,
+  "sources": {
+    "cowdisinfect_logs": {
+      "description": "CowDisinfect 主程序日志，包含编码器、相机、感知和任务生命周期事件。",
+      "host_path": "/opt/ScalingRobotics/CowDisinfect/Log",
+      "agent_path": "/agent-data/logs",
+      "type": "hourly_rotated_log",
+      "layout": {
+        "filename": "CowDisinfect-YYYYMMDD-HHMMSS.log[.N]",
+        "time_basis": "日志行时间戳",
+        "notes": [
+          "文件按小时生成，同一小时可能存在 .1/.2 等轮转文件。",
+          "按时间窗只选择可能覆盖目标小时的日志文件，不递归扫描其他数据源。"
+        ]
+      },
+      "access": {
+        "max_hour_buckets": 48,
+        "max_files_per_operation": 32,
+        "recursive_scan": false
+      }
+    },
+    "left_camera_multimodal": {
+      "description": "LeftCamera 多模态结果目录；按日期/小时分层，包含 JPG、JSON、PCD。检测或推理失败时对应 JPG/JSON 可能不存在。",
+      "host_path": "/opt/ScalingRobotics/CowDisinfect/GrabbedImages/LeftCamera",
+      "agent_path": "/agent-data/left-camera",
+      "type": "hourly_multimodal",
+      "layout": {
+        "directory": "YYYYMMDD/HH",
+        "filename": "YYYYMMDD-HHMMSSmmm.<jpg|json|pcd>",
+        "time_basis": "目录小时 + 文件名时间戳",
+        "notes": [
+          "JPG/JSON/PCD 使用同一时间戳 stem 关联。",
+          "失败路径可能没有保存 JPG/JSON，不能用文件数量作为牛总数。",
+          "PCD 文件体积大，必须先定位时间窗和具体文件，再读取或降采样。"
+        ]
+      },
+      "access": {
+        "max_hour_buckets": 24,
+        "max_files_per_operation": 256,
+        "max_claim_images": 4,
+        "max_pointcloud_files_per_operation": 8,
+        "recursive_scan": false
+      }
+    }
+  }
+}
