@@ -124,28 +124,38 @@ system-health Skill
 
 ### 4.3 nipple-recognition-analysis
 
-产品 KPI 改为以 inference JSON 为主。
+真实数据已经纠正最初“以 inference JSON 为主”的方案。
 
-流程：
+原因：检测/推理失败时 JPG/JSON 可能不会保存，所以 JSON/JPG 数量不能作为牛数或识别率分母。
+
+正式产品口径：
 
 ```text
-JSON records
- -> explicit schema mapping
- -> per-cow selection (selected/latest/max, 必须显式)
- -> cow-level nipple count
- -> hourly KPI
+CowDisinfect rotated logs
+  -> named cow detection cycles
+  -> frame: ImgTimeStamp + CowOccuredCount + DetectingNumCurRound
+  -> per-frame 2D NippleNum
+  -> New cow detecte finished / LastImgTimeStamp
+  -> final consumed 2D NippleNum per cow
+  -> hourly KPI
 ```
 
-V1 KPI：
+固定规则：
 
-- total cows；
-- exact 4 cows；
-- complete four-nipple rate；
-- capped nipple recognition rate；
-- >4 over-detection；
-- selected nipple count distribution。
+- 一头牛最多 4 个乳头；
+- KPI 统计 2D detection boxes，绝不使用 3D valid count；
+- 最终帧由 `LastImgTimeStamp` 指定，不用 `max(NippleNum)`；
+- `NippleNum > 4` 单列 over-detection，KPI cap=4；
+- 已开始但未完成/缺 final 结果的周期不从保守分母中删除；
+- JPG/JSON 只作辅助结果核对，例如 JSON marker labels `1..4`。
 
-当前最大未决：真实 JSON schema / cow key / final-selection 语义，必须用真实数据冻结。
+当前工具：
+
+```text
+skills/nipple-recognition-analysis/scripts/nipple_stats.py
+```
+
+真实边界：系统完全漏掉且从未创建命名检测周期的物理奶牛，仍需 RFID/视频/其他 ground truth 才能进入“实际经过牛数”。
 
 ### 4.4 encoder-health
 
@@ -204,7 +214,7 @@ vLLM image tag/digest
 OpenClaw version
 ```
 
-新模型必须重新跑 Agent/tool/image/business Gate。NVIDIA 当前 agent-ready 推荐可以作为候选，不自动替换现有模型。
+新模型必须重新跑 Agent/tool/image/business Gate。候选模型不能自动替换现有基线。
 
 ## 7. Remaining acceptance order
 
@@ -241,15 +251,18 @@ npm run build
 - Docker/GPU 字段在 Spark 真实可解析；
 - Agent 不读 Sandbox 系统信息冒充 host。
 
-### Gate 5 — nipple JSON real-data acceptance
+### Gate 5 — nipple 2D KPI real-data acceptance
 
-用户提供真实 JSON 后：
+使用完整一小时 CowDisinfect 轮转日志：
 
-- 冻结 time/cow/nipple/final field mapping；
-- 冻结 selected/latest/max 语义；
-- 1 小时统计人工复算；
-- malformed/missing data 显式暴露；
-- >4 不提升 KPI。
+- 人工抽样确认命名牛周期数量；
+- 确认 `LastImgTimeStamp` 正确回挂到最终帧；
+- 确认最终 2D `NippleNum`；
+- 人工复算 `Σ min(N,4) / (total_cows×4)`；
+- 早期帧 4、最终帧 2/3 的牛必须按最终帧；
+- unfinished/missing final result 不从分母消失；
+- 有完整 artifact 目录时核对最终 JPG/JSON 与 2D markers；
+- 明确完全漏检牛仍需要独立 ground truth。
 
 ### Gate 6 — encoder real-data acceptance
 
@@ -273,7 +286,7 @@ FastAPI + Vue 跑至少一个真实业务任务，验证 Result-first / Evidence
 
 ## 8. Non-blocking gaps
 
-- 真实 nipple JSON schema 未冻结；
+- 完全漏检且无命名牛周期的物理牛 ground truth 未接入；
 - encoder firmware/site profile 未冻结；
 - 网络 topology 未确认；
 - current model 的真实 repo/revision 未补录；
