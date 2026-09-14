@@ -37,12 +37,13 @@ if ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
 fi
 
 rm -rf "$OUT" "$ARCHIVE" "${ARCHIVE}.sha256"
-mkdir -p "$OUT/source" "$OUT/frontend-dist" "$OUT/wheelhouse" "$OUT/images"
+mkdir -p "$OUT/source" "$OUT/frontend-dist" "$OUT/wheelhouse" "$OUT/images" "$OUT/scripts"
 
 # Bundle committed source only. This makes the source tree match the manifest
 # commit exactly and avoids accidentally shipping local audit/data files.
 git archive --format=tar HEAD | gzip -9 > "$OUT/source/scopex-source.tar.gz"
 cp -a frontend/dist/. "$OUT/frontend-dist/"
+cp scripts/install_offline_bundle.sh "$OUT/scripts/install_offline_bundle.sh"
 
 # Host-side FastAPI dependencies are downloaded ahead of time. Build bundles on
 # the same architecture/Python family as the target Spark host.
