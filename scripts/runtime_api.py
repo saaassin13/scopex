@@ -20,7 +20,12 @@ from scopex.api.factory import LocalRuntimeConfig, OpenClawRuntimeFactory
 from scopex.api.fastapi_app import create_app
 from scopex.api.schedules import ScheduleService
 from scopex.api.service import TaskService
-from scopex.data_catalog import catalog_binds, load_data_catalog, provision_workspace_catalog
+from scopex.data_catalog import (
+    catalog_binds,
+    load_data_catalog,
+    provision_workspace_catalog,
+    render_runtime_catalog_summary,
+)
 
 
 def loopback_host(host: str) -> bool:
@@ -156,6 +161,7 @@ def main(argv=None) -> int:
         workspace=workspace,
         catalog_path=catalog_path,
     )
+    catalog_summary = render_runtime_catalog_summary(catalog)
     catalog_defaults = () if args.no_catalog_binds else catalog_binds(catalog, existing_only=True)
     data_binds = merge_data_binds(catalog_defaults, tuple(args.data_dir))
 
@@ -176,6 +182,7 @@ def main(argv=None) -> int:
         finalizer_timeout_s=args.finalizer_timeout,
         skills=skills,
         data_binds=data_binds,
+        data_catalog_summary=catalog_summary,
         exec_host=args.exec_host,
         exec_mode=args.exec_mode,
         enable_view_image=args.enable_view_image,
