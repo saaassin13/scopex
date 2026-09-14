@@ -83,11 +83,16 @@ def main() -> int:
 
     valid = [s for s in samples if not s['invalid']]
     pairs = []
-    for a, b in zip(valid, valid[1:]):
+    for sample_seq, (a, b) in enumerate(zip(samples, samples[1:])):
+        # Invalid/read-failure samples are hard continuity breaks. Do not bridge
+        # the normal samples on either side into one synthetic interval.
+        if a['invalid'] or b['invalid']:
+            continue
         dt_ms = (b['ts'] - a['ts']).total_seconds() * 1000.0
         if dt_ms <= 0:
             continue
         pairs.append({
+            'sample_seq': sample_seq,
             'a': a, 'b': b, 'dt_ms': dt_ms,
             'delta_raw': b['raw'] - a['raw'],
             'delta_filtered': b['filtered'] - a['filtered'],
@@ -124,36 +129,38 @@ def main() -> int:
                            'statistical_threshold_pulses': round(outlier_threshold, 3)})
 
     flat_events = []
-    start_idx = None
-    for i, p in enumerate(pairs):
-        if p['delta_raw'] == 0:
-            if start_idx is None:
-                start_idx = i
-            continue
-        if start_idx is not None:
-            p0 = pairs[start_idx]
-            pend = pairs[i - 1]
-            duration = (pend['b']['ts'] - p0['a']['ts']).total_seconds() * 1000.0
-            if duration >= args.flat_ms:
-                flat_events.append({
-                    'type': 'flat_raw_candidate',
-                    'start': p0['a']['ts_text'], 'end': pend['b']['ts_text'],
-                    'duration_ms': round(duration, 3),
-                    'raw': p0['a']['raw'],
-                    'line_start': p0['a']['line_no'], 'line_end': pend['b']['line_no'],
-                })
+    start_idx: int | None = None
+
+    def flush_flat(end_idx: int) -> None:
+        nonlocal start_idx
+        if start_idx is None or end_idx < start_idx:
             start_idx = None
-    if start_idx is not None and pairs:
+            return
         p0 = pairs[start_idx]
-        pend = pairs[-1]
+        pend = pairs[end_idx]
         duration = (pend['b']['ts'] - p0['a']['ts']).total_seconds() * 1000.0
         if duration >= args.flat_ms:
             flat_events.append({
-                'type': 'flat_raw_candidate', 'start': p0['a']['ts_text'],
-                'end': pend['b']['ts_text'], 'duration_ms': round(duration, 3),
-                'raw': p0['a']['raw'], 'line_start': p0['a']['line_no'],
-                'line_end': pend['b']['line_no'],
+                'type': 'flat_raw_candidate',
+                'start': p0['a']['ts_text'], 'end': pend['b']['ts_text'],
+                'duration_ms': round(duration, 3), 'raw': p0['a']['raw'],
+                'line_start': p0['a']['line_no'], 'line_end': pend['b']['line_no'],
             })
+        start_idx = None
+
+    previous_seq: int | None = None
+    for i, p in enumerate(pairs):
+        if previous_seq is not None and p['sample_seq'] != previous_seq + 1:
+            flush_flat(i - 1)
+        if p['delta_raw'] == 0:
+            if start_idx is None:
+                start_idx = i
+        else:
+            flush_flat(i - 1)
+        previous_seq = p['sample_seq']
+    if pairs:
+        flush_flat(len(pairs) - 1)
+
     events.extend(flat_events)
     events.sort(key=lambda e: (e.get('ts') or e.get('start') or '', e['type']))
 
