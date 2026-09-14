@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import json
 from pathlib import Path
+import shutil
 import subprocess
 import threading
 import time
@@ -12,6 +13,7 @@ from typing import Callable, Protocol
 import zipfile
 
 from scopex.agent.runtime import OpenClawTurnResult
+from scopex.agent.trace import load_audit_trace
 from scopex.events.progress import EventSink, InMemoryEventSink
 from scopex.finalizer.structured import StructuredFinalizer
 from scopex.runtime.investigation import InvestigationCoordinator
@@ -45,6 +47,17 @@ class CoordinatorFactory(Protocol):
 
 FinalizerFactory = Callable[[], StructuredFinalizer]
 
+_BUSINESS_PATH_PREFIXES = ("/agent-data/", "/scopex-host/")
+_BUSINESS_COMMAND_MARKERS = (
+    "/agent-data/",
+    "/scopex-host/",
+    "data_locator.py",
+    "encoder_health.py",
+    "nipple_stats.py",
+    "image_quality_metrics.py",
+    "log_context.py",
+)
+
 
 @dataclass(slots=True)
 class TaskHandle:
@@ -69,13 +82,13 @@ class TaskHandle:
 
 
 class TaskService:
-    """One local execution service for conversation, manual and scheduled runs.
+    """One local execution service for manual, conversational and scheduled runs.
 
-    Conversation turns and audited business tasks use the same OpenClaw/Skill/
-    Tool runtime. Conversation turns may complete without claim-grade Evidence;
-    audited business tasks still require Evidence before product finalization.
-    Multi-turn conversation is implemented by creating another ordinary ScopeX
-    Task Run while reusing the same OpenClaw agent/session key.
+    The UI can create a manual ``auto`` run without asking the user to classify
+    their request. ScopeX does not call a separate router model. A normal turn
+    that never touches business data/capabilities is published as conversation;
+    once the turn actually touches business data/capabilities it must satisfy the
+    audited Task result boundary.
     """
 
     def __init__(
@@ -84,8 +97,12 @@ class TaskService:
         audit_root: Path,
         coordinator_factory: CoordinatorFactory,
         finalizer_factory: FinalizerFactory,
+        work_root: Path | None = None,
+        export_root: Path | None = None,
     ) -> None:
         self.store = AuditStore(Path(audit_root))
+        self.work_root = Path(work_root) if work_root is not None else self.store.root.parent / "work"
+        self.export_root = Path(export_root) if export_root is not None else self.store.root.parent / "exports"
         self.coordinator_factory = coordinator_factory
         self.finalizer_factory = finalizer_factory
         self._lock = threading.RLock()
@@ -111,10 +128,12 @@ class TaskService:
         metadata: dict | None = None,
     ) -> dict:
         message = self._message(message)
-        if mode not in {"task", "conversation"}:
-            raise ValueError("mode must be task or conversation")
+        if mode not in {"task", "conversation", "auto"}:
+            raise ValueError("mode must be task, conversation or auto")
         if trigger_type not in {"manual", "schedule"}:
             raise ValueError("trigger_type must be manual or schedule")
+        if trigger_type == "schedule" and mode != "task":
+            raise ValueError("scheduled runs must use audited task mode")
         with self._lock:
             self._release_terminal_active_locked()
             if self._active_task_id is not None:
@@ -154,6 +173,9 @@ class TaskService:
             audit.snapshot_control(task, session, coordinator.catalog)
             self._start_worker_locked(handle, self._run_initial, "initial")
             return task.snapshot()
+
+    def create_auto_run(self, message: str) -> dict:
+        return self.create_task(message, mode="auto", trigger_type="manual")
 
     def continue_conversation(self, task_id: str, message: str) -> dict:
         parent = self.get_task(task_id)
@@ -219,19 +241,87 @@ class TaskService:
         except (FileNotFoundError, OSError):
             raise TaskNotFoundError(task_id) from None
 
-    def list_tasks(self, *, mode: str | None = None) -> list[dict]:
-        if mode is not None and mode not in {"task", "conversation"}:
-            raise ValueError("mode must be task or conversation")
+    def list_tasks(self, *, mode: str | None = None, day: str | None = None) -> list[dict]:
+        if mode is not None and mode not in {"task", "conversation", "auto"}:
+            raise ValueError("mode must be task, conversation or auto")
+        day_value = self._parse_day(day) if day is not None else None
         tasks: list[dict] = []
         for stored_task_id in self.store.list_task_ids():
             try:
                 row = self.get_task(stored_task_id)
-                if mode is None or row.get("mode", "task") == mode:
-                    tasks.append(row)
+                if mode is not None and row.get("mode", "task") != mode:
+                    continue
+                if day_value is not None and self._task_local_day(row) != day_value:
+                    continue
+                tasks.append(row)
             except (TaskNotFoundError, json.JSONDecodeError, OSError):
                 continue
-        tasks.sort(key=lambda row: str(row.get("created_at", "")), reverse=True)
+        tasks.sort(key=lambda row: str(row.get("started_at") or row.get("created_at") or ""), reverse=True)
         return tasks
+
+    def calendar_month(self, month: str) -> dict:
+        try:
+            month_start = datetime.strptime(month, "%Y-%m")
+        except ValueError as exc:
+            raise ValueError("month must use YYYY-MM") from exc
+        days: dict[str, dict] = {}
+        for row in self.list_tasks():
+            local_day = self._task_local_day(row)
+            if local_day is None or not local_day.startswith(month_start.strftime("%Y-%m-")):
+                continue
+            slot = days.setdefault(local_day, {
+                "date": local_day,
+                "count": 0,
+                "completed": 0,
+                "failed": 0,
+                "running": 0,
+                "scheduled": 0,
+                "manual": 0,
+            })
+            slot["count"] += 1
+            state = row.get("state")
+            if state == "COMPLETED":
+                slot["completed"] += 1
+            elif state in {"FAILED", "CANCELLED"}:
+                slot["failed"] += 1
+            elif state in {"CREATED", "RUNNING", "PAUSING", "PAUSED", "FINALIZING"}:
+                slot["running"] += 1
+            if row.get("trigger_type") == "schedule":
+                slot["scheduled"] += 1
+            else:
+                slot["manual"] += 1
+        return {"month": month, "days": [days[key] for key in sorted(days)]}
+
+    def delete_task(self, task_id: str) -> dict:
+        task = self.get_task(task_id)
+        if task.get("state") not in {"COMPLETED", "FAILED", "CANCELLED"}:
+            raise TaskConflictError("only terminal tasks can be deleted")
+        with self._lock:
+            handle = self._handles.get(task_id)
+            if handle is not None and handle.worker_alive:
+                raise TaskConflictError("task cleanup is still running; retry deletion shortly")
+            if self._active_task_id == task_id:
+                self._active_task_id = None
+            self._handles.pop(task_id, None)
+
+        task_dir = self.store.existing_task_dir(task_id)
+        work_dir = self._safe_child(self.work_root, task_id)
+        export_file = self._safe_child(self.export_root, f"scopex-review-{task_id}.zip")
+        removed = {"audit": False, "work": False, "review_export": False}
+        if work_dir.is_dir():
+            shutil.rmtree(work_dir)
+            removed["work"] = True
+        if export_file.is_file():
+            export_file.unlink()
+            removed["review_export"] = True
+        shutil.rmtree(task_dir)
+        removed["audit"] = True
+        return {
+            "task_id": task_id,
+            "deleted": True,
+            "removed": removed,
+            "external_business_data_deleted": False,
+        }
 
     def get_events(self, task_id: str, *, after: int = 0) -> list[dict]:
         if after < 0:
@@ -242,8 +332,7 @@ class TaskService:
         except FileNotFoundError:
             return []
         return [
-            row
-            for row in rows
+            row for row in rows
             if isinstance(row, dict)
             and isinstance(row.get("seq"), int)
             and row["seq"] > after
@@ -319,9 +408,8 @@ class TaskService:
 
     def export_review_bundle(self, task_id: str) -> Path:
         task_dir = self.store.existing_task_dir(task_id)
-        export_root = self.store.root.parent / "exports"
-        export_root.mkdir(parents=True, exist_ok=True)
-        target = export_root / f"scopex-review-{task_id}.zip"
+        self.export_root.mkdir(parents=True, exist_ok=True)
+        target = self.export_root / f"scopex-review-{task_id}.zip"
         allow = (
             "task.json", "session.json", "result.json", "answer.json", "claims.json",
             "evidence.json", "events.jsonl", "final.txt", "evaluation.json",
@@ -444,9 +532,11 @@ class TaskService:
                             "forwarded_model_requests": sum(1 for row in current_turn.proxy_records if row.get("forwarded") is True),
                         })
                         if coordinator.catalog.items:
+                            self._resolve_auto_as_task(handle)
                             coordinator.begin_runtime_limit_finalization(runtime_limit_reason)
                             action = "finalize"
                         else:
+                            self._resolve_auto_as_task(handle)
                             coordinator.controller.fail("budget_reached_without_evidence")
                             handle.audit.snapshot_control(handle.task, handle.session, coordinator.catalog)
                             return
@@ -457,19 +547,50 @@ class TaskService:
                             "returncode": current_turn.process.returncode,
                             "stop_reason": current_turn.process.stop_reason,
                             "cli_blockers": list(current_turn.cli_outcome.blockers) if current_turn.cli_outcome is not None else ["missing_cli_outcome"],
+                            "cli_flags": dict(current_turn.cli_outcome.flags) if current_turn.cli_outcome is not None else {},
                             "forwarded_model_requests": sum(1 for row in current_turn.proxy_records if row.get("forwarded") is True),
                         })
                         if coordinator.catalog.items:
+                            self._resolve_auto_as_task(handle)
                             coordinator.begin_runtime_guard_finalization(runtime_guard_reason)
                             action = "finalize"
                         else:
+                            self._resolve_auto_as_task(handle)
                             coordinator.controller.fail("runtime_guard_reached_without_evidence")
                             handle.audit.snapshot_control(handle.task, handle.session, coordinator.catalog)
                             return
-                    elif not coordinator.catalog.items:
-                        if handle.task.mode == "conversation" and self._turn_completed_normally(current_turn):
+                    elif handle.task.mode == "auto":
+                        business_attempt = self._turn_attempted_business_work(current_turn)
+                        business_evidence = self._has_business_evidence(coordinator.catalog.items)
+                        if business_evidence:
+                            self._resolve_auto_as_task(handle)
+                            if self._turn_completed_normally(current_turn):
+                                coordinator.begin_finalization(goal_satisfied=True)
+                                action = "finalize"
+                            else:
+                                decision = coordinator.convergence(goal_satisfied=False)
+                                if decision.should_finalize:
+                                    coordinator.begin_finalization(goal_satisfied=False)
+                                    action = "finalize"
+                                else:
+                                    self._fail_incomplete_turn(handle, current_turn)
+                                    return
+                        elif business_attempt:
+                            self._resolve_auto_as_task(handle)
+                            coordinator.controller.fail("investigation_completed_without_business_evidence")
+                            handle.audit.snapshot_control(handle.task, handle.session, coordinator.catalog)
+                            return
+                        elif self._turn_completed_normally(current_turn):
+                            self._resolve_auto_as_conversation(handle)
                             self._complete_conversation(handle, current_turn)
                             return
+                        else:
+                            self._fail_incomplete_turn(handle, current_turn)
+                            return
+                    elif handle.task.mode == "conversation" and self._turn_completed_normally(current_turn):
+                        self._complete_conversation(handle, current_turn)
+                        return
+                    elif not coordinator.catalog.items:
                         coordinator.controller.fail("investigation_completed_without_evidence")
                         handle.audit.snapshot_control(handle.task, handle.session, coordinator.catalog)
                         return
@@ -482,15 +603,7 @@ class TaskService:
                             coordinator.begin_finalization(goal_satisfied=False)
                             action = "finalize"
                         else:
-                            coordinator.controller.fail("investigation_turn_incomplete")
-                            handle.audit.store.write_json(handle.task.id, "investigation-error.json", {
-                                "returncode": current_turn.process.returncode,
-                                "stop_reason": current_turn.process.stop_reason,
-                                "runtime_limit_reason": current_turn.runtime_limit_reason,
-                                "runtime_guard_reason": current_turn.runtime_guard_reason,
-                                "cli_blockers": list(current_turn.cli_outcome.blockers) if current_turn.cli_outcome is not None else ["missing_cli_outcome"],
-                            })
-                            handle.audit.snapshot_control(handle.task, handle.session, coordinator.catalog)
+                            self._fail_incomplete_turn(handle, current_turn)
                             return
                 else:
                     return
@@ -508,6 +621,19 @@ class TaskService:
                 coordinator.finish_fresh_finalization(self.finalizer_factory())
                 return
 
+    def _fail_incomplete_turn(self, handle: TaskHandle, turn: OpenClawTurnResult) -> None:
+        handle.coordinator.controller.fail("investigation_turn_incomplete")
+        outcome = turn.cli_outcome
+        handle.audit.store.write_json(handle.task.id, "investigation-error.json", {
+            "returncode": turn.process.returncode,
+            "stop_reason": turn.process.stop_reason,
+            "runtime_limit_reason": turn.runtime_limit_reason,
+            "runtime_guard_reason": turn.runtime_guard_reason,
+            "cli_blockers": list(outcome.blockers) if outcome is not None else ["missing_cli_outcome"],
+            "cli_flags": dict(outcome.flags) if outcome is not None else {},
+        })
+        handle.audit.snapshot_control(handle.task, handle.session, handle.coordinator.catalog)
+
     def _complete_conversation(self, handle: TaskHandle, turn: OpenClawTurnResult) -> None:
         outcome = turn.cli_outcome
         if outcome is None or outcome.answer is None:
@@ -518,6 +644,57 @@ class TaskService:
         )
         handle.coordinator.controller.complete()
         handle.audit.snapshot_control(handle.task, handle.session, handle.coordinator.catalog)
+
+    def _resolve_auto_as_task(self, handle: TaskHandle) -> None:
+        if handle.task.mode != "auto":
+            return
+        handle.task.mode = "task"
+        handle.audit.persist_task(handle.task)
+
+    def _resolve_auto_as_conversation(self, handle: TaskHandle) -> None:
+        if handle.task.mode != "auto":
+            return
+        handle.task.mode = "conversation"
+        handle.task.metadata.setdefault("conversation_id", handle.task.id)
+        handle.audit.persist_task(handle.task)
+
+    @staticmethod
+    def _has_business_evidence(items) -> bool:
+        for item in items:
+            source = item.source
+            metadata = item.metadata
+            if source.startswith(_BUSINESS_PATH_PREFIXES):
+                return True
+            if metadata.get("evidence_type") in {"image", "structured_business_facts"}:
+                return True
+            command = metadata.get("command")
+            if isinstance(command, str) and any(marker in command for marker in _BUSINESS_COMMAND_MARKERS):
+                return True
+        return False
+
+    @staticmethod
+    def _turn_attempted_business_work(turn: OpenClawTurnResult) -> bool:
+        trace = load_audit_trace(turn.audit_dir)
+        for call in trace.calls:
+            for key in ("path", "file_path"):
+                value = call.arguments.get(key)
+                if isinstance(value, str) and value.startswith(_BUSINESS_PATH_PREFIXES):
+                    return True
+            if call.name == "view_image":
+                paths = []
+                one = call.arguments.get("path")
+                if isinstance(one, str):
+                    paths.append(one)
+                many = call.arguments.get("paths")
+                if isinstance(many, list):
+                    paths.extend(value for value in many if isinstance(value, str))
+                if any(path.startswith(_BUSINESS_PATH_PREFIXES) for path in paths):
+                    return True
+            if call.name == "exec":
+                command = call.arguments.get("command")
+                if isinstance(command, str) and any(marker in command for marker in _BUSINESS_COMMAND_MARKERS):
+                    return True
+        return False
 
     @staticmethod
     def _turn_completed_normally(turn: OpenClawTurnResult) -> bool:
@@ -584,6 +761,33 @@ class TaskService:
             self.store.existing_task_dir(task_id)
         except FileNotFoundError:
             raise TaskNotFoundError(task_id) from None
+
+    @staticmethod
+    def _safe_child(root: Path, name: str) -> Path:
+        root = Path(root).resolve()
+        candidate = (root / name).resolve()
+        try:
+            candidate.relative_to(root)
+        except ValueError as exc:
+            raise ValueError("unsafe task-owned path") from exc
+        return candidate
+
+    @staticmethod
+    def _task_local_day(row: dict) -> str | None:
+        value = row.get("started_at") or row.get("created_at")
+        if not isinstance(value, str) or not value:
+            return None
+        try:
+            return datetime.fromisoformat(value).astimezone().strftime("%Y-%m-%d")
+        except ValueError:
+            return None
+
+    @staticmethod
+    def _parse_day(value: str) -> str:
+        try:
+            return datetime.strptime(value, "%Y-%m-%d").strftime("%Y-%m-%d")
+        except ValueError as exc:
+            raise ValueError("day must use YYYY-MM-DD") from exc
 
     @staticmethod
     def _message(value: str) -> str:
