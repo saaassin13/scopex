@@ -10,8 +10,6 @@ from scopex.finalizer.claims import Claim, ClaimKind, ClaimRelation, ClaimSet
 
 @dataclass(frozen=True, slots=True)
 class AnswerItem:
-    """One product-facing statement backed by validated claim identities."""
-
     text: str
     claim_ids: tuple[str, ...]
     kind: str
@@ -26,12 +24,7 @@ class AnswerItem:
 
 @dataclass(frozen=True, slots=True)
 class ProductAnswer:
-    """Result-first projection over an already validated ClaimSet.
-
-    It may deterministically reformat a raw validated scalar into a clearer
-    product sentence, but it never calls a model/tool or introduces an
-    unsupported factual/causal claim. `final.txt` remains the trust fallback.
-    """
+    """Result-first projection over already validated Claims/Evidence."""
 
     conclusion: tuple[AnswerItem, ...]
     explanation: tuple[AnswerItem, ...]
@@ -40,7 +33,7 @@ class ProductAnswer:
 
     def to_dict(self) -> dict:
         return {
-            "version": 2,
+            "version": 3,
             "conclusion": [item.to_dict() for item in self.conclusion],
             "explanation": [item.to_dict() for item in self.explanation],
             "execution": [item.to_dict() for item in self.execution],
@@ -57,9 +50,19 @@ _LABELS = {
     "raw_2d_detections": "原始2D乳头框总数",
     "capped_2d_detections": "计入指标的2D乳头框总数",
     "expected_nipples": "理论乳头总数",
-    "invalid_samples": "无效编码器采样数",
-    "sampling_gaps": "采样间隔异常数",
-    "negative_jumps": "编码器回退事件数",
+    "samples_in_window": "时间窗采样数",
+    "valid_samples": "有效采样数",
+    "invalid_samples": "无效/读取失败采样数",
+    "median_sample_dt_ms": "采样中位间隔",
+    "sampling_gap_count": "采样缺口候选数",
+    "negative_jump_count": "raw 数值下降次数",
+    "negative_jump_abs_p95_pulses": "raw 下降幅度P95",
+    "negative_jump_abs_max_pulses": "raw 最大下降幅度",
+    "negative_jump_outlier_candidate_count": "显著 raw 下降候选数",
+    "large_negative_jump_candidate_count": "大幅 raw 下降候选数",
+    "positive_delta_outlier_candidate_count": "显著正向跳变候选数",
+    "flat_raw_candidate_count": "长时间不变候选数",
+    "longest_flat_raw_ms": "最长 raw 不变持续时间",
     "free_gb": "剩余空间",
     "used_percent": "磁盘使用率",
     "available_gb": "可用内存",
@@ -70,10 +73,7 @@ _SCALAR_LINE = re.compile(r'^\s*"?([^"\s:]+)"?\s*:\s*(.+?)\s*,?\s*$')
 
 
 def _has_image_evidence(claim: Claim, catalog: EvidenceCatalog) -> bool:
-    return any(
-        catalog.get(ref).metadata.get("evidence_type") == "image"
-        for ref in claim.evidence_refs
-    )
+    return any(catalog.get(ref).metadata.get("evidence_type") == "image" for ref in claim.evidence_refs)
 
 
 def _raw_evidence_text(claim: Claim, catalog: EvidenceCatalog) -> str:
@@ -97,13 +97,144 @@ def _scalar(value: str):
         return text.strip('"')
 
 
+def _percent(value) -> str | None:
+    if isinstance(value, (int, float)):
+        return f"{float(value) * 100:.2f}%"
+    return None
+
+
+def _number(value, digits: int = 2) -> str:
+    if isinstance(value, bool):
+        return str(value)
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, float):
+        return f"{value:.{digits}f}".rstrip("0").rstrip(".")
+    return str(value)
+
+
+def _humanize_business_facts(payload: dict) -> str | None:
+    source = payload.get("source")
+    if source == "nipple-recognition-analysis":
+        summary = payload.get("summary")
+        quality = payload.get("quality")
+        if not isinstance(summary, dict):
+            return None
+        rows: list[str] = []
+        total = summary.get("total_cows")
+        if isinstance(total, (int, float)):
+            rows.append(f"共统计 {int(total)} 头牛")
+        complete = summary.get("complete_four_nipple_cows")
+        complete_rate = _percent(summary.get("complete_four_nipple_rate"))
+        if isinstance(complete, (int, float)):
+            text = f"其中 {int(complete)} 头完整识别到 4 个乳头"
+            if complete_rate:
+                text += f"（{complete_rate}）"
+            rows.append(text)
+        rate = _percent(summary.get("nipple_recognition_rate"))
+        if rate:
+            rows.append(f"总体乳头识别率为 {rate}")
+        distribution = summary.get("distribution_by_final_2d_count")
+        if isinstance(distribution, dict) and distribution:
+            ordered = []
+            for key in ("4", "3", "2", "1", "0", "missing"):
+                value = distribution.get(key)
+                if isinstance(value, (int, float)) and value:
+                    label = "缺最终结果" if key == "missing" else f"{key}个乳头"
+                    ordered.append(f"{label} {int(value)} 头")
+            if ordered:
+                rows.append("最终2D结果分布：" + "，".join(ordered))
+        if isinstance(quality, dict):
+            unfinished = quality.get("unfinished_cycles_in_window")
+            over = quality.get("over_four_2d_detections")
+            notes = []
+            if isinstance(unfinished, (int, float)) and unfinished:
+                notes.append(f"未完成牛周期 {int(unfinished)}")
+            if isinstance(over, (int, float)) and over:
+                notes.append(f"超过4框的过检牛 {int(over)}")
+            if notes:
+                rows.append("数据质量：" + "，".join(notes))
+        return "；".join(rows) if rows else None
+
+    if source == "encoder-health":
+        facts = payload.get("facts")
+        if not isinstance(facts, dict):
+            return None
+        rows: list[str] = []
+        samples = facts.get("samples_in_window")
+        valid = facts.get("valid_samples")
+        invalid = facts.get("invalid_samples")
+        if isinstance(samples, (int, float)):
+            text = f"时间窗内共 {int(samples)} 个编码器采样"
+            if isinstance(valid, (int, float)):
+                text += f"，有效 {int(valid)}"
+            if isinstance(invalid, (int, float)):
+                text += f"，无效/读取失败 {int(invalid)}"
+            rows.append(text)
+        median_dt = facts.get("median_sample_dt_ms")
+        gap_count = facts.get("sampling_gap_count")
+        if isinstance(median_dt, (int, float)):
+            text = f"采样中位间隔 {_number(median_dt, 3)} ms"
+            if isinstance(gap_count, (int, float)):
+                text += f"，采样缺口候选 {int(gap_count)} 个"
+            rows.append(text)
+        negative = facts.get("negative_jump_count")
+        if isinstance(negative, (int, float)):
+            p95 = facts.get("negative_jump_abs_p95_pulses")
+            maximum = facts.get("negative_jump_abs_max_pulses")
+            text = f"观察到 raw 数值下降 {int(negative)} 次"
+            if isinstance(p95, (int, float)):
+                text += f"，下降幅度 P95 为 {_number(p95, 2)} pulse"
+            if isinstance(maximum, (int, float)):
+                text += f"，最大 {_number(maximum, 2)} pulse"
+            rows.append(text)
+        significant = facts.get("negative_jump_outlier_candidate_count")
+        large = facts.get("large_negative_jump_candidate_count")
+        positive = facts.get("positive_delta_outlier_candidate_count")
+        flat = facts.get("flat_raw_candidate_count")
+        candidates = []
+        if isinstance(significant, (int, float)):
+            candidates.append(f"显著 raw 下降候选 {int(significant)}")
+        if isinstance(large, (int, float)):
+            candidates.append(f"大幅 raw 下降候选 {int(large)}")
+        if isinstance(positive, (int, float)):
+            candidates.append(f"显著正向跳变候选 {int(positive)}")
+        if isinstance(flat, (int, float)):
+            candidates.append(f"长时间不变候选 {int(flat)}")
+        if candidates:
+            rows.append("候选事件：" + "，".join(candidates))
+        return "；".join(rows) if rows else None
+
+    facts = payload.get("facts") or payload.get("summary")
+    if isinstance(facts, dict):
+        rendered = []
+        for key, value in facts.items():
+            if isinstance(value, (str, int, float, bool)) or value is None:
+                label = _LABELS.get(key, key)
+                if key in _RATE_KEYS:
+                    pct = _percent(value)
+                    rendered.append(f"{label} {pct}" if pct else f"{label}：{value}")
+                else:
+                    rendered.append(f"{label}：{value}")
+        return "；".join(rendered[:12]) if rendered else None
+    return None
+
+
 def _humanize_raw(raw: str) -> str:
-    """Reformat common deterministic business scalars without semantic invention."""
     text = raw.strip()
     if not text:
         return text
     if "No such file or directory" in text and ("scopex-host" in text or "scopex-system-metrics" in text):
         return "宿主机资源快照当前不可用，不能据此判断设备资源状态。"
+    if text.startswith("{"):
+        try:
+            payload = json.loads(text)
+        except json.JSONDecodeError:
+            payload = None
+        if isinstance(payload, dict) and payload.get("scopex_role") == "business_facts":
+            rendered = _humanize_business_facts(payload)
+            if rendered:
+                return rendered
 
     parts = [part.strip() for part in text.split("；") if part.strip()]
     rendered: list[str] = []
@@ -145,25 +276,16 @@ def _safe_claim_text(claim: Claim, catalog: EvidenceCatalog) -> str:
             return claim.topic
         raw = _raw_evidence_text(claim, catalog)
         return _humanize_raw(raw) if raw else "已形成直接观察事实"
-
     if claim.relation is ClaimRelation.TEMPORAL_ASSOCIATION:
         raw = _raw_evidence_text(claim, catalog)
         subject = _humanize_raw(raw) if raw else "相关证据"
         return f"{subject}；当前仅支持时间关联，未证明因果。"
-
     if claim.relation is ClaimRelation.CAUSAL_HYPOTHESIS:
         return f"待验证假设：{claim.topic}"
-
     return f"尚不能确定：{claim.topic}"
 
 
-def _item(
-    claim: Claim,
-    catalog: EvidenceCatalog,
-    *,
-    text: str | None = None,
-    kind: str | None = None,
-) -> AnswerItem:
+def _item(claim: Claim, catalog: EvidenceCatalog, *, text: str | None = None, kind: str | None = None) -> AnswerItem:
     return AnswerItem(
         text=text if text is not None else _safe_claim_text(claim, catalog),
         claim_ids=(claim.id,),
@@ -188,32 +310,23 @@ def _ordered_summary_claims(claims: ClaimSet) -> list[Claim]:
 
 
 def _has_action_verification_evidence(claim: Claim, catalog: EvidenceCatalog) -> bool:
-    return any(
-        catalog.get(ref).metadata.get("evidence_role") == "action_verification"
-        for ref in claim.evidence_refs
-    )
+    return any(catalog.get(ref).metadata.get("evidence_role") == "action_verification" for ref in claim.evidence_refs)
 
 
 def compose_product_answer(claims: ClaimSet, catalog: EvidenceCatalog) -> ProductAnswer:
     ordered = _ordered_summary_claims(claims)
     if not ordered:
         return ProductAnswer((), (), (), ())
-
     conclusion = next((claim for claim in ordered if claim.kind is ClaimKind.FACT), ordered[0])
     explanation_claims = [claim for claim in ordered if claim.id != conclusion.id][:4]
     execution_claims = [
-        claim
-        for claim in ordered
-        if claim.kind is ClaimKind.FACT
-        and _has_action_verification_evidence(claim, catalog)
+        claim for claim in ordered
+        if claim.kind is ClaimKind.FACT and _has_action_verification_evidence(claim, catalog)
     ][:4]
     unresolved = [
-        claim
-        for claim in ordered
-        if claim.kind is ClaimKind.UNKNOWN
-        or claim.relation is ClaimRelation.CAUSAL_HYPOTHESIS
+        claim for claim in ordered
+        if claim.kind is ClaimKind.UNKNOWN or claim.relation is ClaimRelation.CAUSAL_HYPOTHESIS
     ][:3]
-
     return ProductAnswer(
         conclusion=(_item(conclusion, catalog),),
         explanation=tuple(_item(claim, catalog) for claim in explanation_claims),
