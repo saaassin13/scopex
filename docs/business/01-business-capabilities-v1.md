@@ -14,7 +14,7 @@
 |---|---|---|---|
 | `system-health` | Spark 宿主机资源历史 | 必要时解释某资源异常时系统在做什么 | CPU/Load、内存、磁盘、GPU、Docker、关键进程事实 |
 | `image-quality-diagnosis` | 原始图片 | 必要时找拍照/相机上下文 | 模糊、起雾、脏污及不确定性 |
-| `nipple-recognition-analysis` | 推理 JSON | 解释缺失/下降时间窗 | 牛数、乳头数分布、完整四乳头率、乳头识别率 |
+| `nipple-recognition-analysis` | 推理 JSON | 解释缺失/下降时间窗 | 牛数、结果覆盖率、乳头数分布、完整四乳头率、乳头识别率 |
 | `encoder-health` | 编码器原始采样日志 | 解释 reset/stop/通信/生命周期上下文 | 丢数、gap、回退、跳变、长时间不变等候选事件 |
 | `log-context` | 业务日志 | 公共上下文能力 | 小范围原始日志窗口，不独立给根因 |
 
@@ -152,16 +152,27 @@ skills/nipple-recognition-analysis/scripts/nipple_stats.py
 
 若只能临时用 `max` 做诊断，结果必须明确 `selection_policy=max`，不能伪装成已经确认的产品口径。
 
+### 先看结果覆盖率，再看识别率
+
+不能把“有可用最终结果的牛”直接当成全部牛，否则缺结果的牛会自动从分母消失，指标虚高。
+
+V1 区分：
+
+- `total_cows`：时间窗内 JSON 中存在有效时间戳 + cow key 的唯一牛数；
+- `cows_with_selected_result`：按 configured policy 确实选出可用乳头结果的牛数；
+- `selected_result_coverage_rate = cows_with_selected_result / total_cows`；
+- `cows_without_selected_result`：JSON 已经证明这头牛存在，但没有形成可用最终结果。
+
 ### V1 指标
 
-- `total_cows`：选出有效结果的唯一牛 key 数；
 - `exactly_four_cows`：最终结果恰好 4 个乳头；
-- `complete_four_nipple_rate = exactly_four_cows / total_cows`；
-- `nipple_recognition_rate = Σ min(nipple_count, 4) / (total_cows × 4)`；
+- `complete_four_nipple_rate = exactly_four_cows / total_cows`，缺最终结果的牛按“不完整”计；
+- `nipple_recognition_rate = Σ min(selected nipple_count, 4) / (total_cows × 4)`，缺最终结果在这个保守主指标中贡献 0；
+- 同时输出 `*_selected_only` 版本，便于区分“识别差”与“结果覆盖差”，但 selected-only 指标必须和 coverage 一起看；
 - `>4` 单独计 `over_four_cows`，不允许把识别率推到 100% 以上；
-- 输出最终乳头数分布和逐牛结果。
+- 输出最终乳头数分布和逐牛有效结果。
 
-JSON 完全缺失的真实牛目前无法仅靠该指标自动补进 denominator。若后续确认日志/其他来源能提供独立“实际经过牛数”，再增加跨源 coverage 指标，不在 V1 中猜测。
+这个 `total_cows` 仍只是“JSON 中观察到的牛”。**完全没有生成任何 JSON 的真实牛无法靠 JSON 自身发现。** 后续如果日志/RFID/其他独立来源能提供实际经过牛数，应增加跨源 `actual_cows vs json_observed_cows` coverage，而不是假装 JSON 已经看到漏掉的牛。
 
 ## 6. encoder-health
 
@@ -217,6 +228,8 @@ skills/log-context/scripts/log_context.py
 - anchor 标记；
 - 少量 before/after 上下文。
 
+实现要求：单遍流式扫描、有界 before buffer、有界输出；不能为了取上下文把整份大型日志先读进内存。`max-lines` 很小时 anchor 优先于 before/after 上下文。
+
 它不做根因诊断。
 
 正确使用方式：
@@ -256,13 +269,15 @@ Agent
 - schema mapping；
 - cow key；
 - selected/latest/max 的真实业务语义；
-- 1 小时时间窗的总牛数和逐牛结果可人工复算；
+- `total_cows / selected_result_coverage / KPI` 可人工复算；
+- 缺最终结果的牛不会被悄悄从分母删除；
 - `>4` 不抬高识别率；
 - 缺字段/坏 JSON 不静默吞掉。
 
 ### encoder-health
 
 - 人工构造/真实样本可定位 sample gap、negative jump、large negative candidate、flat；
+- invalid sample 必须打断连续区间，不能跨失败值制造假 delta；
 - 事件保留行号和时间；
 - 需要解释时才调用 log-context；
 - 不无证据把 candidate 升级成 reset/损坏。
@@ -277,6 +292,6 @@ Agent
 
 1. JSON schema/profile 固化；
 2. 编码器 site/firmware profile；
-3. 跨源“实际经过牛数 vs JSON 有结果牛数”；
+3. 跨源“实际经过牛数 vs JSON 观察牛数”；
 4. 资源异常与识别率/编码器事件的跨能力相关分析；
 5. 网络 topology 确认后的网络能力。
