@@ -2,16 +2,11 @@
 
 状态：**2026-09-14 当前有效**。
 
-这份文档用于：
+用于 Spark 本地启动、真实 Runtime 调试、新会话接手，以及区分“已验证”和“已实现待验收”。
 
-1. 在 Spark 上快速启动当前 ScopeX；
-2. 调试当前真实 Runtime；
-3. 新会话/新开发者快速接手；
-4. 明确哪些能力已验证、哪些只是已实现待验收。
+## 1. 当前阶段
 
-## 1. 当前阶段结论
-
-冻结回归基线：
+冻结基线：
 
 ```text
 6A Context / Compaction            PASS
@@ -22,52 +17,45 @@
 6F 600s / 16-request Product Gate PASS
 ```
 
-Step 7 当前：
+当前产品/业务阶段：
 
 ```text
-7A Claim-bounded Product Answer   IMPLEMENTED / acceptance pending
+7A Product Answer                 IMPLEMENTED / acceptance pending
 7B Result-first UI                IMPLEMENTED / acceptance pending
 7C Spark FastAPI + Vue            IN PROGRESS
-7D Real business acceptance       PENDING
-7E Offline deployment baseline    IMPLEMENTED / smoke pending
+Business V1 Skills                IMPLEMENTED / real-data acceptance pending
+Offline deployment baseline       IMPLEMENTED / smoke pending
 ```
 
 固定边界：
 
 > **OpenClaw owns execution. ScopeX owns product control and trust.**
 
-不要重新实现第二套 Agent Loop / Workflow Engine。
+不要实现第二套 Agent Loop / Workflow Engine。
 
-## 2. 接手时先读什么
-
-按顺序：
+## 2. 接手阅读顺序
 
 1. `README.md`
 2. `docs/01-requirements.md`
 3. `docs/02-delivery-and-acceptance.md`
 4. `docs/architecture/06-openclaw-scopex-boundary.md`
 5. `docs/architecture/07-complex-task-validation-and-next-plan.md`
-6. 本文件
-7. `docs/09-zero-to-one-build-and-offline-deployment.md`
+6. `docs/business/01-business-capabilities-v1.md`
+7. 本文件
+8. `docs/09-zero-to-one-build-and-offline-deployment.md`
 
-`docs/poc/` 用于历史追溯，不应覆盖上述当前文档。
+`docs/poc/` 和历史脚本仅作追溯，不覆盖当前业务定义。
 
 ## 3. 当前运行基线
 
 ```text
 Device: NVIDIA DGX Spark / ARM64
 Agent Runtime: OpenClaw
-Model: qwen3.8-27b-nvfp4
+Served model id: qwen3.8-27b-nvfp4
 Inference: local vLLM OpenAI-compatible API
 Product API: FastAPI + Uvicorn
 UI: Vue 3 + TypeScript + Vite
-Sandbox image: scopex-sandbox-analysis:step7
-```
-
-默认 OpenClaw CLI：
-
-```text
-~/.openclaw/bin/openclaw
+Sandbox: scopex-sandbox-analysis:step7
 ```
 
 确认：
@@ -77,12 +65,93 @@ Sandbox image: scopex-sandbox-analysis:step7
 curl -s http://127.0.0.1:18002/v1/models
 ```
 
-## 4. Python / 前端
+模型真正从 0 到 1 重建还必须记录 `MODEL_REPO + MODEL_REVISION`；served id 本身不是下载地址。详细见 `docs/09-zero-to-one-build-and-offline-deployment.md`。
 
-Host Python 推荐 venv：
+## 4. 第一批业务 Skill
+
+默认：
+
+```text
+system-health
+image-quality-diagnosis
+nipple-recognition-analysis
+encoder-health
+log-context
+```
+
+旧 `cow-disinfect-diagnosis` 保留供历史/专项回归，但不再默认加载。
+
+ScopeX 启动时把内置 Skill 同步到：
+
+```text
+<workspace>/skills/
+```
+
+检查：
 
 ```bash
-cd /home/yanlan/workspaces/code/scopex
+find .local/workspace/skills -maxdepth 4 -type f -print
+```
+
+业务设计见：
+
+```text
+docs/business/01-business-capabilities-v1.md
+```
+
+### 能力边界
+
+- `system-health`：Spark 宿主机资源历史；
+- `image-quality-diagnosis`：原始图片质量；
+- `nipple-recognition-analysis`：推理 JSON 按牛聚合 KPI；
+- `encoder-health`：编码器采样健康事实/候选；
+- `log-context`：公共小窗口日志证据，不独立给根因。
+
+网络能力暂缓，等待 topology 明确。
+
+## 5. 通用任务契约
+
+- 用户明确 target/source/scope 是约束；
+- 主数据源先回答核心问题；
+- 走最短充分证据路径；
+- 不因为 `/agent-data` 有其他文件就全部扫描；
+- 只有需要解释时才扩展到小范围日志上下文；
+- 证据够即停止；
+- 无法确认根因时允许 `unknown/待验证`。
+
+## 6. System Health 宿主机数据
+
+Agent 默认运行在 Sandbox，不能用 Sandbox 自己的 `/proc/free/df/nvidia-smi` 表示 Spark host。
+
+V1 使用 user-systemd timer 每 30 秒采样：
+
+```text
+scripts/collect_system_metrics.py
+ -> ~/.local/share/scopex/system-metrics/system_metrics.jsonl
+ -> read-only /scopex-system-metrics/system_metrics.jsonl
+ -> system-health Skill
+```
+
+安装：
+
+```bash
+mkdir -p ~/.config/systemd/user
+cp deploy/systemd/scopex-system-metrics.service ~/.config/systemd/user/
+cp deploy/systemd/scopex-system-metrics.timer ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now scopex-system-metrics.timer
+```
+
+检查：
+
+```bash
+systemctl --user status scopex-system-metrics.timer
+tail -n 2 ~/.local/share/scopex/system-metrics/system_metrics.jsonl
+```
+
+## 7. Host Python / Web
+
+```bash
 python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install \
@@ -99,19 +168,9 @@ npm run build
 cd ..
 ```
 
-要求 Node `>= 22.18.0`。
+离线现场直接使用预构建 `frontend/dist`。
 
-离线现场不要重新执行 npm install；使用提前构建的 `frontend/dist`。完整离线流程见 `docs/09-zero-to-one-build-and-offline-deployment.md`。
-
-## 5. Analysis Sandbox
-
-目标镜像：
-
-```text
-scopex-sandbox-analysis:step7
-```
-
-从已验证 base image 构建：
+## 8. Analysis Sandbox
 
 ```bash
 docker build \
@@ -121,200 +180,79 @@ docker build \
   .
 ```
 
-Dockerfile build-time APT 源使用清华 TUNA；Ubuntu ARM64 自动使用 `ubuntu-ports`。这只影响容器构建，不修改 Spark host 源。
-
-当前 toolbox：
-
-```text
-numpy / scipy / pandas / cv2 / Pillow / scikit-image
-matplotlib / openpyxl / PyYAML / psutil / scikit-learn
-Open3D when available
-```
-
 验证：
 
 ```bash
-docker run --rm \
-  --network none \
-  --entrypoint python3 \
+docker run --rm --network none --entrypoint python3 \
   scopex-sandbox-analysis:step7 \
   -c 'import cv2, PIL, numpy, pandas, scipy, skimage, matplotlib, openpyxl, yaml, psutil, sklearn; print("OK")'
+
+docker run --rm --network none --entrypoint cat \
+  scopex-sandbox-analysis:step7 /opt/scopex/toolbox.json
 ```
 
-实际 manifest：
+APT build-time 使用清华 TUNA；运行时网络仍是 `none`。
+
+## 9. 启动 Runtime API
 
 ```bash
-docker run --rm \
-  --network none \
-  --entrypoint cat \
-  scopex-sandbox-analysis:step7 \
-  /opt/scopex/toolbox.json
-```
+mkdir -p .local/workspace ~/.local/share/scopex/system-metrics
 
-## 6. 默认 Skill
-
-Runtime API 默认加载：
-
-```text
-cow-disinfect-diagnosis
-image-quality-diagnosis
-```
-
-启动时 ScopeX 会把仓库内置 Skill 同步到：
-
-```text
-<workspace>/skills/
-```
-
-之后再交给 OpenClaw allowlist。
-
-检查：
-
-```bash
-find .local/workspace/skills -maxdepth 4 -type f -print
-```
-
-额外 Skill：
-
-```bash
---skill <name>
-```
-
-框架回归需要完全关闭产品 Skill 时：
-
-```bash
---no-default-skills
-```
-
-## 7. Runtime 通用任务契约
-
-这是当前真实业务测试后新增的产品原则，不是固定 Workflow：
-
-- 用户明确指定的 target/source/scope 是任务约束；
-- 走回答问题所需的最短充分证据路径；
-- 不因为 `/agent-data` 有其他文件就自动调查；
-- 只有原范围不足以回答用户原问题时才最小扩张；
-- 证据足够后停止工具调用；
-- 无法确认具体原因时允许 `unknown/待验证`，不要以无限调查替代不确定性。
-
-例如用户说“只看这一张图，不读日志/JSON/其他图片”，Agent 应尊重这个边界。
-
-## 8. 启动 Runtime API
-
-同步 main：
-
-```bash
-cd /home/yanlan/workspaces/code/scopex
-git checkout main
-git pull --ff-only
-mkdir -p .local/workspace
-```
-
-启动：
-
-```bash
 .venv/bin/python scripts/runtime_api.py \
   --model qwen3.8-27b-nvfp4 \
   --base-url http://127.0.0.1:18002/v1 \
   --workspace .local/workspace \
   --sandbox-image scopex-sandbox-analysis:step7 \
   --data-dir /path/to/business-data:/agent-data \
+  --system-metrics-dir "$HOME/.local/share/scopex/system-metrics" \
   --enable-view-image
 ```
 
 默认：
 
 ```text
-API: http://127.0.0.1:8787
-turn timeout: 600 s
-model requests / turn: 16
-compaction: enabled
+API: 127.0.0.1:8787
+turn timeout: 600s
+model requests/turn: 16
 exec host: sandbox
-exec mode: full
-sandbox runtime network: none
+sandbox network: none
+business data: read-only
+system metrics: read-only
 ```
 
 启动日志应看到：
 
 ```text
-skills: cow-disinfect-diagnosis, image-quality-diagnosis
+skills: system-health, image-quality-diagnosis, nipple-recognition-analysis, encoder-health, log-context
 ```
 
-## 9. API 快速使用
-
-健康检查：
+## 10. API 快速使用
 
 ```bash
 curl -s http://127.0.0.1:8787/health
 ```
 
-创建 Task：
+创建任务：
 
 ```bash
-curl -s \
-  -X POST http://127.0.0.1:8787/tasks \
+curl -s -X POST http://127.0.0.1:8787/tasks \
   -H 'Content-Type: application/json' \
-  -d '{"message":"诊断 /agent-data 中当前异常，给出结论和证据。"}'
+  -d '{"message":"分析 7 点到 8 点的乳头识别率。"}'
 ```
 
-状态：
+其他：
 
-```bash
-curl -s http://127.0.0.1:8787/tasks/<task_id>
+```text
+GET  /tasks/<id>
+GET  /tasks/<id>/events?after=0
+GET  /tasks/<id>/evidence
+GET  /tasks/<id>/result
+POST /tasks/<id>/stop
+POST /tasks/<id>/resume
+POST /tasks/<id>/steer
 ```
-
-Progress：
-
-```bash
-curl -s 'http://127.0.0.1:8787/tasks/<task_id>/events?after=0'
-```
-
-Evidence：
-
-```bash
-curl -s http://127.0.0.1:8787/tasks/<task_id>/evidence
-```
-
-Result：
-
-```bash
-curl -s http://127.0.0.1:8787/tasks/<task_id>/result
-```
-
-## 10. Stop / Resume / Steering
-
-暂停：
-
-```bash
-curl -s \
-  -X POST http://127.0.0.1:8787/tasks/<task_id>/stop \
-  -H 'Content-Type: application/json' \
-  -d '{"message":"先暂停"}'
-```
-
-继续：
-
-```bash
-curl -s \
-  -X POST http://127.0.0.1:8787/tasks/<task_id>/resume \
-  -H 'Content-Type: application/json' \
-  -d '{"message":"继续刚才任务"}'
-```
-
-纠正方向：
-
-```bash
-curl -s \
-  -X POST http://127.0.0.1:8787/tasks/<task_id>/steer \
-  -H 'Content-Type: application/json' \
-  -d '{"message":"只检查用户指定的图片，不要读取其他数据"}'
-```
-
-Stop/Steer 在安全 model-request boundary 生效，不等同于强杀已经发生副作用的动作。
 
 ## 11. Result / Audit
-
-主可信链：
 
 ```text
 Evidence
@@ -324,144 +262,136 @@ Evidence
  -> Result-first UI
 ```
 
-Task audit 默认在：
+Task audit：
 
 ```text
 .local/runtime-api/tasks/<task-id>/
 ```
 
-可能包含：
+包括 `task/session/events/evidence/claims/answer/result/final` 等文件；`final.txt` 是 deterministic trust fallback。
+
+## 12. 第一批真实业务验收
+
+### system-health
+
+- timer 连续产出 JSONL；
+- 当前与历史时间窗口可区分；
+- Agent 不使用 Sandbox 资源冒充 host；
+- 资源压力与业务异常只有时间重合时才建立关联。
+
+### image-quality
+
+- 指定原图实际 `view_image`；
+- 不访问用户排除的数据；
+- 单图任务不默认跑 exec；
+- 证据够后停止。
+
+### nipple-recognition-analysis
+
+需要真实推理 JSON 冻结：
 
 ```text
-task.json
-session.json
-events.jsonl
-evidence.json
-claims.json
-answer.json
-result.json
-final.txt
-runtime-limit.json
-runtime-guard.json
-cleanup.json
+time field
+cow key
+nipple field
+selected/latest/max 真实业务语义
 ```
 
-`answer.json` 是产品投影；`final.txt` 继续作为 deterministic trust fallback。
+逐牛结果和小时统计必须可人工复算；`>4` 不允许提高识别率到 100% 以上。
 
-如果 Finalizer 第一次因 `finish_reason=length` 截断，当前实现允许同 Evidence 一次长度恢复重试；`result.json` 会记录：
+### encoder-health
+
+用真实样本验证：
 
 ```text
-finalizer_retry_count
+invalid/read failure
+sampling gap
+negative jump
+large negative candidate
+positive delta outlier candidate
+flat raw candidate
 ```
 
-## 12. Web UI
+需要解释时才调用 `log-context`。
 
-`frontend/dist` 存在时，FastAPI 自动在 `/` 提供 Vue 页面。
-
-主视图现在是 Result-first：
-
-```text
-结论
-说明
-执行情况
-建议
-
-调查进度 >
-相关证据 >
-可信渲染 fallback >
-```
-
-Step 7 当前还需要在 Spark 上做完整产品联调；代码已经实现不等于 UI 验收已 PASS。
-
-## 13. 单图范围验收
-
-这是当前最重要的真实行为回归之一。
-
-示例：
-
-```text
-只检查 /agent-data/07-img/example.jpg 这一张原图。
-直接使用视觉能力判断：
-1. 是否明显模糊；
-2. 是否呈现起雾特征；
-3. 是否呈现镜头脏污特征。
-不要读取日志、JSON、其他图片或目录信息。
-如果仅凭这一张图不能确认具体物理原因，直接说明不确定。
-```
-
-验收：
-
-- 指定原图被实际 `view_image`；
-- 不访问排除的数据；
-- 不做目录级扫描；
-- 不持续请求直到 16-request hard limit；
-- 允许“不确定”；
-- Claims/Answer 可追溯。
-
-## 14. 全量回归
-
-后端：
+## 13. 后端/前端回归
 
 ```bash
 python3 -m unittest discover -s tests -v
 ```
-
-前端：
 
 ```bash
 cd frontend
 npm run build
 ```
 
-Sandbox：
+业务工具专项：
 
 ```bash
-docker image inspect scopex-sandbox-analysis:step7 >/dev/null
+python3 -m unittest tests.test_business_skill_tools tests.test_skill_provisioning tests.test_deployment_assets -v
 ```
 
-## 15. 离线部署
+## 14. Stop / Resume / Steering
 
-从 0 到 1和离线流程全部维护在：
+示例纠正方向：
+
+```bash
+curl -s -X POST http://127.0.0.1:8787/tasks/<id>/steer \
+  -H 'Content-Type: application/json' \
+  -d '{"message":"只分析编码器原始值和对应 ±5 秒日志，不要检查图片。"}'
+```
+
+Stop/Steer 在安全 model-request boundary 生效。
+
+## 15. 部署 / 离线
+
+完整文档：
 
 ```text
 docs/09-zero-to-one-build-and-offline-deployment.md
 ```
 
-在线 ARM64 构建机导出：
+现在明确拆分：
+
+```text
+Device Base Package
+  Docker/NVIDIA Runtime + OpenClaw + vLLM + model
+
+ScopeX Update Bundle
+  source + frontend + wheels + analysis sandbox + Skills
+```
+
+ScopeX 更新包：
 
 ```bash
 bash scripts/export_offline_bundle.sh
 ```
 
-离线端解压后：
+模型/vLLM 不随 ScopeX 小版本重复传输。
 
-```bash
-bash scopex-offline-<commit>-<arch>/scripts/install_offline_bundle.sh \
-  scopex-offline-<commit>-<arch> \
-  "$HOME/scopex"
-```
-
-不要在现场重新 npm install / apt install common analysis packages。
-
-## 16. 自启动
+## 16. systemd
 
 模板：
 
 ```text
 deploy/systemd/scopex-runtime.service
 deploy/systemd/runtime.env.example
+deploy/systemd/scopex-system-metrics.service
+deploy/systemd/scopex-system-metrics.timer
 ```
 
-推荐 user systemd + `Restart=on-failure`，不使用 Docker-in-Docker。
+ScopeX Runtime 使用 `Restart=on-failure`；vLLM 建议 Docker `--restart unless-stopped`。
 
 ## 17. 当前已知缺口
 
-- 通用 business action verification provenance 仍未完全泛化；
-- 前端没有 npm lockfile，离线部署依赖预构建 `frontend/dist`；
+- 真实乳头 JSON schema/最终结果选择语义尚未冻结；
+- 编码器无效值、物理阈值仍需按真实协议/固件形成 profile；
+- 网络 topology 未确认；
+- 通用 business action verification provenance 尚未完全泛化；
+- 前端暂无 npm lockfile；
 - Open3D 取决于 ARM64 base distribution；
-- OpenClaw / vLLM / model 属于设备基础环境，不在 ScopeX 小版本 bundle；
-- task scratch cleanup 仍简单；
-- mixed gateway/sandbox scratch 尚需实测。
+- 当前模型的真实 `MODEL_REPO + MODEL_REVISION` 还必须补到设备资产 manifest；
+- task scratch cleanup / mixed gateway-sandbox scratch 仍需后续实测。
 
 ## 18. 新会话接手模板
 
@@ -470,31 +400,23 @@ deploy/systemd/runtime.env.example
 
 仓库：/home/yanlan/workspaces/code/scopex
 GitHub：saaassin13/scopex
-main 是唯一当前集成基线。
+main 是当前集成基线。
 
-先阅读：
-1. README.md
-2. docs/01-requirements.md
-3. docs/02-delivery-and-acceptance.md
-4. docs/architecture/06-openclaw-scopex-boundary.md
-5. docs/architecture/07-complex-task-validation-and-next-plan.md
-6. docs/08-local-usage-and-handoff.md
-7. docs/09-zero-to-one-build-and-offline-deployment.md
+先读：
+README.md
+01 requirements
+02 delivery
+06 OpenClaw/ScopeX boundary
+07 next plan
+business/01-business-capabilities-v1.md
+08 handoff
+09 deployment
 
-固定架构边界：
-OpenClaw + 模型负责自主调查、决策、执行、验证和停止；ScopeX 提供任务范围、能力、权限、生命周期、Evidence、审计和可信产品结果，不重新实现 Agent Loop / Workflow Engine。
+架构边界：OpenClaw + 模型负责自主调查/执行/验证/停止；ScopeX 提供范围、能力、权限、Evidence、审计和可信结果，不重做 Agent Loop。
 
-Step 6A-6F 已冻结通过。
-当前 Step 7A/7B 已实现但新整合版仍需完整回归；7C/7D 是主验收工作。
-真实业务已暴露并修复两类问题：
-- budget finalization 的 structured output length truncation；
-- 单图明确范围任务过度扩张调查。
+Step 6A-6F 已冻结。
+第一批业务能力是 system-health / image-quality / nipple-recognition-analysis / encoder-health，log-context 作为公共上下文能力；网络暂缓。
 
-还新增：
-- 默认 built-in Skill provisioning；
-- image-quality-diagnosis Skill + stable metrics script；
-- step7 analysis toolbox；
-- 清华 build source + offline bundle/systemd 部署基线。
-
-不要无证据重做 Step 6，也不要写业务专用 Workflow。先检查 main 最新 commit、测试状态和未完成 Gate。
+历史脚本只作为业务理解和回归参考，不直接当产品需求。
+先检查 main 最新 commit、测试状态、真实 JSON/日志数据和剩余验收 Gate。
 ```
