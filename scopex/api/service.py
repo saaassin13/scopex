@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import json
 from pathlib import Path
+import subprocess
 import threading
 import time
 import uuid
@@ -68,12 +69,13 @@ class TaskHandle:
 
 
 class TaskService:
-    """Single-user local execution service shared by chat, manual and scheduled tasks.
+    """One local execution service for conversation, manual and scheduled runs.
 
-    Conversation and audited business tasks use the same OpenClaw/Skill/Tool
-    runtime. The only special case is completion policy: a conversation may
-    complete from OpenClaw's final visible answer without claim-grade Evidence,
-    while an audited task still requires Evidence before product finalization.
+    Conversation turns and audited business tasks use the same OpenClaw/Skill/
+    Tool runtime. Conversation turns may complete without claim-grade Evidence;
+    audited business tasks still require Evidence before product finalization.
+    Multi-turn conversation is implemented by creating another ordinary ScopeX
+    Task Run while reusing the same OpenClaw agent/session key.
     """
 
     def __init__(
@@ -104,6 +106,9 @@ class TaskService:
         trigger_type: str = "manual",
         schedule_id: str | None = None,
         scheduled_for: str | None = None,
+        agent_id: str | None = None,
+        session_key: str | None = None,
+        metadata: dict | None = None,
     ) -> dict:
         message = self._message(message)
         if mode not in {"task", "conversation"}:
@@ -118,19 +123,27 @@ class TaskService:
                 raise TaskBusyError(f"active task {self._active_task_id} is {state}")
 
             task_id = "task-" + uuid.uuid4().hex[:12]
-            agent_id = "sxapi" + uuid.uuid4().hex[:8]
-            session_key = f"agent:{agent_id}:{task_id}"
+            resolved_agent_id = agent_id or ("sxapi" + uuid.uuid4().hex[:8])
+            resolved_session_key = session_key or f"agent:{resolved_agent_id}:{task_id}"
+            if not resolved_session_key.startswith(f"agent:{resolved_agent_id}:"):
+                raise ValueError("session_key does not belong to agent_id")
+            task_metadata = {"agent_id": resolved_agent_id}
+            if metadata:
+                task_metadata.update(metadata)
+            if mode == "conversation" and not task_metadata.get("conversation_id"):
+                task_metadata["conversation_id"] = task_id
+
             task = Task(
                 task_id,
                 message,
-                session_key,
-                metadata={"agent_id": agent_id},
+                resolved_session_key,
+                metadata=task_metadata,
                 mode=mode,
                 trigger_type=trigger_type,
                 schedule_id=schedule_id,
                 scheduled_for=scheduled_for,
             )
-            session = Session(task_id, session_key)
+            session = Session(task_id, resolved_session_key)
             memory_events = InMemoryEventSink()
             events = AuditEventSink(self.store, downstream=memory_events)
             audit = RuntimeAudit(self.store, task_id)
@@ -141,6 +154,32 @@ class TaskService:
             audit.snapshot_control(task, session, coordinator.catalog)
             self._start_worker_locked(handle, self._run_initial, "initial")
             return task.snapshot()
+
+    def continue_conversation(self, task_id: str, message: str) -> dict:
+        parent = self.get_task(task_id)
+        if parent.get("mode") != "conversation":
+            raise TaskConflictError("conversation continuation requires a conversation task")
+        if parent.get("state") not in {"COMPLETED", "FAILED", "CANCELLED"}:
+            raise TaskConflictError("conversation turn must be terminal before continuing")
+        metadata = parent.get("metadata") or {}
+        agent_id = metadata.get("agent_id")
+        session_key = parent.get("session_key")
+        if not isinstance(agent_id, str) or not agent_id:
+            raise TaskConflictError("conversation task is missing agent_id")
+        if not isinstance(session_key, str) or not session_key:
+            raise TaskConflictError("conversation task is missing session_key")
+        conversation_id = metadata.get("conversation_id") or task_id
+        return self.create_task(
+            message,
+            mode="conversation",
+            trigger_type="manual",
+            agent_id=agent_id,
+            session_key=session_key,
+            metadata={
+                "conversation_id": conversation_id,
+                "parent_task_id": task_id,
+            },
+        )
 
     def stop(self, task_id: str, message: str = "") -> dict:
         handle = self._live_handle(task_id)
@@ -184,9 +223,9 @@ class TaskService:
         if mode is not None and mode not in {"task", "conversation"}:
             raise ValueError("mode must be task or conversation")
         tasks: list[dict] = []
-        for task_id in self.store.list_task_ids():
+        for stored_task_id in self.store.list_task_ids():
             try:
-                row = self.get_task(task_id)
+                row = self.get_task(stored_task_id)
                 if mode is None or row.get("mode", "task") == mode:
                     tasks.append(row)
             except (TaskNotFoundError, json.JSONDecodeError, OSError):
@@ -222,11 +261,7 @@ class TaskService:
         try:
             result = self.store.read_json(task_id, "result.json")
         except FileNotFoundError:
-            return {
-                "task_id": task_id,
-                "state": task.get("state"),
-                "available": False,
-            }
+            return {"task_id": task_id, "state": task.get("state"), "available": False}
         rendered = None
         try:
             rendered = self.store.read_text(task_id, "final.txt")
@@ -260,15 +295,8 @@ class TaskService:
         if rating not in {"up", "down"}:
             raise ValueError("rating must be up or down")
         allowed_tags = {
-            "wrong_result",
-            "incomplete",
-            "scope_too_broad",
-            "too_slow",
-            "wrong_skill",
-            "tool_failed",
-            "hard_to_read",
-            "insufficient_evidence",
-            "other",
+            "wrong_result", "incomplete", "scope_too_broad", "too_slow",
+            "wrong_skill", "tool_failed", "hard_to_read", "insufficient_evidence", "other",
         }
         clean_tags = []
         for tag in tags or []:
@@ -295,28 +323,20 @@ class TaskService:
         export_root.mkdir(parents=True, exist_ok=True)
         target = export_root / f"scopex-review-{task_id}.zip"
         allow = (
-            "task.json",
-            "session.json",
-            "result.json",
-            "answer.json",
-            "claims.json",
-            "evidence.json",
-            "events.jsonl",
-            "final.txt",
-            "evaluation.json",
-            "runtime-limit.json",
-            "runtime-guard.json",
-            "investigation-error.json",
-            "worker-error.json",
-            "cleanup.json",
+            "task.json", "session.json", "result.json", "answer.json", "claims.json",
+            "evidence.json", "events.jsonl", "final.txt", "evaluation.json",
+            "runtime-limit.json", "runtime-guard.json", "investigation-error.json",
+            "worker-error.json", "cleanup.json",
         )
         included = [name for name in allow if (task_dir / name).is_file()]
+        runtime_context = self._review_runtime_context(task_dir)
         manifest = {
             "schema": 1,
             "task_id": task_id,
             "exported_at": datetime.now(timezone.utc).isoformat(),
             "purpose": "offline/larger-model review of ScopeX task quality",
             "included": included,
+            "runtime_context": runtime_context,
             "raw_external_business_files_included": False,
             "review_instruction": (
                 "Review why ScopeX produced this result. Separate model, Skill, tool, runtime, "
@@ -329,6 +349,39 @@ class TaskService:
                 archive.write(task_dir / name, arcname=name)
         return target
 
+    def _review_runtime_context(self, task_dir: Path) -> dict:
+        task = self.store.read_json(task_dir.name, "task.json")
+        context = {
+            "scopex_commit": self._git_head(),
+            "model_id": None,
+            "agent_id": (task.get("metadata") or {}).get("agent_id") if isinstance(task, dict) else None,
+            "mode": task.get("mode") if isinstance(task, dict) else None,
+            "trigger_type": task.get("trigger_type") if isinstance(task, dict) else None,
+        }
+        try:
+            session = self.store.read_json(task_dir.name, "session.json")
+            if isinstance(session, dict):
+                context["session_key"] = session.get("key") or session.get("session_key")
+        except (FileNotFoundError, OSError, json.JSONDecodeError):
+            pass
+        return context
+
+    @staticmethod
+    def _git_head() -> str | None:
+        root = Path(__file__).resolve().parents[2]
+        try:
+            proc = subprocess.run(
+                ["git", "rev-parse", "HEAD"],
+                cwd=root,
+                capture_output=True,
+                text=True,
+                timeout=2,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return None
+        value = proc.stdout.strip()
+        return value if proc.returncode == 0 and value else None
+
     def shutdown(self, timeout_s: float = 10.0) -> None:
         timeout_s = max(0.0, float(timeout_s))
         deadline = time.monotonic() + timeout_s
@@ -340,39 +393,26 @@ class TaskService:
                         handle.coordinator.request_stop("server_shutdown")
                     except Exception:
                         pass
-
         for handle in handles:
             thread = handle.thread
             if thread is None or not thread.is_alive():
                 continue
-            remaining = max(0.0, deadline - time.monotonic())
-            thread.join(timeout=remaining)
-
+            thread.join(timeout=max(0.0, deadline - time.monotonic()))
         with self._lock:
             for handle in handles:
                 if handle.worker_alive:
                     continue
                 if not handle.task.terminal:
                     handle.coordinator.controller.cancel("server_shutdown")
-                    handle.audit.snapshot_control(
-                        handle.task,
-                        handle.session,
-                        handle.coordinator.catalog,
-                    )
+                    handle.audit.snapshot_control(handle.task, handle.session, handle.coordinator.catalog)
                     self._cleanup_terminal_locked(handle)
 
     def _run_initial(self, handle: TaskHandle, _unused: str) -> None:
-        turn = handle.coordinator.start(
-            handle.task.user_request,
-            turn_name=handle.next_turn_name(),
-        )
+        turn = handle.coordinator.start(handle.task.user_request, turn_name=handle.next_turn_name())
         self._drive_after_turn(handle, turn)
 
     def _run_resume(self, handle: TaskHandle, message: str) -> None:
-        turn = handle.coordinator.resume(
-            message,
-            turn_name=handle.next_turn_name(),
-        )
+        turn = handle.coordinator.resume(message, turn_name=handle.next_turn_name())
         self._drive_after_turn(handle, turn)
 
     def _drive_after_turn(self, handle: TaskHandle, turn: OpenClawTurnResult) -> None:
@@ -384,15 +424,8 @@ class TaskService:
             with self._lock:
                 state = coordinator.controller.state
                 if state is TaskState.PAUSING:
-                    coordinator.controller.safe_stop(
-                        at_turn_end=True,
-                        running_tool_cancelled=False,
-                    )
-                    handle.audit.snapshot_control(
-                        handle.task,
-                        handle.session,
-                        coordinator.catalog,
-                    )
+                    coordinator.controller.safe_stop(at_turn_end=True, running_tool_cancelled=False)
+                    handle.audit.snapshot_control(handle.task, handle.session, coordinator.catalog)
                     return
                 if state is TaskState.PAUSED:
                     return
@@ -403,19 +436,13 @@ class TaskService:
                     runtime_limit_reason = current_turn.runtime_limit_reason
                     runtime_guard_reason = current_turn.runtime_guard_reason
                     if runtime_limit_reason is not None:
-                        handle.audit.store.write_json(
-                            handle.task.id,
-                            "runtime-limit.json",
-                            {
-                                "reason": runtime_limit_reason,
-                                "turn_name": current_turn.turn_name,
-                                "returncode": current_turn.process.returncode,
-                                "stop_reason": current_turn.process.stop_reason,
-                                "forwarded_model_requests": sum(
-                                    1 for row in current_turn.proxy_records if row.get("forwarded") is True
-                                ),
-                            },
-                        )
+                        handle.audit.store.write_json(handle.task.id, "runtime-limit.json", {
+                            "reason": runtime_limit_reason,
+                            "turn_name": current_turn.turn_name,
+                            "returncode": current_turn.process.returncode,
+                            "stop_reason": current_turn.process.stop_reason,
+                            "forwarded_model_requests": sum(1 for row in current_turn.proxy_records if row.get("forwarded") is True),
+                        })
                         if coordinator.catalog.items:
                             coordinator.begin_runtime_limit_finalization(runtime_limit_reason)
                             action = "finalize"
@@ -424,21 +451,14 @@ class TaskService:
                             handle.audit.snapshot_control(handle.task, handle.session, coordinator.catalog)
                             return
                     elif runtime_guard_reason is not None:
-                        handle.audit.store.write_json(
-                            handle.task.id,
-                            "runtime-guard.json",
-                            {
-                                "reason": runtime_guard_reason,
-                                "turn_name": current_turn.turn_name,
-                                "returncode": current_turn.process.returncode,
-                                "stop_reason": current_turn.process.stop_reason,
-                                "cli_blockers": list(current_turn.cli_outcome.blockers)
-                                if current_turn.cli_outcome is not None else ["missing_cli_outcome"],
-                                "forwarded_model_requests": sum(
-                                    1 for row in current_turn.proxy_records if row.get("forwarded") is True
-                                ),
-                            },
-                        )
+                        handle.audit.store.write_json(handle.task.id, "runtime-guard.json", {
+                            "reason": runtime_guard_reason,
+                            "turn_name": current_turn.turn_name,
+                            "returncode": current_turn.process.returncode,
+                            "stop_reason": current_turn.process.stop_reason,
+                            "cli_blockers": list(current_turn.cli_outcome.blockers) if current_turn.cli_outcome is not None else ["missing_cli_outcome"],
+                            "forwarded_model_requests": sum(1 for row in current_turn.proxy_records if row.get("forwarded") is True),
+                        })
                         if coordinator.catalog.items:
                             coordinator.begin_runtime_guard_finalization(runtime_guard_reason)
                             action = "finalize"
@@ -463,18 +483,13 @@ class TaskService:
                             action = "finalize"
                         else:
                             coordinator.controller.fail("investigation_turn_incomplete")
-                            handle.audit.store.write_json(
-                                handle.task.id,
-                                "investigation-error.json",
-                                {
-                                    "returncode": current_turn.process.returncode,
-                                    "stop_reason": current_turn.process.stop_reason,
-                                    "runtime_limit_reason": current_turn.runtime_limit_reason,
-                                    "runtime_guard_reason": current_turn.runtime_guard_reason,
-                                    "cli_blockers": list(current_turn.cli_outcome.blockers)
-                                    if current_turn.cli_outcome is not None else ["missing_cli_outcome"],
-                                },
-                            )
+                            handle.audit.store.write_json(handle.task.id, "investigation-error.json", {
+                                "returncode": current_turn.process.returncode,
+                                "stop_reason": current_turn.process.stop_reason,
+                                "runtime_limit_reason": current_turn.runtime_limit_reason,
+                                "runtime_guard_reason": current_turn.runtime_guard_reason,
+                                "cli_blockers": list(current_turn.cli_outcome.blockers) if current_turn.cli_outcome is not None else ["missing_cli_outcome"],
+                            })
                             handle.audit.snapshot_control(handle.task, handle.session, coordinator.catalog)
                             return
                 else:
@@ -489,7 +504,6 @@ class TaskService:
                             continue
                     raise
                 continue
-
             if action == "finalize":
                 coordinator.finish_fresh_finalization(self.finalizer_factory())
                 return
@@ -499,12 +513,7 @@ class TaskService:
         if outcome is None or outcome.answer is None:
             raise ValueError("conversation completion requires visible OpenClaw answer")
         handle.audit.persist_result(
-            {
-                "valid": True,
-                "mode": "conversation",
-                "answer_text": outcome.answer,
-                "task_state": TaskState.COMPLETED.value,
-            },
+            {"valid": True, "mode": "conversation", "answer_text": outcome.answer, "task_state": TaskState.COMPLETED.value},
             rendered=outcome.answer,
         )
         handle.coordinator.controller.complete()
@@ -519,12 +528,7 @@ class TaskService:
             and turn.cli_outcome.completed
         )
 
-    def _start_worker_locked(
-        self,
-        handle: TaskHandle,
-        target: Callable[[TaskHandle, str], None],
-        arg: str,
-    ) -> None:
+    def _start_worker_locked(self, handle: TaskHandle, target: Callable[[TaskHandle, str], None], arg: str) -> None:
         if handle.worker_alive:
             raise TaskConflictError("task worker is already running")
 
@@ -534,43 +538,29 @@ class TaskService:
             except Exception as exc:
                 if not handle.task.terminal:
                     handle.coordinator.controller.fail("runtime_api_worker_exception")
-                handle.audit.store.write_json(
-                    handle.task.id,
-                    "worker-error.json",
-                    {"type": type(exc).__name__, "message": str(exc)[:800]},
-                )
-                handle.audit.snapshot_control(
-                    handle.task,
-                    handle.session,
-                    handle.coordinator.catalog,
-                )
+                handle.audit.store.write_json(handle.task.id, "worker-error.json", {
+                    "type": type(exc).__name__, "message": str(exc)[:800],
+                })
+                handle.audit.snapshot_control(handle.task, handle.session, handle.coordinator.catalog)
             finally:
                 with self._lock:
                     if handle.task.terminal:
                         self._cleanup_terminal_locked(handle)
 
-        thread = threading.Thread(
-            target=run,
-            name=f"scopex-task-{handle.task.id}",
-            daemon=True,
-        )
+        thread = threading.Thread(target=run, name=f"scopex-task-{handle.task.id}", daemon=True)
         handle.thread = thread
         thread.start()
 
     def _cleanup_terminal_locked(self, handle: TaskHandle) -> None:
         try:
             cleanup = handle.coordinator.close()
-            self.store.write_json(
-                handle.task.id,
-                "cleanup.json",
-                {"container_ids": list(cleanup.container_ids), "warnings": list(cleanup.warnings)},
-            )
+            self.store.write_json(handle.task.id, "cleanup.json", {
+                "container_ids": list(cleanup.container_ids), "warnings": list(cleanup.warnings),
+            })
         except Exception as exc:
-            self.store.write_json(
-                handle.task.id,
-                "cleanup.json",
-                {"error": type(exc).__name__ + ": " + str(exc)[:500]},
-            )
+            self.store.write_json(handle.task.id, "cleanup.json", {
+                "error": type(exc).__name__ + ": " + str(exc)[:500],
+            })
         if self._active_task_id == handle.task.id:
             self._active_task_id = None
 
