@@ -1,0 +1,12 @@
+[Unit]
+Description=Collect ScopeX host system metrics every 30 seconds
+
+[Timer]
+OnBootSec=30s
+OnUnitActiveSec=30s
+AccuracySec=5s
+Persistent=true
+Unit=scopex-system-metrics.service
+
+[Install]
+WantedBy=timers.target
