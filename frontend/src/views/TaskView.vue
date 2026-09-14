@@ -134,6 +134,10 @@ const technicalProblem = computed(() => {
     if (typeof parseError === 'string' && parseError) details.push(`parse_error: ${parseError}`)
     const errors = payload.errors
     if (Array.isArray(errors)) for (const item of errors) if (typeof item === 'string' && item) details.push(item)
+    const reportMeta = payload.report_meta
+    if (reportMeta && typeof reportMeta === 'object' && (reportMeta as Record<string, unknown>).valid === false) {
+      details.push(`report_composer: ${JSON.stringify(reportMeta)}`)
+    }
   }
   const failedReason = lastTaskFailed.value?.data?.reason
   if (typeof failedReason === 'string' && failedReason) details.push(`runtime: ${failedReason}`)
@@ -456,7 +460,6 @@ onBeforeUnmount(() => timer && window.clearInterval(timer))
               <div v-if="!report.facts.length" class="empty-state">当前报告没有可单独列出的观察事实。</div>
               <article v-for="item in report.facts" :key="`rf-${item.text}`" class="evidence-card report-fact-card">
                 <p>{{ item.text }}</p>
-                <span class="report-ref">{{ [...item.claim_ids, ...item.evidence_refs].join(' · ') }}</span>
               </article>
 
               <details v-if="reportRawEvidence.length" class="raw-evidence-details">
