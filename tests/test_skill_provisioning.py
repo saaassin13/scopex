@@ -6,9 +6,18 @@ from scopex.agent.skills import DEFAULT_BUILTIN_SKILLS, prepare_workspace_skills
 
 
 class SkillProvisioningTests(unittest.TestCase):
-    def test_default_product_skills_include_log_and_image_quality(self):
-        self.assertIn("cow-disinfect-diagnosis", DEFAULT_BUILTIN_SKILLS)
-        self.assertIn("image-quality-diagnosis", DEFAULT_BUILTIN_SKILLS)
+    def test_default_product_skills_match_business_v1(self):
+        self.assertEqual(
+            DEFAULT_BUILTIN_SKILLS,
+            (
+                "system-health",
+                "image-quality-diagnosis",
+                "nipple-recognition-analysis",
+                "encoder-health",
+                "log-context",
+            ),
+        )
+        self.assertNotIn("cow-disinfect-diagnosis", DEFAULT_BUILTIN_SKILLS)
 
     def test_builtin_skill_is_copied_into_workspace(self):
         with tempfile.TemporaryDirectory() as td:
