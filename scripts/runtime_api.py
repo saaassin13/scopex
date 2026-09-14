@@ -52,7 +52,6 @@ def parse_data_dir(value: str) -> str:
 
 
 def merge_data_binds(defaults: tuple[str, ...], overrides: tuple[str, ...]) -> tuple[str, ...]:
-    """Merge read-only binds by agent target; explicit --data-dir wins."""
     ordered: list[str] = []
     target_to_index: dict[str, int] = {}
     for bind in defaults + overrides:
@@ -74,56 +73,22 @@ def main(argv=None) -> int:
     parser.add_argument("--base-url", required=True)
     parser.add_argument("--workspace", type=Path, required=True)
     parser.add_argument("--sandbox-image", required=True)
-    parser.add_argument(
-        "--openclaw-bin",
-        type=Path,
-        default=Path.home() / ".openclaw/bin/openclaw",
-    )
-    parser.add_argument(
-        "--data-root",
-        type=Path,
-        default=ROOT / ".local" / "runtime-api",
-    )
+    parser.add_argument("--openclaw-bin", type=Path, default=Path.home() / ".openclaw/bin/openclaw")
+    parser.add_argument("--data-root", type=Path, default=ROOT / ".local" / "runtime-api")
     parser.add_argument(
         "--data-catalog",
         type=Path,
         default=ROOT / "config" / "data-catalog.json",
         help="ScopeX semantic data catalog copied into host workspace and data-locator Skill",
     )
-    parser.add_argument(
-        "--no-catalog-binds",
-        action="store_true",
-        help="do not auto-mount existing host paths declared by the data catalog",
-    )
-    parser.add_argument(
-        "--data-dir",
-        action="append",
-        type=parse_data_dir,
-        default=[],
-        metavar="HOST_DIR:AGENT_DIR",
-        help="extra/override read-only host directory exposed to the OpenClaw sandbox; repeatable",
-    )
-    parser.add_argument(
-        "--exec-host",
-        choices=("sandbox", "gateway", "node"),
-        default="sandbox",
-        help="OpenClaw exec target; use gateway only for an explicitly approved host-level task",
-    )
-    parser.add_argument(
-        "--exec-mode",
-        choices=("deny", "allowlist", "ask", "auto", "full"),
-        default="full",
-        help="OpenClaw native exec policy; current local validation uses full inside sandbox",
-    )
+    parser.add_argument("--no-catalog-binds", action="store_true")
+    parser.add_argument("--data-dir", action="append", type=parse_data_dir, default=[], metavar="HOST_DIR:AGENT_DIR")
+    parser.add_argument("--exec-host", choices=("sandbox", "gateway", "node"), default="sandbox")
+    parser.add_argument("--exec-mode", choices=("deny", "allowlist", "ask", "auto", "full"), default="full")
     parser.add_argument("--enable-view-image", action="store_true")
     parser.add_argument("--enable-progress-card", action="store_true")
     parser.add_argument("--disable-compaction", action="store_true")
-    parser.add_argument(
-        "--web-dist",
-        type=Path,
-        default=ROOT / "frontend" / "dist",
-        help="Vue build directory; ignored until it exists",
-    )
+    parser.add_argument("--web-dist", type=Path, default=ROOT / "frontend" / "dist")
     parser.add_argument("--api-key-env", default="SCOPEX_API_KEY")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8787)
@@ -150,22 +115,14 @@ def main(argv=None) -> int:
 
     workspace = args.workspace.expanduser().resolve()
     requested_skills = (() if args.no_default_skills else DEFAULT_BUILTIN_SKILLS) + tuple(args.skill)
-    skills = prepare_workspace_skills(
-        workspace=workspace,
-        skill_names=requested_skills,
-        builtin_root=ROOT / "skills",
-    )
+    skills = prepare_workspace_skills(workspace=workspace, skill_names=requested_skills, builtin_root=ROOT / "skills")
 
     catalog_path = args.data_catalog.expanduser().resolve()
     catalog = load_data_catalog(catalog_path)
-    workspace_catalog = provision_workspace_catalog(
-        workspace=workspace,
-        catalog_path=catalog_path,
-    )
-    locator_catalog = provision_locator_catalog(
-        workspace=workspace,
-        catalog_path=catalog_path,
-    )
+    workspace_catalog = provision_workspace_catalog(workspace=workspace, catalog_path=catalog_path)
+    locator_catalog = None
+    if "data-locator" in skills:
+        locator_catalog = provision_locator_catalog(workspace=workspace, catalog_path=catalog_path)
     catalog_summary = render_runtime_catalog_summary(catalog)
     catalog_defaults = () if args.no_catalog_binds else catalog_binds(catalog, existing_only=True)
     data_binds = merge_data_binds(catalog_defaults, tuple(args.data_dir))
@@ -212,7 +169,7 @@ def main(argv=None) -> int:
     print(f"ScopeX FastAPI: http://{args.host}:{args.port}", flush=True)
     print(f"workspace: {config.workspace}", flush=True)
     print(f"data catalog (host): {workspace_catalog}", flush=True)
-    print(f"data catalog (locator): {locator_catalog}", flush=True)
+    print(f"data catalog (locator): {locator_catalog if locator_catalog is not None else 'not provisioned'}", flush=True)
     print(f"audit root: {data_root / 'tasks'}", flush=True)
     print(f"schedule root: {data_root / 'scheduler'}", flush=True)
     print(f"exec: host={config.exec_host} mode={config.exec_mode}", flush=True)
@@ -235,13 +192,7 @@ def main(argv=None) -> int:
         print("data binds: none (catalog host paths are absent or auto-mount disabled)", flush=True)
     print(f"web: {static_dir if static_dir.is_dir() else 'not built; API-only mode'}", flush=True)
 
-    uvicorn.run(
-        app,
-        host=args.host,
-        port=args.port,
-        log_level="info",
-        access_log=False,
-    )
+    uvicorn.run(app, host=args.host, port=args.port, log_level="info", access_log=False)
     return 0
 
 
