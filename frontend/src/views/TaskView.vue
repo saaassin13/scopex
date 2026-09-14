@@ -2,7 +2,15 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { RouterLink, useRoute } from 'vue-router'
 import { api, ApiError } from '../api'
-import type { Evaluation, EvidenceItem, ProductAnswer, ProgressEvent, ResultResponse, TaskSnapshot } from '../types'
+import type {
+  Evaluation,
+  EvidenceItem,
+  ProductAnswer,
+  ProductReport,
+  ProgressEvent,
+  ResultResponse,
+  TaskSnapshot,
+} from '../types'
 
 const route = useRoute()
 const taskId = computed(() => String(route.params.id))
@@ -34,40 +42,6 @@ const evaluationOptions = [
   ['other', '其他'],
 ] as const
 
-const factLabels: Record<string, string> = {
-  samples_in_window: '时间窗采样数',
-  application_samples: '应用层编码器采样数',
-  raw_filtered_samples: 'raw/filtered采样数',
-  invalid_samples: '无效/读取失败采样数',
-  first_ts: '首个采样时间',
-  last_ts: '最后采样时间',
-  median_sample_dt_ms: '采样中位间隔',
-  sampling_gap_count: '采样缺口数',
-  anomaly_event_count: '显著异常事件数',
-  reverse_glitch_candidate_count: '回退-恢复毛刺数',
-  reverse_interval_candidate_count: '连续回退区间数',
-  reverse_step_candidate_count: '单步显著回退数',
-  positive_spike_candidate_count: '异常正向跳变数',
-  flat_count_candidate_count: '长时间不变候选数',
-  total_cows: '统计牛数',
-  complete_four_nipple_cows: '完整识别4乳头牛数',
-  complete_four_nipple_rate: '完整四乳头识别率',
-  nipple_recognition_rate: '乳头识别率',
-  capped_2d_detections: '计入指标的2D乳头框总数',
-  expected_nipples: '理论乳头总数',
-  captured_at: '采样时间',
-  cpu_util_percent: 'CPU利用率',
-  cpu_count: 'CPU逻辑核数',
-  memory_total_gb: '内存总量',
-  memory_used_gb: '已用内存',
-  memory_available_gb: '可用内存',
-  swap_used_gb: '已用Swap',
-  disk_root_used_percent: '根磁盘使用率',
-  disk_root_free_gb: '根磁盘剩余空间',
-  gpu_count: 'GPU数量',
-  gpu_util_percent_max: 'GPU最高利用率',
-}
-
 const isRunning = computed(() => task.value?.state === 'RUNNING')
 const isPaused = computed(() => task.value?.state === 'PAUSED')
 const isTerminal = computed(() => ['COMPLETED', 'FAILED', 'CANCELLED'].includes(task.value?.state ?? ''))
@@ -76,11 +50,33 @@ const conversationAnswer = computed(() => {
   const value = result.value?.result?.answer_text
   return typeof value === 'string' && value.trim() ? value : null
 })
+const report = computed<ProductReport | null>(() => {
+  const value = result.value?.result?.report
+  return value && typeof value === 'object' ? value as ProductReport : null
+})
 const answer = computed<ProductAnswer | null>(() => {
   const value = result.value?.result?.answer
   return value && typeof value === 'object' ? value as ProductAnswer : null
 })
-const userFacts = computed(() => {
+
+const reportEvidenceRefs = computed(() => {
+  const refs = new Set<string>()
+  const value = report.value
+  if (!value) return refs
+  for (const ref of value.conclusion.evidence_refs) refs.add(ref)
+  for (const section of [value.facts, value.possibilities, value.next_steps, value.limitations]) {
+    for (const item of section) for (const ref of item.evidence_refs) refs.add(ref)
+  }
+  return refs
+})
+
+const reportRawEvidence = computed(() => {
+  const refs = reportEvidenceRefs.value
+  if (!refs.size) return []
+  return evidence.value.filter(item => refs.has(item.ref)).slice(0, 16)
+})
+
+const fallbackUserFacts = computed(() => {
   const preferred = evidence.value.filter(item => {
     const type = item.metadata?.evidence_type
     return type === 'structured_business_facts' || type === 'image'
@@ -125,7 +121,7 @@ function friendlyReason(reason: string) {
 }
 
 const resultProblem = computed(() => {
-  if (!isTerminal.value || answer.value || conversationAnswer.value || result.value?.rendered) return ''
+  if (!isTerminal.value || report.value || answer.value || conversationAnswer.value || result.value?.rendered) return ''
   const reason = lastTaskFailed.value?.data?.reason
   return typeof reason === 'string' && reason ? friendlyReason(reason) : '任务已结束，但没有形成可展示结果。'
 })
@@ -144,72 +140,22 @@ const technicalProblem = computed(() => {
   return [...new Set(details)].join('\n')
 })
 
-function formatFactValue(key: string, raw: unknown): string {
-  if (raw === null || raw === undefined) return '—'
-  if (typeof raw === 'number') {
-    if (key.endsWith('_rate')) return `${(raw * 100).toFixed(2)}%`
-    if (key.endsWith('_percent')) return `${raw.toFixed(2).replace(/\.00$/, '')}%`
-    if (key.endsWith('_gb')) return `${raw.toFixed(2).replace(/\.00$/, '')} GB`
-    if (key.endsWith('_ms')) return `${Number.isInteger(raw) ? raw : raw.toFixed(3)} ms`
-    if (key.includes('pulses') || key.includes('pulse')) return `${Number.isInteger(raw) ? raw : raw.toFixed(2)} pulse`
-    return String(raw)
-  }
-  return String(raw)
-}
-
-function selectedFactKeys(value: any): string[] | null {
-  if (value?.source === 'encoder-health') {
-    return [
-      'samples_in_window', 'invalid_samples', 'median_sample_dt_ms', 'sampling_gap_count',
-      'anomaly_event_count', 'reverse_glitch_candidate_count', 'reverse_interval_candidate_count',
-      'reverse_step_candidate_count', 'positive_spike_candidate_count',
-    ]
-  }
-  if (value?.source === 'system-health') {
-    return [
-      'captured_at', 'cpu_util_percent', 'cpu_count', 'memory_used_gb', 'memory_available_gb',
-      'memory_total_gb', 'disk_root_used_percent', 'disk_root_free_gb', 'gpu_util_percent_max',
-    ]
-  }
-  return null
-}
-
-function structuredFactText(value: any): string | null {
-  if (!value || typeof value !== 'object' || value.scopex_role !== 'business_facts') return null
-  const facts = value.facts ?? value.summary
-  if (!facts || typeof facts !== 'object') return null
-  const keys = selectedFactKeys(value)
-  const entries = keys
-    ? keys.filter(key => Object.prototype.hasOwnProperty.call(facts, key)).map(key => [key, facts[key]] as [string, unknown])
-    : Object.entries(facts)
-  const rows = entries
-    .filter(([, raw]) => ['string', 'number', 'boolean'].includes(typeof raw) || raw === null)
-    .slice(0, 12)
-    .map(([key, raw]) => `${factLabels[key] || key}：${formatFactValue(key, raw)}`)
-  return rows.length ? rows.join('\n') : null
-}
-
-function displayAnswerText(text: string): string {
-  const parts = text.split('；').map(part => part.trim()).filter(Boolean)
-  for (const part of parts) {
-    if (!part.startsWith('{')) continue
-    try {
-      const rendered = structuredFactText(JSON.parse(part))
-      if (rendered) return rendered
-    } catch {
-      // Keep the original validated answer when the segment is not standalone JSON.
-    }
-  }
-  return text
-}
-
-function factText(item: EvidenceItem): string {
+function fallbackFactText(item: EvidenceItem): string {
   if (item.metadata?.evidence_type !== 'structured_business_facts') return item.raw
   try {
-    return structuredFactText(JSON.parse(item.raw)) || item.raw
+    const value = JSON.parse(item.raw)
+    const facts = value?.facts ?? value?.summary
+    if (facts && typeof facts === 'object') {
+      return Object.entries(facts)
+        .filter(([, raw]) => ['string', 'number', 'boolean'].includes(typeof raw) || raw === null)
+        .slice(0, 10)
+        .map(([key, raw]) => `${key}: ${String(raw)}`)
+        .join('\n')
+    }
   } catch {
-    return item.raw
+    // Deterministic fallback only; primary reports never expose these fields.
   }
+  return item.raw
 }
 
 function dataString(event: ProgressEvent, key: string): string {
@@ -228,9 +174,9 @@ function eventTitle(event: ProgressEvent): string {
     return `执行工具 · ${tool || 'unknown'}`
   }
   if (event.type === 'TOOL_RESULT') return `${tool || '工具'} · 返回结果`
-  if (event.type === 'EVIDENCE_ADDED') return '新增事实依据'
-  if (event.type === 'FINALIZATION_STARTED') return '正在整理最终结论'
-  if (event.type === 'FINALIZATION_COMPLETED') return '最终结论已生成'
+  if (event.type === 'EVIDENCE_ADDED') return '新增内部证据'
+  if (event.type === 'FINALIZATION_STARTED') return '正在校准事实与结论'
+  if (event.type === 'FINALIZATION_COMPLETED') return '可信结论已生成'
   if (event.type === 'TASK_COMPLETED') return '任务完成'
   if (event.type === 'TASK_FAILED') return '任务失败'
   if (event.type === 'TASK_STARTED') return '任务开始'
@@ -327,7 +273,7 @@ onBeforeUnmount(() => timer && window.clearInterval(timer))
     <div class="task-header panel">
       <div>
         <RouterLink class="back-link" to="/">← 返回执行记录</RouterLink>
-        <div class="eyebrow">{{ isConversation ? 'CONVERSATION' : 'TASK' }} · {{ taskId }}</div>
+        <div class="eyebrow">RUN · {{ taskId }}</div>
         <h1>{{ task?.user_request || '加载任务…' }}</h1>
         <div class="run-meta">
           <span>触发：{{ task?.trigger_type === 'schedule' ? '定时' : '手动' }}</span>
@@ -350,49 +296,72 @@ onBeforeUnmount(() => timer && window.clearInterval(timer))
               <div class="eyebrow">RESULT</div>
               <h2>{{ isConversation ? '回答' : '任务结果' }}</h2>
             </div>
-            <span v-if="answer" class="trust-badge">Validated Claims</span>
+            <span v-if="report" class="trust-badge">Validated Report</span>
+            <span v-else-if="answer" class="trust-badge">Fallback</span>
           </div>
 
           <div v-if="conversationAnswer" class="conversation-answer">
             <p>{{ conversationAnswer }}</p>
           </div>
 
+          <template v-else-if="report">
+            <div class="result-section result-conclusion">
+              <h3>结论</h3>
+              <article class="answer-item primary-answer">
+                <p>{{ report.conclusion.text }}</p>
+              </article>
+            </div>
+
+            <div v-if="report.possibilities.length" class="result-section">
+              <h3>可能性分析</h3>
+              <article v-for="item in report.possibilities" :key="`p-${item.text}`" class="answer-item">
+                <p>{{ item.text }}</p>
+              </article>
+            </div>
+
+            <div v-if="report.next_steps.length || report.limitations.length" class="result-grid">
+              <div class="result-section">
+                <h3>下一步</h3>
+                <p v-if="!report.next_steps.length" class="muted">当前没有额外验证步骤。</p>
+                <article v-for="item in report.next_steps" :key="`n-${item.text}`" class="answer-item">
+                  <p>{{ item.text }}</p>
+                </article>
+              </div>
+              <div class="result-section">
+                <h3>数据限制</h3>
+                <p v-if="!report.limitations.length" class="muted">当前没有需要特别说明的数据限制。</p>
+                <article v-for="item in report.limitations" :key="`l-${item.text}`" class="answer-item">
+                  <p>{{ item.text }}</p>
+                </article>
+              </div>
+            </div>
+
+            <details v-if="answer || result?.rendered" class="trust-fallback">
+              <summary>查看确定性 fallback</summary>
+              <div v-if="answer" class="fallback-answer-list">
+                <article v-for="item in answer.conclusion" :key="`fb-c-${item.claim_ids.join('-')}`" class="answer-item">
+                  <p>{{ item.text }}</p>
+                </article>
+              </div>
+              <pre v-if="result?.rendered" class="result-text">{{ result.rendered }}</pre>
+            </details>
+          </template>
+
           <template v-else-if="answer">
             <div class="result-section result-conclusion">
               <h3>结论</h3>
               <p v-if="!answer.conclusion.length" class="muted">暂无可发布结论。</p>
               <article v-for="item in answer.conclusion" :key="item.claim_ids.join('-')" class="answer-item primary-answer">
-                <p>{{ displayAnswerText(item.text) }}</p>
-                <span>{{ item.claim_ids.join(' · ') }}</span>
+                <p>{{ item.text }}</p>
               </article>
             </div>
-
             <div class="result-section">
               <h3>说明</h3>
               <p v-if="!answer.explanation.length" class="muted">没有额外说明。</p>
               <article v-for="item in answer.explanation" :key="`ex-${item.claim_ids.join('-')}`" class="answer-item">
-                <p>{{ displayAnswerText(item.text) }}</p>
-                <span>{{ item.claim_ids.join(' · ') }}</span>
+                <p>{{ item.text }}</p>
               </article>
             </div>
-
-            <div class="result-grid">
-              <div class="result-section">
-                <h3>执行情况</h3>
-                <p v-if="!answer.execution.length" class="muted">本任务没有需要展示的业务执行动作。</p>
-                <article v-for="item in answer.execution" :key="`run-${item.claim_ids.join('-')}`" class="answer-item">
-                  <p>{{ displayAnswerText(item.text) }}</p>
-                </article>
-              </div>
-              <div class="result-section">
-                <h3>建议</h3>
-                <p v-if="!answer.recommendations.length" class="muted">当前没有额外待验证建议。</p>
-                <article v-for="item in answer.recommendations" :key="`rec-${item.claim_ids.join('-')}`" class="answer-item">
-                  <p>{{ displayAnswerText(item.text) }}</p>
-                </article>
-              </div>
-            </div>
-
             <details v-if="result?.rendered" class="trust-fallback">
               <summary>查看可信渲染 fallback</summary>
               <pre class="result-text">{{ result.rendered }}</pre>
@@ -477,19 +446,41 @@ onBeforeUnmount(() => timer && window.clearInterval(timer))
         </section>
 
         <section class="panel evidence-panel compact-evidence">
-          <details>
+          <details open>
             <summary class="details-heading">
               <span><span class="eyebrow">FACTS</span><strong>事实依据</strong></span>
-              <span class="muted">{{ userFacts.length }}</span>
+              <span class="muted">{{ report ? report.facts.length : fallbackUserFacts.length }}</span>
             </summary>
-            <div v-if="!userFacts.length" class="empty-state">{{ isConversation ? '普通问答不要求必须形成事实依据。' : '暂未形成可展示的业务事实依据。' }}</div>
-            <article v-for="item in userFacts" :key="item.ref" class="evidence-card">
-              <div class="evidence-meta">
-                <strong>{{ item.ref }}</strong>
-                <span>{{ item.source }}<template v-if="item.metadata?.line_number">:L{{ item.metadata.line_number }}</template></span>
-              </div>
-              <code>{{ factText(item) }}</code>
-            </article>
+
+            <template v-if="report">
+              <div v-if="!report.facts.length" class="empty-state">当前报告没有可单独列出的观察事实。</div>
+              <article v-for="item in report.facts" :key="`rf-${item.text}`" class="evidence-card report-fact-card">
+                <p>{{ item.text }}</p>
+                <span class="report-ref">{{ [...item.claim_ids, ...item.evidence_refs].join(' · ') }}</span>
+              </article>
+
+              <details v-if="reportRawEvidence.length" class="raw-evidence-details">
+                <summary>查看原始依据</summary>
+                <article v-for="item in reportRawEvidence" :key="item.ref" class="evidence-card">
+                  <div class="evidence-meta">
+                    <strong>{{ item.ref }}</strong>
+                    <span>{{ item.source }}<template v-if="item.metadata?.line_number">:L{{ item.metadata.line_number }}</template></span>
+                  </div>
+                  <code>{{ item.raw }}</code>
+                </article>
+              </details>
+            </template>
+
+            <template v-else>
+              <div v-if="!fallbackUserFacts.length" class="empty-state">{{ isConversation ? '普通问答不要求必须形成事实依据。' : 'Report Composer 未生成报告，当前仅有可信 fallback。' }}</div>
+              <article v-for="item in fallbackUserFacts" :key="item.ref" class="evidence-card">
+                <div class="evidence-meta">
+                  <strong>{{ item.ref }}</strong>
+                  <span>{{ item.source }}<template v-if="item.metadata?.line_number">:L{{ item.metadata.line_number }}</template></span>
+                </div>
+                <code>{{ fallbackFactText(item) }}</code>
+              </article>
+            </template>
           </details>
         </section>
       </aside>
