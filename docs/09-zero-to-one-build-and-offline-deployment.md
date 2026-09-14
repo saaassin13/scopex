@@ -437,6 +437,7 @@ source/scopex-source.tar.gz
 frontend-dist/
 wheelhouse/
 images/scopex-sandbox-analysis.tar.gz
+scripts/install_offline_bundle.sh
 ```
 
 `manifest.txt` 固定记录：
@@ -486,15 +487,15 @@ sha256sum -c scopex-offline-<commit>-<arch>.tar.gz.sha256
 tar -xzf scopex-offline-<commit>-<arch>.tar.gz
 ```
 
-安装到新的版本目录：
+安装到一个**新的空版本目录**：
 
 ```bash
 bash scopex-offline-<commit>-<arch>/scripts/install_offline_bundle.sh \
   scopex-offline-<commit>-<arch> \
-  "$HOME/scopex"
+  "$HOME/scopex-releases/<commit>"
 ```
 
-注意：安装脚本本身属于 ScopeX 源码。若从 bundle 外部调用，推荐先从当前仓库/发布包中取得同版本脚本；也可直接执行已解压 source 中的脚本。
+导出脚本已经把同版本的 `install_offline_bundle.sh` 放进 bundle，因此现场不需要另外从 GitHub 获取安装脚本。
 
 安装过程会：
 
