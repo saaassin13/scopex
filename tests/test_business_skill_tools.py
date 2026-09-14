@@ -29,17 +29,14 @@ class BusinessSkillToolTests(unittest.TestCase):
             log = root / 'app.log'
             log.write_text(
                 '\n'.join([
-                    # Cow 10 sees 4 earlier, but the final consumed frame has only 2.
                     '2026-09-14 07:00:00:000 [INFO] Start left camera AI detect, ImgTimeStamp[20260914-070000000], CowOccuredCount[10], DetectingNumCurRound[1], CowDetectedNumber[1] !',
                     '2026-09-14 07:00:00:010 [INFO] Left camera cow [10] detecting [1] finished, Score[0.95], NippleNum[4]',
                     '2026-09-14 07:00:00:100 [INFO] Start left camera AI detect, ImgTimeStamp[20260914-070000100], CowOccuredCount[10], DetectingNumCurRound[2], CowDetectedNumber[2] !',
                     '2026-09-14 07:00:00:110 [INFO] Left camera cow [10] detecting [2] finished, Score[0.95], NippleNum[2]',
                     '2026-09-14 07:00:00:120 [INFO] New cow detecte finished, cow count [10], LastImgTimeStamp[20260914-070000100], LastImgHasXiNaiQi[0.00]',
-                    # Cow 11 over-detects five boxes; KPI must cap this cow at four.
                     '2026-09-14 07:00:01:000 [INFO] Start left camera AI detect, ImgTimeStamp[20260914-070001000], CowOccuredCount[11], DetectingNumCurRound[1], CowDetectedNumber[1] !',
                     '2026-09-14 07:00:01:010 [INFO] Left camera cow [11] detecting [1] finished, Score[0.90], NippleNum[5]',
                     '2026-09-14 07:00:01:020 [INFO] New cow detecte finished, cow count [11], LastImgTimeStamp[20260914-070001000], LastImgHasXiNaiQi[0.00]',
-                    # Cow 12 starts in the window but has no final frame/finish.
                     '2026-09-14 07:00:02:000 [INFO] Start left camera AI detect, ImgTimeStamp[20260914-070002000], CowOccuredCount[12], DetectingNumCurRound[1], CowDetectedNumber[1] !',
                     '2026-09-14 07:00:02:010 [INFO] Left camera cow [12] detecting [1] finished, Score[0.90], NippleNum[4]',
                 ]) + '\n',
@@ -51,7 +48,6 @@ class BusinessSkillToolTests(unittest.TestCase):
             (artifacts / '20260914-070000100.json').write_text(
                 json.dumps({
                     'ImgTimeStamp': '20260914-070000100',
-                    # Deliberately include 3D validity fields. KPI must ignore them.
                     'DisinfectTrack': {
                         'CowNipplePosInCamSys': {
                             'Pt1st': {'IsValid': True},
@@ -168,37 +164,11 @@ class BusinessSkillToolTests(unittest.TestCase):
             self.assertTrue(rows[0]['anchor'])
             self.assertIn('TARGET_ANCHOR', rows[0]['raw'])
 
-    def test_system_health_summary_reads_historical_window(self):
-        script = ROOT / 'skills/system-health/scripts/system_health_summary.py'
-        with tempfile.TemporaryDirectory() as td:
-            history = Path(td) / 'system_metrics.jsonl'
-            rows = [
-                {
-                    'ts': '2026-09-14T07:00:00+08:00',
-                    'cpu': {'util_percent': 20.0, 'load1': 2.0},
-                    'memory': {'available_gb': 40.0, 'used_gb': 80.0},
-                    'disks': [{'mount': '/', 'free_gb': 1000.0}],
-                    'gpu': [{'index': '0', 'util_percent': 50.0, 'temperature_c': 60.0, 'memory_used_mib': 20000, 'power_w': 100.0}],
-                    'errors': {},
-                },
-                {
-                    'ts': '2026-09-14T07:00:30+08:00',
-                    'cpu': {'util_percent': 80.0, 'load1': 8.0},
-                    'memory': {'available_gb': 20.0, 'used_gb': 100.0},
-                    'disks': [{'mount': '/', 'free_gb': 990.0}],
-                    'gpu': [{'index': '0', 'util_percent': 90.0, 'temperature_c': 70.0, 'memory_used_mib': 24000, 'power_w': 120.0}],
-                    'errors': {},
-                },
-            ]
-            history.write_text('\n'.join(json.dumps(r) for r in rows) + '\n', encoding='utf-8')
-            proc = run_script(
-                script, str(history), '--start', '2026-09-14T07:00:00+08:00', '--end', '2026-09-14T08:00:00+08:00')
-            self.assertEqual(proc.returncode, 0, proc.stderr)
-            data = json.loads(proc.stdout)
-            self.assertEqual(data['samples'], 2)
-            self.assertEqual(data['cpu_util_percent']['max'], 80.0)
-            self.assertEqual(data['memory_available_gb']['worst'], 20.0)
-            self.assertEqual(data['disk_free_gb']['/']['worst'], 990.0)
+    def test_system_health_skill_forbids_history_and_sandbox_fallback(self):
+        text = (ROOT / 'skills/system-health/SKILL.md').read_text(encoding='utf-8')
+        self.assertIn('does **not** continuously collect', text)
+        self.assertIn('never fall back to sandbox metrics', text)
+        self.assertIn('historical resource analysis', text)
 
 
 if __name__ == '__main__':
