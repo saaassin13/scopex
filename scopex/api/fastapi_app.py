@@ -99,7 +99,7 @@ def create_app(
 
     app = FastAPI(
         title="ScopeX Runtime API",
-        version="0.2.0",
+        version="0.3.0",
         docs_url="/docs",
         redoc_url=None,
         openapi_url="/openapi.json",
@@ -162,10 +162,24 @@ def create_app(
     def health() -> dict[str, Any]:
         return {"status": "ok", "active_task_id": service.active_task_id}
 
-    @app.get("/tasks")
-    def list_tasks(mode: Annotated[str | None, Query()] = None) -> dict[str, Any]:
-        return {"tasks": service.list_tasks(mode=mode)}
+    # Unified user entry. ScopeX resolves auto -> conversation/task from actual
+    # execution behavior; no separate router model is called.
+    @app.post("/runs", status_code=202)
+    def create_run(body: MessageRequest) -> dict[str, Any]:
+        return service.create_auto_run(body.message)
 
+    @app.get("/tasks")
+    def list_tasks(
+        mode: Annotated[str | None, Query()] = None,
+        day: Annotated[str | None, Query()] = None,
+    ) -> dict[str, Any]:
+        return {"tasks": service.list_tasks(mode=mode, day=day)}
+
+    @app.get("/tasks/calendar")
+    def task_calendar(month: Annotated[str, Query(pattern=r"^\d{4}-\d{2}$")]) -> dict[str, Any]:
+        return service.calendar_month(month)
+
+    # Compatibility/explicit-control endpoints remain for tests and advanced API use.
     @app.post("/tasks", status_code=202)
     def create_task(body: MessageRequest) -> dict[str, Any]:
         return service.create_task(body.message, mode="task", trigger_type="manual")
@@ -182,11 +196,12 @@ def create_app(
     def get_task(task_id: str) -> dict[str, Any]:
         return service.get_task(task_id)
 
+    @app.delete("/tasks/{task_id}")
+    def delete_task(task_id: str) -> dict[str, Any]:
+        return service.delete_task(task_id)
+
     @app.get("/tasks/{task_id}/events")
-    def get_events(
-        task_id: str,
-        after: Annotated[int, Query(ge=0)] = 0,
-    ) -> dict[str, Any]:
+    def get_events(task_id: str, after: Annotated[int, Query(ge=0)] = 0) -> dict[str, Any]:
         events = service.get_events(task_id, after=after)
         next_after = max([after] + [row["seq"] for row in events if isinstance(row.get("seq"), int)])
         return {"task_id": task_id, "after": after, "next_after": next_after, "events": events}
