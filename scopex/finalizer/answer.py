@@ -27,9 +27,11 @@ class ProductAnswer:
     """Result-first projection over an already validated ClaimSet.
 
     This object does not investigate, call a model, execute tools, or create new
-    factual content. Product wording is either an exact validated claim topic or
-    a fixed non-factual label around one. `final.txt` remains the deterministic
-    trust/audit fallback.
+    factual content. Observed text/command facts remain grounded in runtime-owned
+    raw Evidence, matching the deterministic renderer's trust boundary. Visual
+    fact topics are allowed because the Fresh Finalizer re-opened the SHA-verified
+    original images in the same finalization call. `final.txt` remains the
+    deterministic trust/audit fallback.
     """
 
     conclusion: tuple[AnswerItem, ...]
@@ -47,9 +49,61 @@ class ProductAnswer:
         }
 
 
-def _item(claim: Claim, *, text: str | None = None, kind: str | None = None) -> AnswerItem:
+def _has_image_evidence(claim: Claim, catalog: EvidenceCatalog) -> bool:
+    return any(
+        catalog.get(ref).metadata.get("evidence_type") == "image"
+        for ref in claim.evidence_refs
+    )
+
+
+def _raw_evidence_text(claim: Claim, catalog: EvidenceCatalog) -> str:
+    rows: list[str] = []
+    seen: set[str] = set()
+    for ref in claim.evidence_refs:
+        if ref in seen:
+            continue
+        seen.add(ref)
+        raw = catalog.get(ref).raw.strip()
+        if raw:
+            rows.append(raw)
+    return "；".join(rows)
+
+
+def _safe_claim_text(claim: Claim, catalog: EvidenceCatalog) -> str:
+    """Render one validated claim without silently upgrading model prose.
+
+    The Claim validator proves structure/ref integrity, not free-form semantic
+    entailment. For observed text/command facts we therefore use exact raw
+    Evidence, as the deterministic renderer does. Other epistemic classes keep
+    explicit labels so a hypothesis/unknown cannot appear as an observed fact.
+    """
+
+    if claim.kind is ClaimKind.FACT:
+        if _has_image_evidence(claim, catalog):
+            return claim.topic
+        raw = _raw_evidence_text(claim, catalog)
+        return raw or "已形成直接观察事实"
+
+    if claim.relation is ClaimRelation.TEMPORAL_ASSOCIATION:
+        raw = _raw_evidence_text(claim, catalog)
+        subject = raw or "相关证据"
+        return f"{subject}；当前仅支持时间关联，未证明因果。"
+
+    if claim.relation is ClaimRelation.CAUSAL_HYPOTHESIS:
+        return f"待验证假设：{claim.topic}"
+
+    return f"尚不能确定：{claim.topic}"
+
+
+def _item(
+    claim: Claim,
+    catalog: EvidenceCatalog,
+    *,
+    text: str | None = None,
+    kind: str | None = None,
+) -> AnswerItem:
     return AnswerItem(
-        text=text or claim.topic,
+        text=text if text is not None else _safe_claim_text(claim, catalog),
         claim_ids=(claim.id,),
         kind=kind or claim.kind.value,
     )
@@ -88,17 +142,20 @@ def _has_action_verification_evidence(claim: Claim, catalog: EvidenceCatalog) ->
 def compose_product_answer(claims: ClaimSet, catalog: EvidenceCatalog) -> ProductAnswer:
     """Build the minimal result-first product answer from validated claims only.
 
-    The projection intentionally does not paraphrase factual/causal content.
-    Future language polishing may replace this implementation only if it keeps
-    the same Claim-bounded contract and preserves deterministic fallback.
+    This projection cannot introduce new factual/causal content. Future language
+    polishing may replace it only if the same Claim-bounded trust contract and
+    deterministic fallback are preserved.
     """
 
     ordered = _ordered_summary_claims(claims)
     if not ordered:
         return ProductAnswer((), (), (), ())
 
-    conclusion_claims = ordered[:1]
-    explanation_claims = ordered[1:5]
+    # Prefer one observed fact as the headline when available. If no observed
+    # fact exists, the strongest available claim may still be shown, but its
+    # text keeps the explicit hypothesis/unknown label.
+    conclusion = next((claim for claim in ordered if claim.kind is ClaimKind.FACT), ordered[0])
+    explanation_claims = [claim for claim in ordered if claim.id != conclusion.id][:4]
 
     execution_claims = [
         claim
@@ -115,11 +172,16 @@ def compose_product_answer(claims: ClaimSet, catalog: EvidenceCatalog) -> Produc
     ][:3]
 
     return ProductAnswer(
-        conclusion=tuple(_item(claim) for claim in conclusion_claims),
-        explanation=tuple(_item(claim) for claim in explanation_claims),
-        execution=tuple(_item(claim) for claim in execution_claims),
+        conclusion=(_item(conclusion, catalog),),
+        explanation=tuple(_item(claim, catalog) for claim in explanation_claims),
+        execution=tuple(_item(claim, catalog) for claim in execution_claims),
         recommendations=tuple(
-            _item(claim, text=f"继续验证：{claim.topic}", kind="recommendation")
+            _item(
+                claim,
+                catalog,
+                text=f"继续验证：{claim.topic}",
+                kind="recommendation",
+            )
             for claim in unresolved
         ),
     )
