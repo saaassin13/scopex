@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
 import os
 from pathlib import Path
 
@@ -11,11 +12,15 @@ from scopex.evidence.projector import OpenClawEvidenceProjector
 from scopex.events.progress import EventSink
 from scopex.finalizer.client import StreamingFinalizerClient
 from scopex.finalizer.structured import StructuredFinalizer
+from scopex.host_snapshot import write_current_host_snapshot
 from scopex.runtime.convergence import ConvergencePolicy
 from scopex.runtime.investigation import InvestigationCoordinator
 from scopex.runtime.session import Session
 from scopex.runtime.task import Task
 from scopex.storage.runtime_audit import RuntimeAudit
+
+
+HOST_SNAPSHOT_AGENT_DIR = "/scopex-host"
 
 
 @dataclass(frozen=True, slots=True)
@@ -28,9 +33,6 @@ class LocalRuntimeConfig:
     work_root: Path
     sandbox_image: str
     docker_host: str
-    # Per-OpenClaw-turn hard budgets. Step 6B's 48-image probe took ~439 s
-    # and 11 forwarded model requests, so the previous 180 s / 8 request POC
-    # defaults would reject a task that we have now proven useful and bounded.
     timeout_s: int = 600
     max_requests: int = 16
     max_tokens: int = 2048
@@ -93,6 +95,33 @@ class OpenClawRuntimeFactory:
             raise ValueError("task scratch escaped work_root") from exc
         task_scratch_bind = f"{resolved_scratch}:{TASK_SCRATCH_PATH}:rw"
 
+        # Current-state host resources are sampled once at task creation. This is
+        # intentionally not a historical collector and it does not grant the
+        # Agent gateway/host shell access. If collection partially fails, the
+        # snapshot contains explicit errors and system-health must report the
+        # unavailable fields instead of falling back to sandbox-local metrics.
+        host_root = task_root / "host"
+        host_snapshot = host_root / "current.json"
+        try:
+            write_current_host_snapshot(host_snapshot)
+        except Exception as exc:
+            host_root.mkdir(parents=True, mode=0o700, exist_ok=True)
+            host_snapshot.write_text(
+                json.dumps(
+                    {
+                        "schema": 1,
+                        "source": "scopex_host_snapshot",
+                        "captured_at": None,
+                        "errors": {"collector": type(exc).__name__ + ": " + str(exc)[:400]},
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                ) + "\n",
+                encoding="utf-8",
+            )
+        host_bind = f"{host_root.resolve()}:{HOST_SNAPSHOT_AGENT_DIR}:ro"
+        task_binds = tuple(self.config.data_binds) + (host_bind,)
+
         tools = ["read", "exec", "process"]
         if self.config.enable_view_image:
             tools.append("view_image")
@@ -116,7 +145,7 @@ class OpenClawRuntimeFactory:
             max_tokens=self.config.max_tokens,
             skills=self.config.skills,
             tools=tuple(tools),
-            sandbox_binds=self.config.data_binds,
+            sandbox_binds=task_binds,
             task_scratch_bind=task_scratch_bind,
             exec_host=self.config.exec_host,
             exec_mode=self.config.exec_mode,
@@ -127,13 +156,11 @@ class OpenClawRuntimeFactory:
             session=session,
             spec=spec,
             events=events,
-            # Hard request/time/context budgets belong to OpenClaw/ModelProxy.
-            # ScopeX convergence remains product-level only.
             convergence_policy=ConvergencePolicy(),
             evidence_projector_factory=lambda collector: OpenClawEvidenceProjector(
                 collector,
                 exec_host=self.config.exec_host,
-                sandbox_binds=self.config.data_binds,
+                sandbox_binds=task_binds,
             ),
             audit=audit,
         )
