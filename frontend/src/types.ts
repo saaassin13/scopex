@@ -68,7 +68,23 @@ export interface ProductAnswer {
   recommendations: AnswerItem[]
 }
 
+export interface ReportItem {
+  text: string
+  claim_ids: string[]
+  evidence_refs: string[]
+}
+
+export interface ProductReport {
+  version: 1
+  conclusion: ReportItem
+  facts: ReportItem[]
+  possibilities: ReportItem[]
+  next_steps: ReportItem[]
+  limitations: ReportItem[]
+}
+
 export interface ResultPayload extends Record<string, unknown> {
+  report?: ProductReport
   answer?: ProductAnswer
   answer_text?: string
   mode?: string
