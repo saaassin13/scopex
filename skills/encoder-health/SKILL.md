@@ -10,39 +10,44 @@ Use this skill when the user asks whether encoder data is missing, unstable, spi
 
 ## Primary source
 
-Use the global data source `cowdisinfect_logs`:
-
-- sandbox path: `/agent-data/logs`
-- host path: `/opt/ScalingRobotics/CowDisinfect/Log`
-- files: `CowDisinfect-YYYYMMDD-HHMMSS.log[.N]`
-- files are produced per hour and an hour may contain `.1/.2/...` rotation files.
+Use `cowdisinfect_logs` at `/agent-data/logs`.
+Host source: `/opt/ScalingRobotics/CowDisinfect/Log`.
+Files use `CowDisinfect-YYYYMMDD-HHMMSS.log[.N]` and a file group may start at a non-round clock time such as `10:23:36`, so **do not select files by natural-hour string matching yourself**.
 
 Do **not** inspect `/agent-data/left-camera` for an encoder-only question. Do not recursively enumerate `/agent-data`.
 
-The stable tool recognizes:
+## Preferred bounded path
 
-`Get EncoderVal, raw[...], filtered[...]`
+1. Resolve the requested window with the existing data-locator script:
 
-and analyzes the whole requested time window across all relevant rotated logs in one call.
+```bash
+python3 /workspace/skills/data-locator/scripts/data_locator.py \
+  --source cowdisinfect_logs \
+  --start "2026-09-14 03:00:00" \
+  --end   "2026-09-14 04:00:00"
+```
 
-## Preferred invocation
-
-For a time-window request, directly run the existing script. Do not `cd ... && python`, do not use heredoc/inline Python, and do not inspect the script source first.
+2. Pass exactly the returned log files to the encoder tool in one call:
 
 ```bash
 python3 {baseDir}/scripts/encoder_health.py \
-  --log-dir /agent-data/logs \
+  /agent-data/logs/<file1> \
+  /agent-data/logs/<file2> \
   --start "2026-09-14 03:00:00:000" \
   --end   "2026-09-14 04:00:00:000" \
   --events-out /task-scratch/encoder-events.json
 ```
 
-The stdout is intentionally compact `scopex_role=business_facts`. Full candidate details, when needed, go to `/task-scratch/encoder-events.json` and should only be read for specific follow-up investigation.
+Do not `cd ... && python`, do not use heredoc/inline Python, and do not inspect the script source first.
+
+The stdout is compact `scopex_role=business_facts`. Full significant candidate details, when needed, go to `/task-scratch/encoder-events.json` and should only be read for targeted follow-up.
+
+`--log-dir` remains a helper/test convenience but the product path should prefer data-locator because real hourly files need not start exactly at natural-hour boundaries.
 
 ## First-version checks
 
 - invalid/read-failure samples under the configured raw-value rule;
-- timestamp/sample gaps, including across rotated-file boundaries;
+- timestamp/sample gaps, including across the explicitly selected rotated files;
 - count/distribution of observed negative raw changes;
 - statistically unusual negative-jump candidates;
 - configured large negative-jump candidates;
@@ -51,7 +56,6 @@ The stdout is intentionally compact `scopex_role=business_facts`. Full candidate
 - raw-vs-filtered divergence summary.
 
 Do not automatically label a raw decrease as encoder damage or a flat period as stall.
-
 Small negative changes are summarized statistically rather than emitted one-by-one. A high `negative_jump_count` alone is not enough to call the encoder abnormal; inspect magnitude distribution and significant candidates.
 
 ## Threshold discipline
@@ -67,15 +71,9 @@ Historical scripts contain different assumptions and thresholds. Treat current C
 
 Only after the encoder summary identifies an important candidate, use `log-context` over a small window around that event when explanation is needed. Relevant context may include task stop, encoder reset, Modbus/read errors, restart or actual reverse motion.
 
-Example boundary:
-
-- raw decreases at 07:21:13 = observed fact;
-- reset-related log event in the same small window = observed context;
-- “this backstep was caused by reset” remains a causal conclusion and needs ordering/semantics support.
-
 ## Scope and stop
 
-- If the user asks only whether data has gaps/backsteps, run the encoder tool once for the requested window and answer from the compact facts.
+- If the user asks only whether data has gaps/backsteps, resolve the target files and run the encoder tool once.
 - Do not automatically analyze cow perception, images or system load.
 - Do not recursively scan mounted roots.
 - Expand to small log context only for requested/necessary explanation.
