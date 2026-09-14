@@ -98,6 +98,26 @@ class BusinessSkillToolTests(unittest.TestCase):
             self.assertTrue(rows[1]['anchor'])
             self.assertIn('ResetEncoderValOnSerialPort', rows[1]['raw'])
 
+    def test_log_context_keeps_anchor_when_line_budget_is_tight(self):
+        script = ROOT / 'skills/log-context/scripts/log_context.py'
+        with tempfile.TemporaryDirectory() as td:
+            log = Path(td) / 'app.log'
+            log.write_text(
+                '\n'.join([
+                    '2026-09-14 07:00:00:000 [INFO] before-a',
+                    '2026-09-14 07:00:00:500 [INFO] before-b',
+                    '2026-09-14 07:00:01:000 [WARN] TARGET_ANCHOR',
+                    '2026-09-14 07:00:01:500 [INFO] after',
+                ]) + '\n', encoding='utf-8')
+            proc = run_script(
+                script, str(log), '--keyword', 'TARGET_ANCHOR', '--before', '2', '--after', '1', '--max-lines', '1')
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            data = json.loads(proc.stdout)
+            rows = data['sources'][0]['lines']
+            self.assertEqual(len(rows), 1)
+            self.assertTrue(rows[0]['anchor'])
+            self.assertIn('TARGET_ANCHOR', rows[0]['raw'])
+
     def test_system_health_summary_reads_historical_window(self):
         script = ROOT / 'skills/system-health/scripts/system_health_summary.py'
         with tempfile.TemporaryDirectory() as td:
