@@ -2,12 +2,9 @@
 
 状态：**2026-09-14 当前部署基线**。
 
-这份文档回答两个问题：
+这份文档覆盖一台 NVIDIA DGX Spark 从空机到 ScopeX 可运行、弱网/离线部署、版本升级和回滚。
 
-1. 一台新的 NVIDIA DGX Spark 如何从 0 到 1 启动 ScopeX；
-2. 现场网络较差或完全离线时，如何提前制作可校验、可回滚的离线部署包。
-
-ScopeX 的部署边界保持不变：
+固定边界：
 
 > **OpenClaw owns execution. ScopeX owns product control and trust.**
 
@@ -15,71 +12,353 @@ ScopeX Runtime 运行在 Spark 宿主机普通用户进程中，通过本地 Doc
 
 ---
 
-## 1. 最终需要哪些东西
+## 1. 部署资产分层
 
-一套可运行环境包含：
+不要把所有东西打成一个巨大更新包。推荐分成两个生命周期。
+
+### 1.1 Device Base Package（低频更新）
 
 ```text
-Spark host
-├── Docker Engine / compatible daemon
-├── Python 3 + venv
-├── OpenClaw CLI（已验证版本）
-├── local vLLM + model weights
-├── ScopeX source + .venv
-├── frontend/dist
-└── Docker image: scopex-sandbox-analysis:step7
+DGX Spark Base
+├── DGX OS / NVIDIA driver
+├── Docker Engine
+├── NVIDIA Container Toolkit / Runtime
+├── OpenClaw CLI
+├── vLLM Docker image
+└── model weights
 ```
 
-ScopeX 自己负责的部署资产：
+这些资产大、更新频率低，特别是模型权重不应跟着 ScopeX 小版本反复传输。
 
-- `scopex/` Runtime/API/Evidence/Finalizer 代码；
-- `frontend/dist` 产品 Web UI；
-- `scopex-sandbox-analysis:step7` 分析 Sandbox；
-- `skills/` 内置 Skill；
-- host Python API 依赖；
-- 离线 bundle manifest / SHA256。
+### 1.2 ScopeX Update Bundle（高频更新）
 
-以下当前仍是外部前置依赖，不默认塞进 ScopeX 离线包：
+```text
+ScopeX update
+├── fixed-commit source
+├── frontend/dist
+├── host Python wheelhouse
+├── scopex-sandbox-analysis image
+├── built-in Skills
+├── install script
+└── manifest + SHA256
+```
 
-- Docker Engine；
-- OpenClaw 安装本体；
-- vLLM 服务；
-- 模型权重。
-
-完全 air-gapped 场景如果这些也需要离线安装，应由设备镜像/基础环境单独打包。模型权重体积很大，不建议和 ScopeX 小版本更新包绑定在一起。
+现有 `scripts/export_offline_bundle.sh` 只制作这一层，不包含 vLLM/model，这是有意设计。
 
 ---
 
-## 2. 架构与版本要求
+## 2. 目标硬件与架构
 
-当前目标设备：
+当前目标：
 
 ```text
 NVIDIA DGX Spark
 Linux / ARM64 (aarch64)
+128 GB unified memory
 ```
 
-离线包必须在**相同 CPU 架构**上制作，尤其是：
-
-- Docker image；
-- Python wheelhouse。
-
-推荐直接在一台联网的 ARM64 Linux/Spark 构建机上制作离线包。
-
-检查：
+确认：
 
 ```bash
 uname -m
 python3 --version
 docker version
+nvidia-smi
 ~/.openclaw/bin/openclaw --version
 ```
 
-目标应看到 `aarch64`（或与现场机器完全一致的架构）。
+Docker image 与 Python wheelhouse 必须按目标架构准备。推荐在联网的 ARM64 Spark/同架构 Linux 构建机上制作离线资产。
 
 ---
 
-## 3. 获取代码
+## 3. Docker 与 NVIDIA Runtime
+
+NVIDIA 当前 DGX Spark 文档说明：NVIDIA Container Toolkit / Docker GPU runtime 在 DGX Spark 上默认预装并配置。ScopeX 不重复维护一套 Docker 安装脚本，先验证设备基础环境。
+
+### 3.1 验证 Docker
+
+```bash
+docker ps
+```
+
+如果普通用户没有权限：
+
+```bash
+sudo usermod -aG docker "$USER"
+newgrp docker
+```
+
+### 3.2 验证 NVIDIA Container Runtime
+
+```bash
+nvidia-ctk --version
+```
+
+GPU 容器验证（镜像 tag 以 NVIDIA 当前可用版本为准）：
+
+```bash
+docker run --rm --gpus all \
+  nvcr.io/nvidia/cuda:13.0.1-devel-ubuntu24.04 \
+  nvidia-smi
+```
+
+如果 toolkit 已安装但 Docker runtime 未配置：
+
+```bash
+sudo nvidia-ctk runtime configure --runtime=docker
+sudo systemctl restart docker
+```
+
+### 3.3 弱网/离线 Docker 原则
+
+ScopeX 只把 **APT / PyPI** 指向已经验证的清华 TUNA 源；不要为了“统一用清华源”而写一个未经验证的 Docker Hub/HuggingFace 镜像地址。
+
+Docker/vLLM 镜像在联网构建机提前拉取，然后：
+
+```bash
+docker save <image:tag> | gzip -1 > image.tar.gz
+```
+
+现场：
+
+```bash
+gzip -dc image.tar.gz | docker load
+```
+
+这比依赖牧场现场访问 Docker Hub/NGC 更稳定。
+
+---
+
+## 4. 模型选择
+
+模型是 ScopeX 的核心运行依赖，不能只写一个 `--model` 字符串。
+
+### 4.1 当前生产基线
+
+当前 ScopeX 已验证的 **served model id**：
+
+```text
+qwen3.8-27b-nvfp4
+```
+
+当前 Step 6/Step 7 的能力和预算结论都是基于这个本地 served id 得出的，因此在新模型完成同一套回归前，不自动更换生产默认模型。
+
+**注意：served model id 不等于模型下载仓库。** 当前仓库尚未记录 `qwen3.8-27b-nvfp4` 对应的原始 HuggingFace/NGC model handle。要实现真正从 0 到 1 重建，必须把以下两项补齐并记录到设备资产 manifest：
+
+```text
+MODEL_REPO=<真实模型仓库，例如 org/model-name>
+MODEL_REVISION=<固定 commit/revision>
+```
+
+不要只保存“模型名字”，否则未来下载到的新 revision 可能已经不同。
+
+### 4.2 新模型选择 Gate
+
+ScopeX 的模型至少要验证：
+
+1. DGX Spark / ARM64 + 当前 vLLM 可运行；
+2. Agent/tool calling 多轮任务可靠；
+3. Context 至少满足当前 `32768` 基线；
+4. 图片能力可用，因为 `image-quality-diagnosis` 需要原图视觉输入；
+5. 当前量化格式在 Spark 上有足够内存余量；
+6. Step 6 复杂任务 Gate；
+7. 单图严格范围任务；
+8. 第一批业务 Skill（system/nipple/encoder/log-context）回归。
+
+NVIDIA 在 2026-09 当前 DGX Spark vLLM playbook 中推荐的 agent-ready 候选之一是：
+
+```text
+nvidia/Qwen3.6-35B-A3B-NVFP4
+```
+
+它可以作为后续候选测试，但**不是因为官方推荐就直接替换当前模型**；ScopeX 还有图片输入、既有 Prompt/Tool 行为和当前预算 Gate，需要实际回归。
+
+---
+
+## 5. 模型下载与离线搬运
+
+Hugging Face 官方当前推荐使用 `hf download` / `snapshot_download` 下载固定 revision。
+
+### 5.1 准备下载工具
+
+```bash
+python3 -m venv "$HOME/model-tools"
+source "$HOME/model-tools/bin/activate"
+python -m pip install \
+  -i https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple \
+  huggingface_hub
+```
+
+对于 gated/private 模型：
+
+```bash
+export HF_TOKEN='<token>'
+```
+
+### 5.2 固定仓库与 revision
+
+```bash
+export MODEL_REPO='<真实 repo id>'
+export MODEL_REVISION='<固定 commit/revision>'
+export MODEL_DIR="$HOME/models/<model-version>"
+
+mkdir -p "$MODEL_DIR"
+hf download "$MODEL_REPO" \
+  --revision "$MODEL_REVISION" \
+  --local-dir "$MODEL_DIR"
+```
+
+下载完成后记录：
+
+```text
+model_repo
+model_revision
+local_path
+quantization
+expected served model id
+```
+
+并可生成文件校验：
+
+```bash
+(
+  cd "$MODEL_DIR"
+  find . -type f ! -path './.cache/*' -print0 \
+    | sort -z \
+    | xargs -0 sha256sum > MODEL_SHA256SUMS
+)
+```
+
+### 5.3 离线搬运
+
+模型通常几十 GB 甚至更大，不建议塞进 ScopeX update bundle。直接把整个固定版本模型目录放到 Device Base Package/移动硬盘：
+
+```text
+/device-base/models/<model-version>/
+```
+
+现场复制到：
+
+```text
+~/models/<model-version>/
+```
+
+再用 `sha256sum -c MODEL_SHA256SUMS` 校验。
+
+---
+
+## 6. vLLM 部署
+
+vLLM 官方提供 OpenAI-compatible Docker image `vllm/vllm-openai`；NVIDIA 的 DGX Spark playbook 也采用容器化 vLLM。
+
+### 6.1 镜像版本
+
+测试时可以参考官方当前 tag，生产设备不要长期依赖 `latest`：
+
+```bash
+export VLLM_IMAGE='vllm/vllm-openai:<validated-tag>'
+docker pull "$VLLM_IMAGE"
+```
+
+记录实际 image ID / digest：
+
+```bash
+docker image inspect "$VLLM_IMAGE"
+```
+
+离线现场提前：
+
+```bash
+docker save "$VLLM_IMAGE" | gzip -1 > vllm-image.tar.gz
+```
+
+### 6.2 ScopeX 当前启动模板
+
+当前 ScopeX 采用：
+
+```text
+host endpoint: http://127.0.0.1:18002/v1
+context baseline: 32768
+```
+
+示例：
+
+```bash
+export MODEL_DIR="$HOME/models/<model-version>"
+export SERVED_MODEL_NAME='qwen3.8-27b-nvfp4'
+export VLLM_IMAGE='vllm/vllm-openai:<validated-tag>'
+
+docker run -d \
+  --name scopex-vllm \
+  --restart unless-stopped \
+  --gpus all \
+  --ipc host \
+  --ulimit memlock=-1 \
+  --ulimit stack=67108864 \
+  --entrypoint '' \
+  -p 127.0.0.1:18002:8000 \
+  -v "$MODEL_DIR:/models/model:ro" \
+  "$VLLM_IMAGE" \
+  vllm serve /models/model \
+    --served-model-name "$SERVED_MODEL_NAME" \
+    --max-model-len 32768 \
+    --gpu-memory-utilization 0.8
+```
+
+这是基础模板。**模型专用 recipe 的 quantization/parser/tool-call 参数必须按真实模型验证后固定**，不要在文档里猜测并强制所有模型共用。
+
+当前 NVIDIA DGX Spark playbook 也提醒：Spark 使用统一内存，`--max-model-len` 越大 KV cache 压力越大。ScopeX 继续使用已经验证过的 32768 基线，而不是为了追求数字直接改成 131072。
+
+### 6.3 验证 vLLM
+
+```bash
+docker logs -f scopex-vllm
+```
+
+健康检查：
+
+```bash
+curl -sf http://127.0.0.1:18002/health
+```
+
+确认 served id：
+
+```bash
+curl -s http://127.0.0.1:18002/v1/models | python3 -m json.tool
+```
+
+ScopeX `--model` **必须使用这里真实返回的 id**，不能只使用下载仓库名。
+
+最小 OpenAI-compatible 请求：
+
+```bash
+curl -s http://127.0.0.1:18002/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "model":"qwen3.8-27b-nvfp4",
+    "messages":[{"role":"user","content":"只回复 OK"}],
+    "max_tokens":16,
+    "temperature":0
+  }'
+```
+
+---
+
+## 7. OpenClaw
+
+ScopeX update bundle 不复制 `~/.openclaw`，避免打包 token/本地敏感配置。
+
+设备基础环境必须先准备并验证：
+
+```bash
+~/.openclaw/bin/openclaw --version
+```
+
+OpenClaw 的具体安装包/版本也应进入 Device Base Package manifest。不要现场联网“自动升级到最新版”，否则 ScopeX 回归基线会漂移。
+
+---
+
+## 8. 获取 ScopeX 代码
 
 联网构建机：
 
@@ -91,37 +370,27 @@ git checkout main
 git pull --ff-only
 ```
 
-后续所有离线包都绑定到具体 git commit；不要从有未提交改动的工作区导出部署包。
+所有离线包绑定具体 git commit；不要从 dirty worktree 导出。
 
 ---
 
-## 4. Host Python 环境
-
-推荐使用项目独立 venv：
+## 9. Host Python 环境
 
 ```bash
-cd /home/yanlan/workspaces/code/scopex
 python3 -m venv .venv
 source .venv/bin/activate
-```
-
-联网环境使用清华 PyPI 镜像：
-
-```bash
 python -m pip install \
   -i https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple \
   -r requirements-api.txt
 ```
 
-当前 host API 依赖保持很小：FastAPI / Uvicorn / HTTPX。数据分析、图像和点云包不安装在 host Python，而是放在隔离 Sandbox 中。
+Host API 依赖保持轻量。数据/图像分析依赖放到 Sandbox；宿主机系统资源采集脚本使用 Python 标准库 + OS 命令，不要求业务 Agent 获得 gateway shell。
 
 ---
 
-## 5. 构建 Web UI
+## 10. 构建 Web UI
 
-要求 Node `>= 22.18.0`。
-
-联网构建机：
+要求 Node `>=22.18.0`：
 
 ```bash
 cd frontend
@@ -130,19 +399,13 @@ npm run build
 cd ..
 ```
 
-产物：
+现场离线机器不执行 `npm install`，直接使用 bundle 中预构建的 `frontend/dist`。
 
-```text
-frontend/dist/
-```
-
-**现场离线机器不应再执行 `npm install`。** 离线 bundle 直接携带已经构建好的 `frontend/dist`。
-
-当前仓库尚未提交 npm lockfile，因此“重新 npm install 后得到完全可重复的 dependency graph”仍是已知缺口。正式版本发布前应补 lockfile 并切换到 `npm ci`；在此之前，离线部署以预构建 `frontend/dist` 为准。
+当前仍无 npm lockfile，这是源码完全可复现构建的已知缺口；离线交付暂以预构建 dist 为准。
 
 ---
 
-## 6. Analysis Sandbox
+## 11. Analysis Sandbox
 
 当前镜像：
 
@@ -150,67 +413,19 @@ frontend/dist/
 scopex-sandbox-analysis:step7
 ```
 
-Sandbox 运行期仍保持 `network=none`。常用依赖在镜像 build 阶段预装，避免 Agent 在任务中浪费模型/tool round 探测或尝试安装包。
+运行时 `network=none`。镜像 build 阶段预装 numpy/scipy/pandas/OpenCV/Pillow/scikit-image/matplotlib/openpyxl/PyYAML/psutil/scikit-learn；Open3D 仅在 ARM64 基础发行版有对应 apt 包时安装。
 
-预装基线：
+### 11.1 清华 APT 源
 
-```text
-numpy
-scipy
-pandas
-opencv (cv2)
-Pillow
-scikit-image
-matplotlib
-openpyxl
-PyYAML
-psutil
-scikit-learn
-Open3D（基础发行版存在 ARM64 apt 包时）
-```
-
-镜像会生成：
-
-```text
-/opt/scopex/toolbox.json
-```
-
-作为实际可用 toolbox manifest。
-
-### 6.1 清华 APT 镜像
-
-`docker/sandbox-analysis.Dockerfile` 会在**容器 build 阶段**自动把 Ubuntu/Debian APT 主源切换到清华 TUNA：
+`docker/sandbox-analysis.Dockerfile` 在 build 阶段把 Ubuntu/Debian 主源切到 TUNA：
 
 ```text
 https://mirrors.tuna.tsinghua.edu.cn
 ```
 
-Ubuntu ARM64 会使用：
+ARM Ubuntu 使用 `ubuntu-ports`。该修改只作用于 Sandbox build，不修改 Spark 宿主机安全更新策略。
 
-```text
-/ubuntu-ports
-```
-
-Debian 使用：
-
-```text
-/debian
-/debian-security
-```
-
-这个修改只作用于 Sandbox 镜像构建，不修改 Spark 宿主机系统源。
-
-注意：TUNA 官方说明镜像同步存在延迟，生产宿主机的安全更新源不建议因为 ScopeX 而强行替换。ScopeX 这里只为可重复构建离线 Sandbox 使用镜像源。
-
-### 6.2 构建
-
-先准备已经验证过的 OpenClaw Sandbox base image，例如：
-
-```text
-scopex-sandbox-base:step6f
-```
-
-然后：
+### 11.2 构建
 
 ```bash
 docker build \
@@ -223,105 +438,72 @@ docker build \
 验证：
 
 ```bash
-docker run --rm \
-  --network none \
-  --entrypoint python3 \
+docker run --rm --network none --entrypoint python3 \
   scopex-sandbox-analysis:step7 \
   -c 'import cv2, PIL, numpy, pandas, scipy, skimage, matplotlib, openpyxl, yaml, psutil, sklearn; print("ScopeX toolbox OK")'
+
+docker run --rm --network none --entrypoint cat \
+  scopex-sandbox-analysis:step7 /opt/scopex/toolbox.json
 ```
-
-查看 manifest：
-
-```bash
-docker run --rm \
-  --network none \
-  --entrypoint cat \
-  scopex-sandbox-analysis:step7 \
-  /opt/scopex/toolbox.json
-```
-
-如果 `Open3D.available=false`，不要让 Agent 运行时联网安装。需要 Open3D 的真实点云任务出现后，再针对当前 Spark 基础发行版固定离线安装方式。
 
 ---
 
-## 7. 内置 Skill
+## 12. 第一批业务 Skill
 
 Runtime 默认暴露：
 
 ```text
-cow-disinfect-diagnosis
+system-health
 image-quality-diagnosis
+nipple-recognition-analysis
+encoder-health
+log-context
 ```
 
-启动 `scripts/runtime_api.py` 时，ScopeX 会把仓库内置 Skill 同步到：
+旧 `cow-disinfect-diagnosis` 保留在仓库供历史/专项回归，但不再作为默认业务 Skill。
+
+详细业务口径见：
 
 ```text
-<workspace>/skills/
-```
-
-然后交给 OpenClaw allowlist。
-
-Skill 负责：
-
-- 业务语义；
-- 证据原则；
-- 最短充分调查路径；
-- 何时停止；
-- 可复用脚本入口。
-
-Skill **不**负责实现固定 Workflow Engine。模型仍决定具体工具和调查顺序。
-
-额外 Skill：
-
-```bash
---skill <name>
-```
-
-纯框架回归可关闭默认内置 Skill：
-
-```bash
---no-default-skills
+docs/business/01-business-capabilities-v1.md
 ```
 
 ---
 
-## 8. 本地测试
+## 13. 宿主机系统资源历史
 
-后端：
+`system-health` 不能拿 Sandbox 自己的 `/proc` 当 Spark 状态。V1 用 host systemd timer 每 30 秒采一条事实。
 
-```bash
-python3 -m unittest discover -s tests -v
-```
-
-前端：
+安装：
 
 ```bash
-cd frontend
-npm run build
-cd ..
+mkdir -p ~/.config/systemd/user
+cp deploy/systemd/scopex-system-metrics.service ~/.config/systemd/user/
+cp deploy/systemd/scopex-system-metrics.timer ~/.config/systemd/user/
+
+systemctl --user daemon-reload
+systemctl --user enable --now scopex-system-metrics.timer
 ```
 
-镜像：
+确认：
 
 ```bash
-docker image inspect scopex-sandbox-analysis:step7 >/dev/null
+systemctl --user status scopex-system-metrics.timer
+journalctl --user -u scopex-system-metrics.service -n 20
+
+tail -n 2 ~/.local/share/scopex/system-metrics/system_metrics.jsonl | python3 -m json.tool
 ```
 
-在新的代码/镜像没有完成这些验证前，文档只标记“已实现”，不要升级为 PASS。
+默认 history 文件上限 64 MiB，超过后保留尾部，避免无限增长。
 
 ---
 
-## 9. 启动 Runtime API
+## 14. 启动 ScopeX Runtime API
 
-准备 workspace：
-
-```bash
-mkdir -p .local/workspace
-```
-
-确认 vLLM：
+准备：
 
 ```bash
+mkdir -p .local/workspace ~/.local/share/scopex/system-metrics
 curl -s http://127.0.0.1:18002/v1/models
 ```
 
@@ -334,17 +516,19 @@ curl -s http://127.0.0.1:18002/v1/models
   --workspace .local/workspace \
   --sandbox-image scopex-sandbox-analysis:step7 \
   --data-dir /path/to/business-data:/agent-data \
+  --system-metrics-dir "$HOME/.local/share/scopex/system-metrics" \
   --enable-view-image
 ```
 
 默认：
 
 ```text
-API = http://127.0.0.1:8787
-turn timeout = 600 s
-model requests / turn = 16
-sandbox network = none
+API = 127.0.0.1:8787
+turn timeout = 600s
+model requests/turn = 16
 external business data = read-only
+system metrics = read-only
+sandbox network = none
 ```
 
 健康检查：
@@ -355,40 +539,29 @@ curl -s http://127.0.0.1:8787/health
 
 ---
 
-## 10. 开机自启与自恢复
-
-ScopeX Runtime 本身运行在宿主机普通用户进程，Sandbox 才运行在 Docker 中。推荐使用 user systemd，而不是 Docker-in-Docker。
+## 15. ScopeX systemd 自启/恢复
 
 模板：
 
 ```text
 deploy/systemd/scopex-runtime.service
 deploy/systemd/runtime.env.example
+deploy/systemd/scopex-system-metrics.service
+deploy/systemd/scopex-system-metrics.timer
 ```
 
-安装示例：
+安装 Runtime：
 
 ```bash
 mkdir -p ~/.config/systemd/user ~/.config/scopex
 cp deploy/systemd/scopex-runtime.service ~/.config/systemd/user/
 cp deploy/systemd/runtime.env.example ~/.config/scopex/runtime.env
-```
 
-编辑：
-
-```text
-~/.config/scopex/runtime.env
-```
-
-然后：
-
-```bash
 systemctl --user daemon-reload
 systemctl --user enable --now scopex-runtime.service
-systemctl --user status scopex-runtime.service
 ```
 
-需要机器重启后在未登录状态也启动时：
+未登录也需要开机运行时：
 
 ```bash
 sudo loginctl enable-linger "$USER"
@@ -400,19 +573,19 @@ sudo loginctl enable-linger "$USER"
 journalctl --user -u scopex-runtime.service -f
 ```
 
+vLLM 容器使用 `--restart unless-stopped`；ScopeX Runtime 使用 systemd `Restart=on-failure`。两者独立恢复。
+
 ---
 
-## 11. 制作离线 Bundle
+## 16. 制作 ScopeX 离线 Update Bundle
 
-### 11.1 前提
+先确保：
 
-必须先完成：
-
-- 当前 commit 已提交，worktree clean；
+- worktree clean；
 - `frontend/dist` 已 build；
 - `scopex-sandbox-analysis:step7` 已 build；
-- 当前机器 CPU 架构与现场一致；
-- Python pip 可联网访问清华 PyPI 镜像。
+- 构建机架构与现场一致；
+- pip 可访问清华 PyPI。
 
 导出：
 
@@ -420,15 +593,15 @@ journalctl --user -u scopex-runtime.service -f
 bash scripts/export_offline_bundle.sh
 ```
 
-默认生成：
+生成：
 
 ```text
 dist/offline/scopex-offline-<commit>-<arch>/
 dist/offline/scopex-offline-<commit>-<arch>.tar.gz
-dist/offline/scopex-offline-<commit>-<arch>.tar.gz.sha256
+...sha256
 ```
 
-目录内容：
+内容：
 
 ```text
 manifest.txt
@@ -440,91 +613,72 @@ images/scopex-sandbox-analysis.tar.gz
 scripts/install_offline_bundle.sh
 ```
 
-`manifest.txt` 固定记录：
-
-- git commit；
-- branch；
-- architecture；
-- Python 版本；
-- sandbox image / image ID；
-- PyPI mirror；
-- 哪些大组件没有被包含。
-
-### 11.2 为什么不把模型一起打进去
-
-模型权重和 vLLM 镜像通常远大于 ScopeX 本身，而且更新节奏不同。建议设备基础镜像单独管理：
-
-```text
-Base device package
-├── Docker / NVIDIA runtime
-├── OpenClaw
-├── vLLM image/runtime
-└── model weights
-
-ScopeX update bundle
-├── ScopeX source
-├── frontend/dist
-├── Python wheelhouse
-├── sandbox image
-└── manifest/checksum
-```
-
-这样 ScopeX 小版本升级不需要反复传输几十/上百 GB 模型文件。
+明确不包含：OpenClaw、vLLM image、模型权重。
 
 ---
 
-## 12. 离线端安装
+## 17. 制作 Device Base Package
 
-先验证外层压缩包：
+这是低频的大包，可以手工或后续再自动化。
+
+建议目录：
+
+```text
+device-base-<version>/
+├── manifest.txt
+├── images/
+│   └── vllm-image.tar.gz
+├── models/
+│   └── <model-version>/
+│       └── MODEL_SHA256SUMS
+└── openclaw/
+    └── <validated install artifact/instructions>
+```
+
+其中 manifest 至少记录：
+
+```text
+architecture=aarch64
+vllm_image=<tag>
+vllm_image_id=<id/digest>
+model_repo=<repo>
+model_revision=<commit>
+served_model_id=qwen3.8-27b-nvfp4
+max_model_len=32768
+openclaw_version=<version>
+```
+
+现场顺序：
+
+1. 校验 Device Base Package；
+2. `docker load` vLLM image；
+3. 拷贝并校验模型目录；
+4. 安装/确认固定 OpenClaw；
+5. 启动并验证 vLLM；
+6. 再安装 ScopeX update bundle。
+
+---
+
+## 18. 离线安装 ScopeX Update Bundle
 
 ```bash
 sha256sum -c scopex-offline-<commit>-<arch>.tar.gz.sha256
-```
-
-解压：
-
-```bash
 tar -xzf scopex-offline-<commit>-<arch>.tar.gz
-```
 
-安装到一个**新的空版本目录**：
-
-```bash
 bash scopex-offline-<commit>-<arch>/scripts/install_offline_bundle.sh \
   scopex-offline-<commit>-<arch> \
   "$HOME/scopex-releases/<commit>"
 ```
 
-导出脚本已经把同版本的 `install_offline_bundle.sh` 放进 bundle，因此现场不需要另外从 GitHub 获取安装脚本。
+安装器会：校验 SHA256/架构、解压源码、安装预构建前端、从 wheelhouse `--no-index` 安装 Python 依赖、`docker load` analysis sandbox。
 
-安装过程会：
-
-1. 校验 bundle 内 `SHA256SUMS`；
-2. 校验 CPU architecture；
-3. 解压对应 commit 的源码；
-4. 放入预构建 `frontend/dist`；
-5. 创建 `.venv`；
-6. 使用 `--no-index --find-links` 从 wheelhouse 离线安装 host Python 依赖；
-7. `docker load` 导入 analysis sandbox image。
-
-如果目标目录非空，安装脚本默认拒绝覆盖，避免破坏上一版本。
-
-### 12.1 当前脚本调用说明
-
-仓库中的 shell 文件通过 GitHub Contents API 创建时可能没有 executable bit，因此统一使用：
-
-```bash
-bash scripts/export_offline_bundle.sh
-bash scripts/install_offline_bundle.sh ...
-```
-
-不要依赖 `./script.sh` 是否可执行。
+不会覆盖已有非空版本目录。
 
 ---
 
-## 13. 版本升级与回滚
+## 19. 升级与回滚
 
-推荐版本目录：
+推荐：
 
 ```text
 ~/scopex-releases/
@@ -533,81 +687,56 @@ bash scripts/install_offline_bundle.sh ...
 └── current -> <commit-B>
 ```
 
-Sandbox image 使用不可覆盖的版本 tag，例如：
+新版本先独立安装和 smoke，成功后才：
 
-```text
-scopex-sandbox-analysis:step7-<commit>
+```bash
+ln -sfn "$HOME/scopex-releases/<new-commit>" "$HOME/scopex-releases/current"
+systemctl --user restart scopex-runtime.service
 ```
 
-升级前：
+回滚切回旧 symlink + 旧 sandbox tag。不要升级时自动删除旧镜像、旧模型或 audit。
 
-1. 保留上一版本代码目录；
-2. 保留上一 sandbox image tag；
-3. 不删除 `.local/runtime-api/tasks` 审计数据；
-4. 新版本单独做 health + smoke；
-5. 再切换 systemd `WorkingDirectory` / `current` symlink。
-
-回滚只需要：
-
-- 切回旧代码目录；
-- 使用旧 sandbox image tag；
-- restart user service。
-
-不要在升级时自动删除旧镜像和旧审计。
+模型/vLLM 升级也应保留上一版本，不能和 ScopeX 代码升级绑成一次不可回退动作。
 
 ---
 
-## 14. 离线部署仍需注意的边界
-
-### 14.1 OpenClaw
-
-当前 ScopeX bundle 不自动复制 `~/.openclaw`，避免误打包 token、配置或其他本地敏感数据。设备基础环境必须先准备已验证 OpenClaw CLI。
-
-### 14.2 vLLM / 模型
-
-ScopeX 只检查 `/v1/models`；不会安装或下载模型。完全离线现场需要提前准备 vLLM 和模型权重。
-
-### 14.3 前端 lockfile
-
-当前 `frontend/package.json` 已固定直接依赖版本，但仓库尚无 lockfile。这不影响已经预构建好的 `frontend/dist` 离线部署，但影响“从源码完全可复现重建 UI”。应在后续版本补 lockfile。
-
-### 14.4 Open3D
-
-ARM64 发行版不一定提供 `python3-open3d`。当前为可选能力，必须以 `/opt/scopex/toolbox.json` 实际结果为准。
-
-### 14.5 磁盘
-
-现场需要预留：
-
-- 模型权重；
-- vLLM runtime；
-- Docker images/layers；
-- ScopeX audit；
-- task scratch；
-- 业务数据。
-
-不要只按照 ScopeX 源码大小估算磁盘。
-
----
-
-## 15. 新机器最小验收
-
-从 0 到 1 完成后至少验证：
+## 20. 新机器最小验收
 
 ```text
-[ ] Docker 可用
-[ ] OpenClaw CLI 可用
-[ ] vLLM /v1/models 正确
+[ ] uname -m = aarch64
+[ ] docker ps 可用
+[ ] NVIDIA GPU container 可运行 nvidia-smi
+[ ] OpenClaw 版本与 manifest 一致
+[ ] vLLM image/tag/digest 与 manifest 一致
+[ ] 模型 repo/revision/文件校验一致
+[ ] /health 正常
+[ ] /v1/models 返回期望 served id
+[ ] 最小 chat completion 成功
 [ ] scopex-sandbox-analysis:step7 已导入
 [ ] /opt/scopex/toolbox.json 可读
 [ ] Python unit suite 通过
 [ ] frontend/dist 存在
-[ ] /health 正常
-[ ] 创建一个只读诊断 Task 能完成
-[ ] 单图明确范围任务不会读取用户排除的数据
-[ ] result.json / claims.json / answer.json / final.txt 可追溯
-[ ] systemd Restart=on-failure 生效
-[ ] 上一版本仍可回滚
+[ ] system metrics timer 持续产出 JSONL
+[ ] ScopeX /health 正常
+[ ] 默认业务 Skills 可见
+[ ] 创建只读诊断 Task 能完成
+[ ] 单图明确范围任务不读取被排除的数据
+[ ] result/claims/answer/final 可追溯
+[ ] Runtime/vLLM 自动恢复可验证
+[ ] 上一版本可以回滚
 ```
 
-只有代码存在不算完成部署；需要这条实际运行链闭环。
+只有代码和镜像存在不算部署完成，必须完成实际运行链验证。
+
+---
+
+## 21. 上游参考
+
+部署前如版本发生变化，以官方当前文档复核：
+
+- NVIDIA DGX Spark Container Runtime：`https://docs.nvidia.com/dgx/dgx-spark/nvidia-container-runtime-for-docker.html`
+- NVIDIA DGX Spark vLLM playbook：`https://build.nvidia.com/spark/vllm/instructions`
+- NVIDIA DGX Spark agent-ready models：`https://build.nvidia.com/spark/vllm/agent-ready-models`
+- vLLM Docker：`https://docs.vllm.ai/en/stable/deployment/docker/`
+- Hugging Face download：`https://huggingface.co/docs/huggingface_hub/main/guides/download`
+- 清华 TUNA PyPI / Ubuntu / Debian：`https://mirrors.tuna.tsinghua.edu.cn/help/`
