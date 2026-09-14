@@ -59,6 +59,7 @@ class InvestigationCoordinator:
         steering: PendingSteeringQueue | None = None,
         evidence_pipeline: EvidenceProjector | None = None,
         audit: RuntimeAudit | None = None,
+        report_composer: ConstrainedReportComposer | None = None,
         control_lock=None,
     ) -> None:
         self.task = task
@@ -73,6 +74,7 @@ class InvestigationCoordinator:
         self.steering = steering or PendingSteeringQueue()
         self.evidence_pipeline = evidence_pipeline
         self.audit = audit
+        self.report_composer = report_composer
         self._control_lock = control_lock or threading.RLock()
         self._turn_lock = threading.RLock()
         self._started_at: float | None = None
@@ -95,6 +97,7 @@ class InvestigationCoordinator:
         evidence_projector_factory: Callable[[EvidenceCollector], EvidenceProjector] | None = None,
         extractors: Iterable[EvidenceExtractor] = (),
         audit: RuntimeAudit | None = None,
+        report_composer: ConstrainedReportComposer | None = None,
     ) -> "InvestigationCoordinator":
         controller = TaskController(task, session, events)
         stop_gate = SafeStopGate()
@@ -149,6 +152,7 @@ class InvestigationCoordinator:
             steering=steering,
             evidence_pipeline=evidence_pipeline,
             audit=audit,
+            report_composer=report_composer,
             control_lock=control_lock,
         )
 
@@ -311,17 +315,15 @@ class InvestigationCoordinator:
             self._snapshot()
             return result
 
-        # Persist trusted deterministic fallback first. The Report Composer runs
-        # only after Claims validate and before Task completion. Report failure is
-        # presentation-only and must not invalidate a correct audited task.
         self._persist_structured_result(result, published_state=TaskState.COMPLETED)
+        composer = report_composer or self.report_composer
         if (
-            report_composer is not None
+            composer is not None
             and result.finalization is not None
             and result.finalization.claims is not None
             and self.audit is not None
         ):
-            report_result = report_composer.run(
+            report_result = composer.run(
                 user_request=self.task.user_request,
                 claims=result.finalization.claims,
                 catalog=self.catalog,
