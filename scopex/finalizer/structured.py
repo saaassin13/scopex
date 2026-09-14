@@ -21,6 +21,7 @@ class StructuredFinalizerResult:
     finalization: FinalizationResult | None
     normalizations: tuple[str, ...] = ()
     image_evidence_refs: tuple[str, ...] = ()
+    retry_count: int = 0
 
     @property
     def valid(self) -> bool:
@@ -172,11 +173,11 @@ kind 与 relation 必须严格匹配：
 不要输出 hypothesis、causal、observation 等其他 kind 值。
 
 规则：
-1. 只输出 3-6 个最重要 claim；topic 最多 24 个中文字符或约 48 个 ASCII 字符。
-2. fact 必须 relation=observed 且只引用能直接支持该事实的精确证据；优先引用最少必要证据。
-3. temporal_association 至少引用两个不同事件证据，只表示时间关联，不表示因果。
-4. causal_hypothesis 只能 medium/low，明确是未证实假设。
-5. unknown 的 confidence=unknown；可引用相关证据作为上下文。
+1. 只输出 1-5 个最重要 claim；topic 最多 24 个中文字符或约 48 个 ASCII 字符。
+2. fact 必须 relation=observed 且只引用能直接支持该事实的精确证据；每个 evidence_refs 最多 4 个，优先引用最少必要证据。
+3. temporal_association 引用 2-4 个不同事件证据，只表示时间关联，不表示因果。
+4. causal_hypothesis 只能 medium/low，明确是未证实假设；evidence_refs 最多 4 个。
+5. unknown 的 confidence=unknown；可引用最多 4 个相关证据作为上下文，也可以没有直接证据。
 6. 不把局部观察扩大成全局结论，不把常识/典型原因写成已观察事实。
 7. summary_claim_ids 最多 4 个，只列最重要 claim。
 8. 不复制日志全文到 topic，不增加额外字段。
@@ -185,6 +186,8 @@ kind 与 relation 必须严格匹配：
 11. type=command_line 的 fact 只能陈述该行输出直接支持的信息；可以为同一次命令的不同输出行生成不同 fact，但不要把命令输出推断成未观察到的原因。
 12. 如果多张图片呈现与原任务相关的明显不同状态、质量或内容差异，优先按图片或证据子集分别生成视觉 fact；不要把有意义的差异压缩成一个宽泛的场景描述。只有图片内容实质相同时才合并。
 13. evidence_block 只是为了压缩重复的工具元数据；块内每个 E ref 仍是独立、精确的 Evidence。command_preview 可能被截断，完整命令只以 command_sha256 保持身份；不要根据被截断的命令内容推断额外事实。
+14. 不要为了“覆盖全部证据”而枚举大量 E ref。每个 claim 只选择最直接的 1-4 个；Evidence 数量很多时仍然保持输出紧凑。
+15. 整个输出只允许一个 JSON 对象，不要附加解释、Markdown、证据原文或第二份报告。
 
 只输出 JSON 对象，可有或没有 json fence。"""
     user = f"""原任务：{user_request}
@@ -209,8 +212,21 @@ def _empty_transport() -> FinalizerResponse:
     )
 
 
+_LENGTH_RETRY_SUFFIX = """
+
+[长度恢复]
+上一次结构化 JSON 因输出长度限制被截断。本次不是新调查，也没有新证据；只把同一批 Evidence 重写成更短的合法 JSON。
+- 最多 4 个 claim；
+- 每个 topic 最多 20 个中文字符或约 40 个 ASCII 字符；
+- 每个 evidence_refs 最多 3 个，只保留最直接证据；
+- summary_claim_ids 最多 3 个；
+- 不复制任何证据原文，不输出解释文本。
+[/长度恢复]
+"""
+
+
 class StructuredFinalizer:
-    """One fresh no-tool model call followed by deterministic validation/rendering."""
+    """Fresh no-tool finalization with one bounded length-recovery retry."""
 
     def __init__(
         self,
@@ -226,6 +242,26 @@ class StructuredFinalizer:
         self.max_tokens = max_tokens
         self.service = service or FinalizationService()
         self.media_loader = media_loader
+        self.truncation_retry_max_tokens = (
+            None if max_tokens >= 4096 else min(4096, max(1024, max_tokens * 2))
+        )
+
+    def _complete(
+        self,
+        *,
+        system: str,
+        user: str,
+        max_tokens: int,
+        image_inputs: tuple[tuple[str, str], ...],
+    ) -> FinalizerResponse:
+        return self.client.complete(
+            model=self.model,
+            system_prompt=system,
+            user_prompt=user,
+            max_tokens=max_tokens,
+            temperature=0,
+            image_inputs=image_inputs,
+        )
 
     def run(self, *, user_request: str, catalog: EvidenceCatalog) -> StructuredFinalizerResult:
         system, user = build_structured_prompts(user_request, catalog)
@@ -251,12 +287,10 @@ class StructuredFinalizer:
             )
 
         try:
-            transport = self.client.complete(
-                model=self.model,
-                system_prompt=system,
-                user_prompt=user,
+            transport = self._complete(
+                system=system,
+                user=user,
                 max_tokens=self.max_tokens,
-                temperature=0,
                 image_inputs=image_inputs,
             )
         except (OSError, ValueError) as exc:
@@ -268,6 +302,31 @@ class StructuredFinalizer:
                 image_evidence_refs=image_evidence_refs,
             )
 
+        retry_count = 0
+        if (
+            transport.done_seen
+            and transport.finish_reasons
+            and transport.finish_reasons[-1] == "length"
+            and self.truncation_retry_max_tokens is not None
+        ):
+            retry_count = 1
+            try:
+                transport = self._complete(
+                    system=system + _LENGTH_RETRY_SUFFIX,
+                    user=user,
+                    max_tokens=self.truncation_retry_max_tokens,
+                    image_inputs=image_inputs,
+                )
+            except (OSError, ValueError) as exc:
+                return StructuredFinalizerResult(
+                    transport,
+                    None,
+                    "structured_finalizer_retry_transport_error:" + str(exc),
+                    None,
+                    image_evidence_refs=image_evidence_refs,
+                    retry_count=retry_count,
+                )
+
         if not transport.done_seen:
             return StructuredFinalizerResult(
                 transport,
@@ -275,6 +334,7 @@ class StructuredFinalizer:
                 "structured_finalizer_stream_incomplete",
                 None,
                 image_evidence_refs=image_evidence_refs,
+                retry_count=retry_count,
             )
         if not transport.finish_reasons:
             return StructuredFinalizerResult(
@@ -283,6 +343,7 @@ class StructuredFinalizer:
                 "structured_finalizer_missing_finish_reason",
                 None,
                 image_evidence_refs=image_evidence_refs,
+                retry_count=retry_count,
             )
         if transport.finish_reasons[-1] == "length":
             return StructuredFinalizerResult(
@@ -291,6 +352,7 @@ class StructuredFinalizer:
                 "structured_finalizer_truncated",
                 None,
                 image_evidence_refs=image_evidence_refs,
+                retry_count=retry_count,
             )
         if transport.finish_reasons[-1] != "stop":
             return StructuredFinalizerResult(
@@ -299,6 +361,7 @@ class StructuredFinalizer:
                 "structured_finalizer_finish_reason:" + transport.finish_reasons[-1],
                 None,
                 image_evidence_refs=image_evidence_refs,
+                retry_count=retry_count,
             )
 
         try:
@@ -310,6 +373,7 @@ class StructuredFinalizer:
                 str(exc),
                 None,
                 image_evidence_refs=image_evidence_refs,
+                retry_count=retry_count,
             )
 
         normalized, normalizations = normalize_claim_payload(raw_payload)
@@ -321,6 +385,7 @@ class StructuredFinalizer:
                 None,
                 normalizations,
                 image_evidence_refs,
+                retry_count,
             )
         finalization = self.service.finalize(normalized, catalog)
         return StructuredFinalizerResult(
@@ -330,4 +395,5 @@ class StructuredFinalizer:
             finalization,
             normalizations,
             image_evidence_refs,
+            retry_count,
         )
