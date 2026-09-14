@@ -120,9 +120,7 @@ def cow_key(record: dict[str, Any], cow_fields: list[str]) -> str:
 
 def sort_time(row: dict[str, Any]) -> float:
     dt = row['_ts']
-    if dt.tzinfo is None:
-        return dt.timestamp()
-    return dt.astimezone().timestamp()
+    return dt.timestamp()
 
 
 def selected_true(value: Any) -> bool:
@@ -168,6 +166,7 @@ def main() -> int:
     if not args.input.exists():
         ap.error(f'input does not exist: {args.input}')
 
+    observed_cows: set[str] = set()
     by_cow: dict[str, list[dict[str, Any]]] = {}
     file_count = record_count = 0
     malformed_files = missing_records_field_files = missing_fields = bad_values = 0
@@ -190,6 +189,19 @@ def main() -> int:
                 if not in_window(ts, args.start, args.end):
                     continue
                 key = cow_key(record, args.cow_field)
+            except KeyError:
+                missing_fields += 1
+                continue
+            except (ValueError, TypeError, OverflowError):
+                bad_values += 1
+                continue
+
+            # A valid time + cow key establishes that this cow is represented in
+            # the JSON window even if its nipple result is missing/bad. Keep this
+            # denominator separate from result coverage so KPI cannot silently
+            # improve by dropping cows without a usable selected result.
+            observed_cows.add(key)
+            try:
                 nipple_count = count_nipples(field(record, args.nipple_field))
             except KeyError:
                 missing_fields += 1
@@ -197,6 +209,7 @@ def main() -> int:
             except (ValueError, TypeError, OverflowError):
                 bad_values += 1
                 continue
+
             by_cow.setdefault(key, []).append({
                 '_ts': ts,
                 'ts': ts.isoformat(),
@@ -206,14 +219,12 @@ def main() -> int:
             })
 
     selected_rows = []
-    cows_without_selected = []
     for key, rows in sorted(by_cow.items()):
         try:
             picked = choose(rows, args.policy, args.selected_field)
         except ValueError as exc:
             ap.error(str(exc))
         if picked is None:
-            cows_without_selected.append(key)
             continue
         selected_rows.append({
             'cow_id': key,
@@ -222,17 +233,21 @@ def main() -> int:
             'source': picked['source'],
         })
 
+    selected_ids = {row['cow_id'] for row in selected_rows}
+    cows_without_selected = sorted(observed_cows - selected_ids)
     distribution: dict[str, int] = {}
     for row in selected_rows:
         k = str(row['nipple_count'])
         distribution[k] = distribution.get(k, 0) + 1
 
-    total = len(selected_rows)
+    observed_total = len(observed_cows)
+    selected_total = len(selected_rows)
     exactly_four = sum(1 for row in selected_rows if row['nipple_count'] == 4)
     over_four = sum(1 for row in selected_rows if row['nipple_count'] > 4)
     raw_nipples = sum(row['nipple_count'] for row in selected_rows)
     capped_nipples = sum(min(row['nipple_count'], 4) for row in selected_rows)
-    denominator = total * 4
+    selected_denominator = selected_total * 4
+    observed_denominator = observed_total * 4
 
     result = {
         'schema': 1,
@@ -256,17 +271,27 @@ def main() -> int:
             'files_missing_records_field': missing_records_field_files,
             'records_missing_required_fields': missing_fields,
             'records_with_bad_values': bad_values,
-            'cows_without_selected_record': cows_without_selected,
+            'cows_without_selected_result': cows_without_selected,
         },
         'summary': {
-            'total_cows': total,
+            # total_cows means cows represented by a valid time+cow key in JSON,
+            # not only cows for which a usable final result happened to exist.
+            'total_cows': observed_total,
+            'cows_with_selected_result': selected_total,
+            'selected_result_coverage_rate': round(selected_total / observed_total, 6) if observed_total else None,
             'exactly_four_cows': exactly_four,
             'over_four_cows': over_four,
-            'complete_four_nipple_rate': round(exactly_four / total, 6) if total else None,
+            'complete_four_nipple_rate': round(exactly_four / observed_total, 6) if observed_total else None,
+            'complete_four_nipple_rate_selected_only': round(exactly_four / selected_total, 6) if selected_total else None,
             'raw_detected_nipples': raw_nipples,
             'capped_detected_nipples': capped_nipples,
-            'expected_nipples': denominator,
-            'nipple_recognition_rate': round(capped_nipples / denominator, 6) if denominator else None,
+            'expected_nipples': observed_denominator,
+            'selected_expected_nipples': selected_denominator,
+            # Missing selected results contribute zero to the conservative main
+            # KPI. The selected-only rate is also exposed so data-coverage issues
+            # are never hidden by one denominator.
+            'nipple_recognition_rate': round(capped_nipples / observed_denominator, 6) if observed_denominator else None,
+            'nipple_recognition_rate_selected_only': round(capped_nipples / selected_denominator, 6) if selected_denominator else None,
             'distribution_by_selected_nipple_count': distribution,
         },
         'cows': selected_rows,
@@ -277,7 +302,7 @@ def main() -> int:
     if args.out:
         args.out.parent.mkdir(parents=True, exist_ok=True)
         args.out.write_text(text + '\n', encoding='utf-8')
-    return 0 if total else 1
+    return 0 if observed_total else 1
 
 
 if __name__ == '__main__':
