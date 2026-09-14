@@ -8,7 +8,15 @@ from scopex.runtime.stop import SafeStopGate
 
 
 class RuntimeMessageContractTests(unittest.TestCase):
-    def runtime(self, root: Path, *, exec_host="sandbox", concise=True, view_image=True):
+    def runtime(
+        self,
+        root: Path,
+        *,
+        exec_host="sandbox",
+        concise=True,
+        view_image=True,
+        data_catalog_summary="",
+    ):
         tools = ["read", "exec"]
         if view_image:
             tools.append("view_image")
@@ -27,6 +35,7 @@ class RuntimeMessageContractTests(unittest.TestCase):
             gid=1000,
             tools=tuple(tools),
             task_scratch_bind=f"{root}/scratch:/task-scratch:rw",
+            data_catalog_summary=data_catalog_summary,
             exec_host=exec_host,
             concise_terminal_handoff=concise,
         )
@@ -54,6 +63,24 @@ class RuntimeMessageContractTests(unittest.TestCase):
         self.assertIn("ScopeX independently composes the user-facing product result", message)
         self.assertIn("keep the terminal assistant answer brief", message)
         self.assertIn("diagnose", message)
+
+    def test_data_catalog_summary_is_global_semantic_context_not_business_evidence(self):
+        summary = (
+            "- cowdisinfect_logs: /agent-data/logs (hourly_rotated_log)\n"
+            "- left_camera_multimodal: /agent-data/left-camera (hourly_multimodal)\n"
+            "Do not use recursive find/grep/du over these mounted roots for ordinary time-window tasks."
+        )
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "workspace").mkdir()
+            (root / "scratch").mkdir()
+            message = self.runtime(root, data_catalog_summary=summary)._runtime_message("检查3点编码器")
+
+        self.assertIn("ScopeX data catalog", message)
+        self.assertIn("/agent-data/logs", message)
+        self.assertIn("/agent-data/left-camera", message)
+        self.assertIn("Do not use recursive find/grep/du", message)
+        self.assertIn("do not treat this as business Evidence", message)
 
     def test_view_image_contract_prefers_named_originals_and_avoids_unrelated_files(self):
         with tempfile.TemporaryDirectory() as td:
