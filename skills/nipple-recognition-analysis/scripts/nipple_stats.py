@@ -45,7 +45,10 @@ def field(value: Any, path: str) -> Any:
                 raise KeyError(path)
             cur = cur[token]
         elif isinstance(cur, list) and token.isdigit():
-            cur = cur[int(token)]
+            index = int(token)
+            if index >= len(cur):
+                raise KeyError(path)
+            cur = cur[index]
         else:
             raise KeyError(path)
     return cur
@@ -63,11 +66,14 @@ def extract_records(document: Any, records_field: str | None) -> list[dict[str, 
 def count_nipples(value: Any) -> int:
     if isinstance(value, bool):
         raise ValueError('boolean is not a nipple count')
-    if isinstance(value, (int, float)):
-        count = int(value)
-        if count < 0:
+    if isinstance(value, int):
+        if value < 0:
             raise ValueError('negative nipple count')
-        return count
+        return value
+    if isinstance(value, float):
+        if value < 0 or not value.is_integer():
+            raise ValueError('nipple count must be a non-negative integer')
+        return int(value)
     if isinstance(value, list):
         return len(value)
     raise ValueError(f'unsupported nipple value: {type(value).__name__}')
@@ -106,8 +112,23 @@ def cow_key(record: dict[str, Any], cow_fields: list[str]) -> str:
     parts = []
     for path in cow_fields:
         value = field(record, path)
+        if value is None or (isinstance(value, str) and not value.strip()):
+            raise ValueError(f'empty cow identity field: {path}')
         parts.append(str(value))
     return '|'.join(parts)
+
+
+def sort_time(row: dict[str, Any]) -> float:
+    dt = row['_ts']
+    if dt.tzinfo is None:
+        return dt.timestamp()
+    return dt.astimezone().timestamp()
+
+
+def selected_true(value: Any) -> bool:
+    # Do not treat non-empty strings such as "false" as true. Schema-specific
+    # string conventions must be normalized upstream or explicitly added later.
+    return value is True or value == 1
 
 
 def choose(rows: list[dict[str, Any]], policy: str, selected_field: str | None) -> dict[str, Any] | None:
@@ -117,7 +138,7 @@ def choose(rows: list[dict[str, Any]], policy: str, selected_field: str | None) 
         selected = []
         for row in rows:
             try:
-                if bool(field(row['record'], selected_field)):
+                if selected_true(field(row['_record'], selected_field)):
                     selected.append(row)
             except KeyError:
                 continue
@@ -125,8 +146,8 @@ def choose(rows: list[dict[str, Any]], policy: str, selected_field: str | None) 
         if not rows:
             return None
     if policy == 'max':
-        return max(rows, key=lambda row: (row['nipple_count'], row['ts']))
-    return max(rows, key=lambda row: row['ts'])
+        return max(rows, key=lambda row: (row['nipple_count'], sort_time(row)))
+    return max(rows, key=sort_time)
 
 
 def main() -> int:
@@ -149,7 +170,7 @@ def main() -> int:
 
     by_cow: dict[str, list[dict[str, Any]]] = {}
     file_count = record_count = 0
-    malformed_files = missing_fields = bad_values = 0
+    malformed_files = missing_records_field_files = missing_fields = bad_values = 0
     for path in iter_json_files(args.input):
         file_count += 1
         try:
@@ -157,7 +178,12 @@ def main() -> int:
         except (OSError, UnicodeError, json.JSONDecodeError):
             malformed_files += 1
             continue
-        for record in extract_records(document, args.records_field):
+        try:
+            records = extract_records(document, args.records_field)
+        except (KeyError, IndexError):
+            missing_records_field_files += 1
+            continue
+        for record in records:
             record_count += 1
             try:
                 ts = parse_time_value(field(record, args.time_field))
@@ -172,11 +198,11 @@ def main() -> int:
                 bad_values += 1
                 continue
             by_cow.setdefault(key, []).append({
-                'ts': ts,
-                'ts_text': ts.isoformat(),
+                '_ts': ts,
+                'ts': ts.isoformat(),
                 'nipple_count': nipple_count,
                 'source': str(path),
-                'record': record,
+                '_record': record,
             })
 
     selected_rows = []
@@ -189,7 +215,12 @@ def main() -> int:
         if picked is None:
             cows_without_selected.append(key)
             continue
-        selected_rows.append({'cow_id': key, **{k: v for k, v in picked.items() if k != 'record'}})
+        selected_rows.append({
+            'cow_id': key,
+            'ts': picked['ts'],
+            'nipple_count': picked['nipple_count'],
+            'source': picked['source'],
+        })
 
     distribution: dict[str, int] = {}
     for row in selected_rows:
@@ -222,6 +253,7 @@ def main() -> int:
             'json_files': file_count,
             'records_seen': record_count,
             'malformed_files': malformed_files,
+            'files_missing_records_field': missing_records_field_files,
             'records_missing_required_fields': missing_fields,
             'records_with_bad_values': bad_values,
             'cows_without_selected_record': cows_without_selected,
