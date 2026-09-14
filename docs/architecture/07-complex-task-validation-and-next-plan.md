@@ -46,6 +46,7 @@ Evidence -> Finalizer -> Claims -> Product Answer
 - Result-first UI；
 - Conversation 与 Task 共用 Runtime；
 - Conversation 正常结束时允许无 Evidence；
+- 正式 Task 无 Evidence 仍失败；
 - started/finished/duration/trigger metadata；
 - interval/daily/once 简单 Schedule；
 - busy 时 `SKIPPED_BUSY`；
@@ -70,7 +71,7 @@ Scheduler 仅是时间 Trigger，不决定 Skill 或业务步骤。
 
 旧行为：无 Evidence → `investigation_completed_without_evidence`。
 
-当前：Conversation 与 Task 仍共用 TaskService/OpenClaw，但 Conversation 的正常 final answer 可直接发布；正式 Task 仍要求 Evidence。
+当前：Conversation 与 Task 仍共用 TaskService/OpenClaw，但 Conversation 的正常 final answer 可直接发布；正式 Task 仍要求 Evidence。`tests/test_conversation_mode.py` 专门锁定这一边界。
 
 ### 4.4 Product Answer 太机械
 
@@ -156,6 +157,7 @@ ScopeX Update Bundle
 
 ```bash
 python3 -m unittest \
+  tests.test_conversation_mode \
   tests.test_product_answer \
   tests.test_product_answer_readability \
   tests.test_business_skill_tools \
