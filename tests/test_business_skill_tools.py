@@ -131,10 +131,11 @@ class BusinessSkillToolTests(unittest.TestCase):
             for i in range(15):
                 rows.append(f'2026-09-14 07:00:00:{i*20:03d} [INFO] EncoderVal [{count}], TurnTableSpeed [50.0 mm/s]')
                 count += 20
-            rows.append('2026-09-14 07:00:00:300 [INFO] EncoderVal [1240], TurnTableSpeed [50.0 mm/s]')
-            rows.append('2026-09-14 07:00:00:320 [INFO] EncoderVal [1190], TurnTableSpeed [-10.0 mm/s]')
-            rows.append('2026-09-14 07:00:00:340 [INFO] EncoderVal [1260], TurnTableSpeed [60.0 mm/s]')
-            rows.append('2026-09-14 07:00:00:360 [INFO] EncoderVal [1280], TurnTableSpeed [50.0 mm/s]')
+            # Normal continuation, then one isolated backstep and immediate catch-up.
+            rows.append('2026-09-14 07:00:00:300 [INFO] EncoderVal [1300], TurnTableSpeed [50.0 mm/s]')
+            rows.append('2026-09-14 07:00:00:320 [INFO] EncoderVal [1250], TurnTableSpeed [-10.0 mm/s]')
+            rows.append('2026-09-14 07:00:00:340 [INFO] EncoderVal [1320], TurnTableSpeed [60.0 mm/s]')
+            rows.append('2026-09-14 07:00:00:360 [INFO] EncoderVal [1340], TurnTableSpeed [50.0 mm/s]')
             log.write_text('\n'.join(rows) + '\n', encoding='utf-8')
             proc = run_script(script, str(log))
             self.assertEqual(proc.returncode, 0, proc.stderr)
@@ -145,8 +146,31 @@ class BusinessSkillToolTests(unittest.TestCase):
             self.assertGreaterEqual(facts['anomaly_event_count'], 1)
             events = [row for row in data['top_candidates'] if row['type'] == 'reverse_glitch_candidate']
             self.assertTrue(events)
-            self.assertLess(events[0]['pulse_delta'], 0)
+            self.assertEqual(events[0]['pulse_delta'], -50)
             self.assertTrue(events[0]['recovered'])
+
+    def test_encoder_health_keeps_consecutive_backsteps_as_reverse_interval(self):
+        script = ROOT / 'skills/encoder-health/scripts/encoder_health.py'
+        with tempfile.TemporaryDirectory() as td:
+            log = Path(td) / 'app.log'
+            rows = []
+            count = 1000
+            for i in range(15):
+                rows.append(f'2026-09-14 07:00:00:{i*20:03d} [INFO] EncoderVal [{count}], TurnTableSpeed [50.0 mm/s]')
+                count += 20
+            rows.extend([
+                '2026-09-14 07:00:00:300 [INFO] EncoderVal [1300], TurnTableSpeed [50.0 mm/s]',
+                '2026-09-14 07:00:00:320 [INFO] EncoderVal [1260], TurnTableSpeed [-8.0 mm/s]',
+                '2026-09-14 07:00:00:340 [INFO] EncoderVal [1220], TurnTableSpeed [-8.0 mm/s]',
+                '2026-09-14 07:00:00:360 [INFO] EncoderVal [1240], TurnTableSpeed [20.0 mm/s]',
+            ])
+            log.write_text('\n'.join(rows) + '\n', encoding='utf-8')
+            proc = run_script(script, str(log))
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            data = json.loads(proc.stdout)
+            facts = data['facts']
+            self.assertGreaterEqual(facts['reverse_interval_candidate_count'], 1)
+            self.assertEqual(facts['reverse_glitch_candidate_count'], 0)
 
     def test_encoder_health_log_dir_analyzes_multiple_rotation_files_in_one_call(self):
         script = ROOT / 'skills/encoder-health/scripts/encoder_health.py'
