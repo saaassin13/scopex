@@ -51,8 +51,51 @@ def log_timestamp(name: str) -> tuple[datetime, int] | None:
     if not m:
         return None
     ts = datetime.strptime(m.group('date') + m.group('time'), '%Y%m%d%H%M%S')
-    rotation = int(m.group('rotation') or 0)
-    return ts, rotation
+    return ts, int(m.group('rotation') or 0)
+
+
+def log_groups(root: Path) -> list[tuple[datetime, list[tuple[int, str]]]]:
+    grouped: dict[datetime, list[tuple[int, str]]] = {}
+    if not root.is_dir():
+        return []
+    with os.scandir(root) as entries:
+        for entry in entries:
+            if not entry.is_file(follow_symlinks=False):
+                continue
+            parsed = log_timestamp(entry.name)
+            if parsed is None:
+                continue
+            ts, rotation = parsed
+            grouped.setdefault(ts, []).append((rotation, str(root / entry.name)))
+    return [(ts, sorted(rows, key=lambda row: (row[0], row[1]))) for ts, rows in sorted(grouped.items())]
+
+
+def locate_logs(root: Path, start: datetime, end: datetime, *, max_hours: int, max_files: int) -> dict[str, Any]:
+    # Bound requested duration, but do not equate natural clock hours with log
+    # file start hours: files may start at e.g. 10:23:36 and cover data past 11:00.
+    hour_buckets(start, end, maximum=max_hours)
+    groups = log_groups(root)
+    matched: list[tuple[datetime, int, str]] = []
+    intervals: list[dict[str, str]] = []
+    for index, (group_start, files) in enumerate(groups):
+        next_start = groups[index + 1][0] if index + 1 < len(groups) else group_start + timedelta(hours=1)
+        group_end = max(next_start, group_start + timedelta(seconds=1))
+        if group_start >= end or group_end <= start:
+            continue
+        intervals.append({
+            'start': group_start.strftime(TIME_FMT),
+            'end_exclusive': group_end.strftime(TIME_FMT),
+        })
+        for rotation, path in files:
+            matched.append((group_start, rotation, path))
+    matched.sort(key=lambda row: (row[0], row[1], row[2]))
+    files = [row[2] for row in matched[:max_files]]
+    return {
+        'matching_count': len(matched),
+        'files_truncated': len(matched) > max_files,
+        'files': files,
+        'selected_log_intervals': intervals,
+    }
 
 
 def multimodal_timestamp(name: str) -> datetime | None:
@@ -65,40 +108,7 @@ def multimodal_timestamp(name: str) -> datetime | None:
         return None
 
 
-def locate_logs(root: Path, start: datetime, end: datetime, *, max_hours: int, max_files: int) -> dict[str, Any]:
-    buckets = {value.strftime('%Y%m%d%H') for value in hour_buckets(start, end, maximum=max_hours)}
-    matched: list[tuple[datetime, int, str]] = []
-    if root.is_dir():
-        with os.scandir(root) as entries:
-            for entry in entries:
-                if not entry.is_file(follow_symlinks=False):
-                    continue
-                parsed = log_timestamp(entry.name)
-                if parsed is None:
-                    continue
-                ts, rotation = parsed
-                if ts.strftime('%Y%m%d%H') not in buckets:
-                    continue
-                matched.append((ts, rotation, str(root / entry.name)))
-    matched.sort(key=lambda row: (row[0], row[1], row[2]))
-    files = [row[2] for row in matched[:max_files]]
-    return {
-        'matching_count': len(matched),
-        'files_truncated': len(matched) > max_files,
-        'files': files,
-        'hours': sorted(buckets),
-    }
-
-
-def locate_multimodal(
-    root: Path,
-    start: datetime,
-    end: datetime,
-    *,
-    kind: str,
-    max_hours: int,
-    max_files: int,
-) -> dict[str, Any]:
+def locate_multimodal(root: Path, start: datetime, end: datetime, *, kind: str, max_hours: int, max_files: int) -> dict[str, Any]:
     buckets = hour_buckets(start, end, maximum=max_hours)
     matched: list[tuple[datetime, str]] = []
     scanned_dirs: list[str] = []
@@ -145,7 +155,6 @@ def main() -> int:
     ap.add_argument('--kind', choices=('all', 'jpg', 'json', 'pcd'), default='all')
     ap.add_argument('--max-files', type=int)
     args = ap.parse_args()
-
     if args.end <= args.start:
         ap.error('--end must be after --start')
     try:
@@ -160,27 +169,19 @@ def main() -> int:
     max_files = int(args.max_files or default_max_files)
     if max_files < 1 or max_files > default_max_files:
         ap.error(f'--max-files must be between 1 and catalog limit {default_max_files}')
-
-    if args.source == 'cowdisinfect_logs':
-        result = locate_logs(root, args.start, args.end, max_hours=max_hours, max_files=max_files)
-    else:
-        result = locate_multimodal(
-            root,
-            args.start,
-            args.end,
-            kind=args.kind,
-            max_hours=max_hours,
-            max_files=max_files,
-        )
+    try:
+        if args.source == 'cowdisinfect_logs':
+            result = locate_logs(root, args.start, args.end, max_hours=max_hours, max_files=max_files)
+        else:
+            result = locate_multimodal(root, args.start, args.end, kind=args.kind, max_hours=max_hours, max_files=max_files)
+    except ValueError as exc:
+        ap.error(str(exc))
     payload = {
         'scopex_role': 'locator',
         'schema': 1,
         'source': args.source,
         'root': str(root),
-        'window': {
-            'start': args.start.strftime(TIME_FMT),
-            'end': args.end.strftime(TIME_FMT),
-        },
+        'window': {'start': args.start.strftime(TIME_FMT), 'end': args.end.strftime(TIME_FMT)},
         'kind': args.kind,
         **result,
     }
