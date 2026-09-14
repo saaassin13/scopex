@@ -12,7 +12,7 @@
 /opt/ScalingRobotics/CowDisinfect/Log
 ```
 
-文件按小时生成，同一小时可能存在轮转文件：
+同一文件组可能存在轮转文件：
 
 ```text
 CowDisinfect-20260716-102336.log
@@ -20,7 +20,9 @@ CowDisinfect-20260716-102336.log.1
 CowDisinfect-20260716-102336.log.2
 ```
 
-ScopeX Sandbox 固定逻辑路径：
+`102336` 是**文件组起始时间**，不是“只包含 10 点数据”的自然小时标签。若下一组从 `11:23:36` 开始，则查询 11:00 数据仍应选择 `10:23:36` 这一组。
+
+Sandbox 固定路径：
 
 ```text
 /agent-data/logs
@@ -28,69 +30,55 @@ ScopeX Sandbox 固定逻辑路径：
 
 ### LeftCamera 多模态数据
 
+宿主机：
+
 ```text
 /opt/ScalingRobotics/CowDisinfect/GrabbedImages/LeftCamera
 ```
 
-目录按日期 / 小时组织：
+目录：
 
 ```text
 YYYYMMDD/HH/
 ```
 
-示例：
+文件：
 
 ```text
-20260716/00/
-20260716/01/
+YYYYMMDD-HHMMSSmmm.jpg
+YYYYMMDD-HHMMSSmmm.json
+YYYYMMDD-HHMMSSmmm.pcd
 ```
 
-文件使用毫秒级时间戳 stem 关联：
-
-```text
-20260914-130002161.jpg
-20260914-130002161.json
-20260914-130002161.pcd
-```
-
-ScopeX Sandbox 固定逻辑路径：
+Sandbox 固定路径：
 
 ```text
 /agent-data/left-camera
 ```
 
-同 stem JPG / JSON / PCD 表示同一采集结果的不同模态。检测或推理失败时部分 artifact 可能根本不会保存，因此文件数不能自动等同牛数/检测次数。
+同 stem JPG / JSON / PCD 表示同一采集结果的不同模态。检测或推理失败时部分 artifact 可能不存在，因此文件数不能自动等同牛数/检测次数。
 
 ## 2. Data Catalog
 
-仓库维护：
+仓库：
 
 ```text
 config/data-catalog.json
 ```
 
-Runtime 启动时复制到：
+Runtime 复制到：
 
 ```text
 /workspace/scopex-data-catalog.json
 ```
 
-如果 Catalog 中声明的宿主机目录存在，Runtime 默认自动只读挂载。额外/替代目录仍可通过 `--data-dir HOST:AGENT` 显式配置。
+Catalog 中 host path 存在时默认自动只读挂载；额外/替代目录仍可通过 `--data-dir HOST:AGENT` 显式配置。
 
-Catalog 是**语义索引**，不是文件索引。它只描述：
-
-- 数据源名称；
-- host / agent path；
-- 目录和文件命名；
-- 时间语义；
-- 访问预算；
-- 业务边界。
-
-Runtime 不会启动时 `find` 全盘建立索引。
+Catalog 是语义目录，不是启动时全量构建的文件索引。它只描述数据源、路径、命名、时间语义、访问预算和业务边界。
 
 ## 3. Data Locator
 
-支持 Skill：
+内部支持 Skill：
 
 ```text
 data-locator
@@ -102,7 +90,7 @@ data-locator
 /workspace/skills/data-locator/scripts/data_locator.py
 ```
 
-日志示例：
+### 日志
 
 ```bash
 python3 /workspace/skills/data-locator/scripts/data_locator.py \
@@ -111,9 +99,15 @@ python3 /workspace/skills/data-locator/scripts/data_locator.py \
   --end   "2026-09-14 04:00:00"
 ```
 
-它只按日志文件名的日期/小时选择相关 `CowDisinfect-*.log[.N]`，不会递归读取其他目录。
+日志 Locator 只做**非递归文件名扫描**，先把同 base timestamp 的 `.log/.log.1/.log.2` 归为一组，再按：
 
-图片示例：
+```text
+[group_start, next_group_start)
+```
+
+和请求窗口是否重叠选择文件组。最后一组没有下一组时，定位层默认最多按约 `+1h` 推断；真正业务统计仍会按日志行 timestamp 严格过滤 `--start/--end`。
+
+### LeftCamera
 
 ```bash
 python3 /workspace/skills/data-locator/scripts/data_locator.py \
@@ -124,13 +118,13 @@ python3 /workspace/skills/data-locator/scripts/data_locator.py \
   --max-files 32
 ```
 
-它直接进入：
+直接进入：
 
 ```text
 /agent-data/left-camera/20260914/13
 ```
 
-然后按文件名时间戳过滤，不扫描其他日期/小时目录。
+然后按 filename timestamp 过滤，不扫描其他日期/小时目录。
 
 Locator 输出 `scopex_role=locator`，属于调查路由信息，不进入 Claim-grade Evidence。
 
@@ -144,8 +138,6 @@ du -a /agent-data ...
 grep -R /agent-data ...
 rg --files /agent-data ...
 ```
-
-除非用户明确要求全量 inventory，并且未来为该类任务单独提供资源预算。
 
 当前 Catalog 默认边界：
 
@@ -161,29 +153,31 @@ LeftCamera multimodal
   max_pointcloud_files_per_operation = 8
 ```
 
-超过边界时应先缩小时间窗/分段，而不是一次读取全部历史。
+超过边界应先缩小时间窗/分段，而不是一次读全部历史。
+
+日志根目录为了判断“前一组是否覆盖当前时间窗”需要非递归读取文件名。如果未来真实目录增长到几十万文件且该操作成为瓶颈，再增加轻量文件组索引；当前不提前引入数据库/后台全盘索引。
 
 ## 5. 稳定业务脚本输出
 
 稳定业务脚本 stdout 使用：
 
 ```json
-{
-  "scopex_role": "business_facts"
-}
+{"scopex_role":"business_facts"}
 ```
 
-目的：stdout 只输出紧凑事实，完整明细写入 `/task-scratch`。
+stdout 只保留紧凑事实，完整明细写 `/task-scratch`。
 
-例如编码器：
+编码器产品路径：
 
 ```text
-encoder_health.py --log-dir /agent-data/logs --start ... --end ...
+data-locator
+  ↓ explicit rotated file list
+encoder_health.py <file1> <file2> ... --start ... --end ...
 ```
 
-一次处理目标小时的所有轮转日志，并跨文件边界计算采样连续性。所有小 `delta<0` 只统计幅度分布，只有显著候选进入 `top_candidates`；完整候选可写 `/task-scratch/encoder-events.json`。
+脚本把显式文件合并到同一时间序列，因此可检测跨轮转边界。所有小 `delta<0` 只统计次数/幅度分布；显著候选进入 `top_candidates`，完整候选可写 `/task-scratch/encoder-events.json`。
 
-乳头 KPI 同样只把 KPI/质量摘要输出到 stdout，逐牛明细写 `/task-scratch/nipple-details.json`。
+乳头 KPI 同样先 locator，再把显式文件传给 `nipple_stats.py`。stdout 只输出 KPI/质量摘要，逐牛明细写 `/task-scratch/nipple-details.json`；需要 JPG/JSON 辅助核对时也只访问目标 `YYYYMMDD/HH`。
 
 ## 6. Evidence 分层
 
@@ -198,34 +192,25 @@ Claim-grade Evidence
   /agent-data 原始日志行
   原始只读图片
   /scopex-host 当前快照事实
-  scopex_role=business_facts 的稳定结构化结果
+  scopex_role=business_facts 稳定结构化结果
 
 User Facts
-  UI 中从 Claim-grade Evidence 提取的事实依据
+  UI 中展示的事实依据
 ```
 
-当前 Projector 固定规则：
+Projector 固定：
 
 - `/workspace/skills/**` read：Trace-only；
 - `/workspace/scopex-data-catalog.json` read：Trace-only；
 - `/task-scratch/**` read：Trace-only；
 - `scopex_role=locator`：Trace-only；
-- `scopex_role=business_facts`：整体作为一条结构化 Evidence，而不是逐行拆成几百条。
+- `scopex_role=business_facts`：整体一条结构化 Evidence，不逐行拆几百条。
 
 ## 7. Scheduler 断电语义
 
 设备断电 / ScopeX 不运行期间错过的定时触发**不补跑**。
 
-例如每 30 分钟任务在离线期间错过：
-
-```text
-14:30
-15:00
-15:30
-16:00
-```
-
-16:20 启动后：
+例如每 30 分钟任务错过 14:30 / 15:00 / 15:30 / 16:00，16:20 启动后只更新：
 
 ```text
 missed_count += 4
@@ -235,12 +220,32 @@ next_run_at = 16:30
 
 不会创建四个历史 Task。一次性任务若已过期则 `MISSED_OFFLINE` 并禁用。
 
-## 8. 下一步验收
+## 8. Sandbox 资源保护
 
-1. Spark 启动 Runtime，确认两个真实 host path 自动挂载；
-2. `data_locator.py` 对 3 点日志只返回 3 点小时相关文件；
-3. 对 13:00~13:30 LeftCamera 只访问 `YYYYMMDD/13`；
-4. 编码器同一小时 `.log/.log.1/...` 一次分析并跨文件连续；
-5. nipple KPI 不递归扫描整个 LeftCamera 历史目录；
-6. 新任务 Evidence 不再出现 Skill.md / 脚本源码；
-7. 重启 Scheduler 后历史触发只计 missed，不创建 Task。
+当前 OpenClaw Sandbox 已有：
+
+```text
+memory = 512 MiB
+swap = 512 MiB
+CPU = 1 core
+PIDs = 256
+exec timeout = 30s
+network = none
+read-only root
+capabilities = drop all
+```
+
+硬限制可以避免单个误用命令无限吃 CPU/内存/进程，但不能替代正确的数据定位，尤其磁盘 IO 仍应通过 Catalog / Locator / 时间窗避免全盘扫描。
+
+PCD 若真实 workload 需要超过 512 MiB，应基于真实文件大小/降采样测试设计 capability-specific resource profile，而不是直接放大全局 Sandbox。
+
+## 9. 验收
+
+1. Spark Runtime 自动挂载两个真实 host path；
+2. 查询跨自然小时窗口时 Locator 能找到前一非整点文件组；
+3. 13:00~13:30 LeftCamera 只访问 `YYYYMMDD/13`；
+4. 编码器 `.log/.log.1/...` 一次分析并跨文件连续；
+5. nipple KPI 不递归扫描整个 LeftCamera；
+6. Evidence 不再出现 Skill.md / 脚本源码；
+7. `business_facts` 一次输出只形成少量结构化 Evidence；
+8. Scheduler 重启后历史 trigger 只计 missed，不创建 Task。
