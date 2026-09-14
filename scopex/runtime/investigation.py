@@ -419,6 +419,7 @@ class InvestigationCoordinator:
                 "finish_reasons": list(result.transport.finish_reasons),
                 "normalizations": list(result.normalizations),
                 "image_evidence_refs": list(result.image_evidence_refs),
+                "finalizer_retry_count": result.retry_count,
                 "investigation_reasons": list(self._finalization_reasons),
                 "task_state": published_state.value,
             },
