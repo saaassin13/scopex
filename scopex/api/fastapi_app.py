@@ -174,6 +174,10 @@ def create_app(
     def create_conversation(body: MessageRequest) -> dict[str, Any]:
         return service.create_task(body.message, mode="conversation", trigger_type="manual")
 
+    @app.post("/conversations/{task_id}/messages", status_code=202)
+    def continue_conversation(task_id: str, body: MessageRequest) -> dict[str, Any]:
+        return service.continue_conversation(task_id, body.message)
+
     @app.get("/tasks/{task_id}")
     def get_task(task_id: str) -> dict[str, Any]:
         return service.get_task(task_id)
