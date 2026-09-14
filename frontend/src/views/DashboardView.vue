@@ -7,9 +7,23 @@ import type { TaskSnapshot } from '../types'
 const router = useRouter()
 const tasks = ref<TaskSnapshot[]>([])
 const message = ref('')
+const mode = ref<'task' | 'conversation'>('task')
 const loading = ref(false)
 const error = ref('')
 let timer: number | undefined
+
+function fmt(value?: string | null) {
+  if (!value) return '—'
+  const date = new Date(value)
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleString()
+}
+
+function duration(task: TaskSnapshot) {
+  if (typeof task.duration_ms !== 'number') return ''
+  const sec = Math.max(0, Math.round(task.duration_ms / 1000))
+  if (sec < 60) return `${sec}s`
+  return `${Math.floor(sec / 60)}m ${sec % 60}s`
+}
 
 async function refresh() {
   try {
@@ -19,13 +33,15 @@ async function refresh() {
   }
 }
 
-async function createTask() {
+async function createEntry() {
   const value = message.value.trim()
   if (!value || loading.value) return
   loading.value = true
   error.value = ''
   try {
-    const task = await api.createTask(value)
+    const task = mode.value === 'conversation'
+      ? await api.createConversation(value)
+      : await api.createTask(value)
     message.value = ''
     await router.push(`/tasks/${task.id}`)
   } catch (exc) {
@@ -45,20 +61,28 @@ onBeforeUnmount(() => timer && window.clearInterval(timer))
 <template>
   <section class="dashboard-grid">
     <div class="hero-panel panel">
-      <div class="eyebrow">LOCAL · EVIDENCE-CALIBRATED</div>
-      <h1>把现场问题交给 Agent 调查，<br />把结论交给证据约束。</h1>
-      <p>ScopeX 在本机读取日志和设备状态，自主调查，并以可追溯 Evidence 输出结果。</p>
+      <div class="eyebrow">LOCAL · BUSINESS AGENT</div>
+      <h1>{{ mode === 'task' ? '创建可审计业务任务' : '和同一个 Agent 正常对话' }}</h1>
+      <p v-if="mode === 'task'">任务走 Evidence → Claims → Result，可用于诊断、统计、图片和设备分析。</p>
+      <p v-else>对话仍走同一个 OpenClaw / Skill / Tool Runtime，但普通问答不强制必须产生 Evidence。</p>
 
-      <form class="task-compose" @submit.prevent="createTask">
+      <div class="mode-switch">
+        <button :class="{ active: mode === 'task' }" @click="mode = 'task'">任务</button>
+        <button :class="{ active: mode === 'conversation' }" @click="mode = 'conversation'">对话</button>
+      </div>
+
+      <form class="task-compose" @submit.prevent="createEntry">
         <textarea
           v-model="message"
           rows="5"
-          placeholder="例如：分析 10:15 左右任务失败，先检查视觉和系统日志，不要把 status=137 直接等同于 OOM。"
+          :placeholder="mode === 'task'
+            ? '例如：检查过去30分钟编码器是否存在丢数、毛刺、回退或不稳定。'
+            : '例如：现在支持哪些 Skill？解释一下乳头识别率是怎么计算的。'"
         ></textarea>
         <div class="compose-footer">
-          <span>当前版本：单个主要任务执行槽位</span>
+          <span>同一 Runtime · 单个主要执行槽位</span>
           <button class="primary-button" :disabled="loading || !message.trim()">
-            {{ loading ? '创建中…' : '开始调查' }}
+            {{ loading ? '创建中…' : mode === 'task' ? '开始任务' : '发送' }}
           </button>
         </div>
       </form>
@@ -68,21 +92,24 @@ onBeforeUnmount(() => timer && window.clearInterval(timer))
     <aside class="panel task-history">
       <div class="section-heading">
         <div>
-          <div class="eyebrow">HISTORY</div>
-          <h2>最近任务</h2>
+          <div class="eyebrow">RUN HISTORY</div>
+          <h2>执行记录</h2>
         </div>
         <button class="ghost-button" @click="refresh">刷新</button>
       </div>
-      <div v-if="!tasks.length" class="empty-state">还没有任务。</div>
+      <div v-if="!tasks.length" class="empty-state">还没有执行记录。</div>
       <button
         v-for="task in tasks"
         :key="task.id"
         class="task-row"
         @click="router.push(`/tasks/${task.id}`)"
       >
-        <span class="state-pill" :data-state="task.state">{{ task.state }}</span>
+        <div class="task-row-top">
+          <span class="state-pill" :data-state="task.state">{{ task.state }}</span>
+          <span class="mode-badge">{{ task.mode === 'conversation' ? '对话' : task.trigger_type === 'schedule' ? '定时任务' : '任务' }}</span>
+        </div>
         <strong>{{ task.user_request || task.id }}</strong>
-        <small>{{ task.id }}</small>
+        <small>{{ fmt(task.started_at || task.created_at) }}<template v-if="duration(task)"> · {{ duration(task) }}</template></small>
       </button>
     </aside>
   </section>
