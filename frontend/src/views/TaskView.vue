@@ -34,6 +34,35 @@ const evaluationOptions = [
   ['other', '其他'],
 ] as const
 
+const factLabels: Record<string, string> = {
+  matching_encoder_lines_in_selected_logs: '所选日志中的编码器记录',
+  samples_in_window: '时间窗采样数',
+  valid_samples: '有效采样数',
+  invalid_samples: '无效/读取失败采样数',
+  first_ts: '首个采样时间',
+  last_ts: '最后采样时间',
+  median_sample_dt_ms: '采样中位间隔',
+  sample_gap_threshold_ms: '采样缺口判定阈值',
+  sampling_gap_count: '采样缺口候选数',
+  negative_jump_count: 'raw 数值下降次数',
+  negative_jump_abs_median_pulses: 'raw 下降幅度中位数',
+  negative_jump_abs_p95_pulses: 'raw 下降幅度 P95',
+  negative_jump_abs_max_pulses: 'raw 最大下降幅度',
+  negative_jump_outlier_candidate_count: '显著 raw 下降候选数',
+  large_negative_jump_candidate_count: '大幅 raw 下降候选数',
+  positive_delta_outlier_candidate_count: '显著正向跳变候选数',
+  flat_raw_candidate_count: '长时间不变候选数',
+  longest_flat_raw_ms: '最长 raw 不变时长',
+  raw_filtered_abs_diff_median: 'raw 与 filtered 差值中位数',
+  raw_filtered_abs_diff_max: 'raw 与 filtered 最大差值',
+  total_cows: '统计牛数',
+  complete_four_nipple_cows: '完整识别4乳头牛数',
+  complete_four_nipple_rate: '完整四乳头识别率',
+  nipple_recognition_rate: '乳头识别率',
+  capped_2d_detections: '计入指标的2D乳头框总数',
+  expected_nipples: '理论乳头总数',
+}
+
 const isRunning = computed(() => task.value?.state === 'RUNNING')
 const isPaused = computed(() => task.value?.state === 'PAUSED')
 const isTerminal = computed(() => ['COMPLETED', 'FAILED', 'CANCELLED'].includes(task.value?.state ?? ''))
@@ -105,22 +134,49 @@ const technicalProblem = computed(() => {
   return [...new Set(details)].join('\n')
 })
 
+function formatFactValue(key: string, raw: unknown): string {
+  if (raw === null || raw === undefined) return '—'
+  if (typeof raw === 'number') {
+    if (key.endsWith('_rate')) return `${(raw * 100).toFixed(2)}%`
+    if (key.endsWith('_ms')) return `${Number.isInteger(raw) ? raw : raw.toFixed(3)} ms`
+    if (key.includes('pulses') || key.includes('pulse')) return `${Number.isInteger(raw) ? raw : raw.toFixed(2)} pulse`
+    return String(raw)
+  }
+  return String(raw)
+}
+
+function structuredFactText(value: any): string | null {
+  if (!value || typeof value !== 'object' || value.scopex_role !== 'business_facts') return null
+  const facts = value.facts ?? value.summary
+  if (!facts || typeof facts !== 'object') return null
+  const rows = Object.entries(facts)
+    .filter(([, raw]) => ['string', 'number', 'boolean'].includes(typeof raw) || raw === null)
+    .slice(0, 14)
+    .map(([key, raw]) => `${factLabels[key] || key}：${formatFactValue(key, raw)}`)
+  return rows.length ? rows.join('\n') : null
+}
+
+function displayAnswerText(text: string): string {
+  const parts = text.split('；').map(part => part.trim()).filter(Boolean)
+  for (const part of parts) {
+    if (!part.startsWith('{')) continue
+    try {
+      const rendered = structuredFactText(JSON.parse(part))
+      if (rendered) return rendered
+    } catch {
+      // Keep the original validated answer when the segment is not standalone JSON.
+    }
+  }
+  return text
+}
+
 function factText(item: EvidenceItem): string {
   if (item.metadata?.evidence_type !== 'structured_business_facts') return item.raw
   try {
-    const value = JSON.parse(item.raw)
-    const facts = value?.facts ?? value?.summary
-    if (facts && typeof facts === 'object') {
-      return Object.entries(facts)
-        .filter(([, raw]) => ['string', 'number', 'boolean'].includes(typeof raw) || raw === null)
-        .slice(0, 12)
-        .map(([key, raw]) => `${key}: ${String(raw)}`)
-        .join('\n')
-    }
+    return structuredFactText(JSON.parse(item.raw)) || item.raw
   } catch {
-    // Fall back to the exact frozen business-fact payload.
+    return item.raw
   }
-  return item.raw
 }
 
 function dataString(event: ProgressEvent, key: string): string {
@@ -273,7 +329,7 @@ onBeforeUnmount(() => timer && window.clearInterval(timer))
               <h3>结论</h3>
               <p v-if="!answer.conclusion.length" class="muted">暂无可发布结论。</p>
               <article v-for="item in answer.conclusion" :key="item.claim_ids.join('-')" class="answer-item primary-answer">
-                <p>{{ item.text }}</p>
+                <p>{{ displayAnswerText(item.text) }}</p>
                 <span>{{ item.claim_ids.join(' · ') }}</span>
               </article>
             </div>
@@ -282,7 +338,7 @@ onBeforeUnmount(() => timer && window.clearInterval(timer))
               <h3>说明</h3>
               <p v-if="!answer.explanation.length" class="muted">没有额外说明。</p>
               <article v-for="item in answer.explanation" :key="`ex-${item.claim_ids.join('-')}`" class="answer-item">
-                <p>{{ item.text }}</p>
+                <p>{{ displayAnswerText(item.text) }}</p>
                 <span>{{ item.claim_ids.join(' · ') }}</span>
               </article>
             </div>
@@ -292,14 +348,14 @@ onBeforeUnmount(() => timer && window.clearInterval(timer))
                 <h3>执行情况</h3>
                 <p v-if="!answer.execution.length" class="muted">本任务没有需要展示的业务执行动作。</p>
                 <article v-for="item in answer.execution" :key="`run-${item.claim_ids.join('-')}`" class="answer-item">
-                  <p>{{ item.text }}</p>
+                  <p>{{ displayAnswerText(item.text) }}</p>
                 </article>
               </div>
               <div class="result-section">
                 <h3>建议</h3>
                 <p v-if="!answer.recommendations.length" class="muted">当前没有额外待验证建议。</p>
                 <article v-for="item in answer.recommendations" :key="`rec-${item.claim_ids.join('-')}`" class="answer-item">
-                  <p>{{ item.text }}</p>
+                  <p>{{ displayAnswerText(item.text) }}</p>
                 </article>
               </div>
             </div>
