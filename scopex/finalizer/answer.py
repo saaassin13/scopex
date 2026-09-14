@@ -270,16 +270,42 @@ def _humanize_raw(raw: str) -> str:
     return "；".join(rendered) if changed else text
 
 
+def _humanized_claim_evidence_text(claim: Claim, catalog: EvidenceCatalog, *, max_rows: int = 3) -> str:
+    items = []
+    seen_refs: set[str] = set()
+    for ref in claim.evidence_refs:
+        if ref in seen_refs:
+            continue
+        seen_refs.add(ref)
+        item = catalog.get(ref)
+        if item.raw.strip():
+            items.append(item)
+
+    structured = [item for item in items if item.metadata.get("evidence_type") == "structured_business_facts"]
+    selected = structured[:1] if structured else items
+
+    rendered: list[str] = []
+    seen_text: set[str] = set()
+    for item in selected:
+        text = _humanize_raw(item.raw)
+        if not text or text in seen_text:
+            continue
+        seen_text.add(text)
+        rendered.append(text)
+        if len(rendered) >= max_rows:
+            break
+    return "；".join(rendered)
+
+
 def _safe_claim_text(claim: Claim, catalog: EvidenceCatalog) -> str:
     if claim.kind is ClaimKind.FACT:
         if _has_image_evidence(claim, catalog):
             return claim.topic
-        raw = _raw_evidence_text(claim, catalog)
-        return _humanize_raw(raw) if raw else "已形成直接观察事实"
+        text = _humanized_claim_evidence_text(claim, catalog)
+        return text if text else "已形成直接观察事实"
     if claim.relation is ClaimRelation.TEMPORAL_ASSOCIATION:
-        raw = _raw_evidence_text(claim, catalog)
-        subject = _humanize_raw(raw) if raw else "相关证据"
-        return f"{subject}；当前仅支持时间关联，未证明因果。"
+        subject = _humanized_claim_evidence_text(claim, catalog)
+        return f"{subject or '相关证据'}；当前仅支持时间关联，未证明因果。"
     if claim.relation is ClaimRelation.CAUSAL_HYPOTHESIS:
         return f"待验证假设：{claim.topic}"
     return f"尚不能确定：{claim.topic}"
@@ -317,8 +343,23 @@ def compose_product_answer(claims: ClaimSet, catalog: EvidenceCatalog) -> Produc
     ordered = _ordered_summary_claims(claims)
     if not ordered:
         return ProductAnswer((), (), (), ())
-    conclusion = next((claim for claim in ordered if claim.kind is ClaimKind.FACT), ordered[0])
-    explanation_claims = [claim for claim in ordered if claim.id != conclusion.id][:4]
+
+    conclusion_claim = next((claim for claim in ordered if claim.kind is ClaimKind.FACT), ordered[0])
+    conclusion_item = _item(conclusion_claim, catalog)
+
+    explanation_items: list[AnswerItem] = []
+    seen_text = {conclusion_item.text}
+    for claim in ordered:
+        if claim.id == conclusion_claim.id:
+            continue
+        item = _item(claim, catalog)
+        if not item.text or item.text in seen_text:
+            continue
+        seen_text.add(item.text)
+        explanation_items.append(item)
+        if len(explanation_items) >= 4:
+            break
+
     execution_claims = [
         claim for claim in ordered
         if claim.kind is ClaimKind.FACT and _has_action_verification_evidence(claim, catalog)
@@ -328,8 +369,8 @@ def compose_product_answer(claims: ClaimSet, catalog: EvidenceCatalog) -> Produc
         if claim.kind is ClaimKind.UNKNOWN or claim.relation is ClaimRelation.CAUSAL_HYPOTHESIS
     ][:3]
     return ProductAnswer(
-        conclusion=(_item(conclusion, catalog),),
-        explanation=tuple(_item(claim, catalog) for claim in explanation_claims),
+        conclusion=(conclusion_item,),
+        explanation=tuple(explanation_items),
         execution=tuple(_item(claim, catalog) for claim in execution_claims),
         recommendations=tuple(
             _item(claim, catalog, text=f"继续验证：{claim.topic}", kind="recommendation")
