@@ -10,6 +10,7 @@ class SkillProvisioningTests(unittest.TestCase):
         self.assertEqual(
             DEFAULT_BUILTIN_SKILLS,
             (
+                "data-locator",
                 "system-health",
                 "image-quality-diagnosis",
                 "nipple-recognition-analysis",
@@ -28,13 +29,11 @@ class SkillProvisioningTests(unittest.TestCase):
             source = builtin / "image-quality-diagnosis"
             source.mkdir(parents=True)
             (source / "SKILL.md").write_text("image skill\n", encoding="utf-8")
-
             skills = prepare_workspace_skills(
                 workspace=workspace,
                 skill_names=("image-quality-diagnosis",),
                 builtin_root=builtin,
             )
-
             self.assertEqual(skills, ("image-quality-diagnosis",))
             self.assertEqual(
                 (workspace / "skills" / "image-quality-diagnosis" / "SKILL.md").read_text(),
@@ -54,13 +53,11 @@ class SkillProvisioningTests(unittest.TestCase):
             target.mkdir(parents=True)
             (target / "SKILL.md").write_text("old\n", encoding="utf-8")
             (target / "removed.txt").write_text("stale\n", encoding="utf-8")
-
             prepare_workspace_skills(
                 workspace=workspace,
                 skill_names=("s1",),
                 builtin_root=builtin,
             )
-
             self.assertEqual((target / "SKILL.md").read_text(), "new\n")
             self.assertFalse((target / "removed.txt").exists())
 
@@ -72,13 +69,11 @@ class SkillProvisioningTests(unittest.TestCase):
             custom = workspace / "skills" / "custom-skill"
             custom.mkdir(parents=True)
             (custom / "SKILL.md").write_text("custom\n", encoding="utf-8")
-
             skills = prepare_workspace_skills(
                 workspace=workspace,
                 skill_names=("custom-skill",),
                 builtin_root=root / "missing-builtins",
             )
-
             self.assertEqual(skills, ("custom-skill",))
             self.assertEqual((custom / "SKILL.md").read_text(), "custom\n")
 
