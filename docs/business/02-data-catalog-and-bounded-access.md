@@ -60,17 +60,23 @@ Sandbox 固定路径：
 
 ## 2. Data Catalog
 
-仓库：
+仓库唯一源：
 
 ```text
 config/data-catalog.json
 ```
 
-Runtime 复制到：
+Runtime 启动时生成两个副本：
 
 ```text
-/workspace/scopex-data-catalog.json
+<host workspace>/scopex-data-catalog.json
+  → 仅供宿主机审计/查看
+
+/workspace/skills/data-locator/references/data-catalog.json
+  → data-locator 在 Sandbox 内稳定读取的机器配置
 ```
+
+不能假设宿主机 workspace 根目录的任意文件都会被 OpenClaw 映射成 Sandbox `/workspace/<file>`；因此 Locator 不再依赖旧的 `/workspace/scopex-data-catalog.json`。
 
 Catalog 中 host path 存在时默认自动只读挂载；额外/替代目录仍可通过 `--data-dir HOST:AGENT` 显式配置。
 
@@ -90,6 +96,12 @@ data-locator
 
 ```text
 /workspace/skills/data-locator/scripts/data_locator.py
+```
+
+默认机器 Catalog：
+
+```text
+/workspace/skills/data-locator/references/data-catalog.json
 ```
 
 ### 日志
@@ -206,8 +218,8 @@ User Facts
 
 Projector 固定：
 
-- `/workspace/skills/**` read：Trace-only；
-- `/workspace/scopex-data-catalog.json` read：Trace-only；
+- `/workspace/skills/**` 控制/知识内容：Trace-only；
+- Catalog 控制信息：Trace-only；
 - `/task-scratch/**` read：可冻结为 `evidence_role=working_derived` 的内部 Evidence，以兼容已有大数据/压缩 Finalizer，但 UI 不展示为 User Facts；
 - `scopex_role=locator`：Trace-only；
 - `scopex_role=business_facts`：整体一条结构化 Evidence，不逐行拆几百条。
@@ -250,11 +262,12 @@ PCD 若真实 workload 需要超过 512 MiB，应基于真实文件大小/降采
 ## 9. 验收
 
 1. Spark Runtime 自动挂载两个真实 host path；
-2. Catalog Summary 在每个 Runtime turn 开始即提供数据源语义，不需要先扫目录；
-3. 查询跨自然小时窗口时 Locator 能找到前一非整点文件组；
-4. 13:00~13:30 LeftCamera 只访问 `YYYYMMDD/13`；
-5. 编码器 `.log/.log.1/...` 一次分析并跨文件连续；
-6. nipple KPI 不递归扫描整个 LeftCamera；
-7. 用户事实依据不出现 Skill.md / 脚本源码 / locator / `working_derived`；
-8. `business_facts` 一次输出只形成少量结构化 Evidence；
-9. Scheduler 重启后历史 trigger 只计 missed，不创建 Task。
+2. `data-locator/references/data-catalog.json` 在 Sandbox 可见；
+3. Catalog Summary 在每个 Runtime turn 开始即提供数据源语义，不需要先扫目录；
+4. 查询跨自然小时窗口时 Locator 能找到前一非整点文件组；
+5. 13:00~13:30 LeftCamera 只访问 `YYYYMMDD/13`；
+6. 编码器 `.log/.log.1/...` 一次分析并跨文件连续；
+7. nipple KPI 不递归扫描整个 LeftCamera；
+8. 用户事实依据不出现 Skill.md / 脚本源码 / locator / `working_derived`；
+9. `business_facts` 一次输出只形成少量结构化 Evidence；
+10. Scheduler 重启后历史 trigger 只计 missed，不创建 Task。
