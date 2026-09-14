@@ -164,11 +164,15 @@ class BusinessSkillToolTests(unittest.TestCase):
             self.assertTrue(rows[0]['anchor'])
             self.assertIn('TARGET_ANCHOR', rows[0]['raw'])
 
-    def test_system_health_skill_forbids_history_and_sandbox_fallback(self):
+    def test_system_health_skill_uses_only_current_host_snapshot(self):
         text = (ROOT / 'skills/system-health/SKILL.md').read_text(encoding='utf-8')
+        self.assertIn('/scopex-host/current.json', text)
         self.assertIn('does **not** continuously collect', text)
-        self.assertIn('never fall back to sandbox metrics', text)
-        self.assertIn('historical resource analysis', text)
+        self.assertIn('Do not fall back to sandbox-local measurements', text)
+        self.assertIn('historical resource data is unavailable', text)
+        factory = (ROOT / 'scopex/api/factory.py').read_text(encoding='utf-8')
+        self.assertIn('write_current_host_snapshot', factory)
+        self.assertIn(':/scopex-host:ro', factory)
 
 
 if __name__ == '__main__':
