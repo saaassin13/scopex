@@ -8,6 +8,8 @@ ROOT = Path(__file__).resolve().parents[1]
 class DeploymentAssetTests(unittest.TestCase):
     def test_analysis_sandbox_uses_tuna_and_common_toolbox(self):
         text = (ROOT / "docker" / "sandbox-analysis.Dockerfile").read_text(encoding="utf-8")
+        self.assertIn("ARG BASE_IMAGE=scopex-sandbox-base:step6f", text)
+        self.assertIn("FROM ${BASE_IMAGE}", text)
         self.assertIn("https://mirrors.tuna.tsinghua.edu.cn", text)
         self.assertIn("ubuntu-ports", text)
         for package in (
