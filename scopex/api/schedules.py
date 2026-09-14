@@ -4,7 +4,6 @@ from datetime import datetime, timedelta
 import json
 from pathlib import Path
 import threading
-import time
 import uuid
 from typing import Any
 
@@ -142,11 +141,11 @@ class ScheduleService:
 
     def run_now(self, schedule_id: str) -> dict[str, Any]:
         with self._lock:
-            row = self._items.get(schedule_id)
-            if row is None:
+            if schedule_id not in self._items:
                 raise ScheduleNotFoundError(schedule_id)
-            planned = iso(now_local())
-        return self._trigger(schedule_id, planned)
+        # Manual run-now is an extra execution. It must not move the recurring
+        # schedule's next_run_at or disable a one-shot schedule.
+        return self._trigger(schedule_id, iso(now_local()), advance_schedule=False)
 
     def _loop(self) -> None:
         while not self._stop.wait(self.poll_s):
@@ -166,9 +165,15 @@ class ScheduleService:
                 if due_at <= current:
                     due.append((schedule_id, str(row["next_run_at"])))
         for schedule_id, planned in due:
-            self._trigger(schedule_id, planned)
+            self._trigger(schedule_id, planned, advance_schedule=True)
 
-    def _trigger(self, schedule_id: str, planned: str) -> dict[str, Any]:
+    def _trigger(
+        self,
+        schedule_id: str,
+        planned: str,
+        *,
+        advance_schedule: bool,
+    ) -> dict[str, Any]:
         with self._lock:
             row = self._items.get(schedule_id)
             if row is None:
@@ -199,6 +204,7 @@ class ScheduleService:
             "status": status,
             "task_id": task_id,
             "reason": reason,
+            "manual_run_now": not advance_schedule,
         }
         self._append_run(run)
 
@@ -208,15 +214,16 @@ class ScheduleService:
                 row["last_run_at"] = run["triggered_at"]
                 row["last_status"] = status
                 row["last_task_id"] = task_id
-                if row["kind"] == "once":
-                    row["enabled"] = False
-                    row["next_run_at"] = None
-                else:
-                    base = parse_iso(planned)
-                    next_run = self._next_after(base, row["kind"], row)
-                    while next_run <= triggered_at:
-                        next_run = self._next_after(next_run, row["kind"], row)
-                    row["next_run_at"] = iso(next_run)
+                if advance_schedule:
+                    if row["kind"] == "once":
+                        row["enabled"] = False
+                        row["next_run_at"] = None
+                    else:
+                        base = parse_iso(planned)
+                        next_run = self._next_after(base, row["kind"], row)
+                        while next_run <= triggered_at:
+                            next_run = self._next_after(next_run, row["kind"], row)
+                        row["next_run_at"] = iso(next_run)
                 row["updated_at"] = iso(triggered_at)
                 self._persist_locked()
         return run
