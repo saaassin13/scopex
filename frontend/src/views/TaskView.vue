@@ -46,6 +46,12 @@ const answer = computed<ProductAnswer | null>(() => {
   const value = result.value?.result?.answer
   return value && typeof value === 'object' ? value as ProductAnswer : null
 })
+const userFacts = computed(() => evidence.value.filter(item => {
+  const type = item.metadata?.evidence_type
+  if (type === 'structured_business_facts' || type === 'image') return true
+  if (item.source.startsWith('/agent-data/') || item.source.startsWith('/scopex-host/')) return true
+  return false
+}))
 
 const lastTaskFailed = computed(() => {
   for (let index = events.value.length - 1; index >= 0; index -= 1) {
@@ -71,10 +77,10 @@ function durationText(ms?: number | null) {
 function friendlyReason(reason: string) {
   const labels: Record<string, string> = {
     investigation_turn_incomplete: 'Agent 调查过程未正常结束，因此没有形成可信的最终结果。',
-    investigation_completed_without_evidence: '这次业务任务没有形成可审计 Evidence，因此没有发布诊断结论。',
-    fresh_structured_finalizer_failed: '调查已经形成证据，但最终结构化整理失败。',
-    budget_reached_without_evidence: '任务达到运行预算前仍未形成可发布 Evidence。',
-    runtime_guard_reached_without_evidence: '运行时安全边界终止了调查，且没有形成可发布 Evidence。',
+    investigation_completed_without_evidence: '这次业务任务没有形成可审计事实，因此没有发布诊断结论。',
+    fresh_structured_finalizer_failed: '调查已经形成事实依据，但最终结构化整理失败。',
+    budget_reached_without_evidence: '任务达到运行预算前仍未形成可发布事实。',
+    runtime_guard_reached_without_evidence: '运行时安全边界终止了调查，且没有形成可发布事实。',
   }
   return labels[reason] || '任务未正常完成，请查看技术详情。'
 }
@@ -99,6 +105,24 @@ const technicalProblem = computed(() => {
   return [...new Set(details)].join('\n')
 })
 
+function factText(item: EvidenceItem): string {
+  if (item.metadata?.evidence_type !== 'structured_business_facts') return item.raw
+  try {
+    const value = JSON.parse(item.raw)
+    const facts = value?.facts ?? value?.summary
+    if (facts && typeof facts === 'object') {
+      return Object.entries(facts)
+        .filter(([, raw]) => ['string', 'number', 'boolean'].includes(typeof raw) || raw === null)
+        .slice(0, 12)
+        .map(([key, raw]) => `${key}: ${String(raw)}`)
+        .join('\n')
+    }
+  } catch {
+    // Fall back to the exact frozen business-fact payload.
+  }
+  return item.raw
+}
+
 function dataString(event: ProgressEvent, key: string): string {
   const value = event.data?.[key]
   return typeof value === 'string' ? value : ''
@@ -115,7 +139,7 @@ function eventTitle(event: ProgressEvent): string {
     return `执行工具 · ${tool || 'unknown'}`
   }
   if (event.type === 'TOOL_RESULT') return `${tool || '工具'} · 返回结果`
-  if (event.type === 'EVIDENCE_ADDED') return '新增证据'
+  if (event.type === 'EVIDENCE_ADDED') return '新增事实依据'
   if (event.type === 'FINALIZATION_STARTED') return '正在整理最终结论'
   if (event.type === 'FINALIZATION_COMPLETED') return '最终结论已生成'
   if (event.type === 'TASK_COMPLETED') return '任务完成'
@@ -332,7 +356,7 @@ onBeforeUnmount(() => timer && window.clearInterval(timer))
         <section class="panel">
           <details class="secondary-details" :open="!isTerminal">
             <summary class="details-heading">
-              <span><span class="eyebrow">PROGRESS</span><strong>调查进度</strong></span>
+              <span><span class="eyebrow">PROGRESS</span><strong>调查进度 / 技术记录</strong></span>
               <span class="muted">{{ events.length }} events</span>
             </summary>
             <div class="timeline">
@@ -366,16 +390,16 @@ onBeforeUnmount(() => timer && window.clearInterval(timer))
         <section class="panel evidence-panel compact-evidence">
           <details>
             <summary class="details-heading">
-              <span><span class="eyebrow">EVIDENCE</span><strong>相关证据</strong></span>
-              <span class="muted">{{ evidence.length }}</span>
+              <span><span class="eyebrow">FACTS</span><strong>事实依据</strong></span>
+              <span class="muted">{{ userFacts.length }}</span>
             </summary>
-            <div v-if="!evidence.length" class="empty-state">{{ isConversation ? '普通对话不要求必须形成 Evidence。' : '暂未形成 Evidence。' }}</div>
-            <article v-for="item in evidence" :key="item.ref" class="evidence-card">
+            <div v-if="!userFacts.length" class="empty-state">{{ isConversation ? '普通问答不要求必须形成事实依据。' : '暂未形成可展示的业务事实依据。' }}</div>
+            <article v-for="item in userFacts" :key="item.ref" class="evidence-card">
               <div class="evidence-meta">
                 <strong>{{ item.ref }}</strong>
                 <span>{{ item.source }}<template v-if="item.metadata?.line_number">:L{{ item.metadata.line_number }}</template></span>
               </div>
-              <code>{{ item.raw }}</code>
+              <code>{{ factText(item) }}</code>
             </article>
           </details>
         </section>
