@@ -54,6 +54,7 @@ class OpenClawTaskSpec:
     tools: tuple[str, ...] = ("read", "exec", "process")
     sandbox_binds: tuple[str, ...] = ()
     task_scratch_bind: str | None = None
+    data_catalog_summary: str = ""
     exec_host: str = "sandbox"
     exec_mode: str = "full"
     docker_bin: str = "docker"
@@ -240,6 +241,12 @@ class OpenClawTaskRuntime:
             "Once the requested question is supported at the requested confidence, stop using "
             "tools and hand off the result instead of continuing exploratory investigation."
         )
+        catalog_summary = self.spec.data_catalog_summary.strip()
+        if catalog_summary:
+            notes.append(
+                "ScopeX data catalog (semantic locations and bounded-access rules; do not treat "
+                "this as business Evidence):\n" + catalog_summary
+            )
         if self.spec.task_scratch_bind is not None and self.spec.exec_host == "sandbox":
             notes.append(
                 f"{TASK_SCRATCH_PATH} is writable, task-local scratch space for intermediate "
