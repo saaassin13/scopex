@@ -15,11 +15,45 @@ Use this skill for questions such as “7 点这个小时有多少头牛、最�
 - A count above 4 is reported as over-detection but is capped at 4 for KPI calculation.
 - **Do not use 3D nipple coordinates, `IsValid`, 3D transform success, or 3D valid-count fields to calculate recognition rate.**
 
-## Primary source
+## Data sources
 
-CowDisinfect logs are the KPI source because saved image/JSON files do not exist for every failed detection/inference path.
+Primary KPI source:
 
-Use `{baseDir}/scripts/nipple_stats.py` with the relevant rotated log files and an explicit time window.
+- `cowdisinfect_logs` -> `/agent-data/logs`
+- host: `/opt/ScalingRobotics/CowDisinfect/Log`
+- hourly files: `CowDisinfect-YYYYMMDD-HHMMSS.log[.N]`
+
+Optional supporting artifacts:
+
+- `left_camera_multimodal` -> `/agent-data/left-camera`
+- host: `/opt/ScalingRobotics/CowDisinfect/GrabbedImages/LeftCamera`
+- layout: `YYYYMMDD/HH/YYYYMMDD-HHMMSSmmm.jpg|json|pcd`
+
+Saved image/JSON files do not exist for every failed detection/inference path, so they are never the denominator.
+
+Do not recursively enumerate either mounted root. The stable script selects only the requested log hours and, when artifact checking is enabled, only the matching `YYYYMMDD/HH` directories.
+
+## Preferred invocation
+
+Run the existing script directly; do not inspect its source first and do not use inline Python/heredoc.
+
+```bash
+python3 {baseDir}/scripts/nipple_stats.py \
+  --log-dir /agent-data/logs \
+  --start "2026-09-14 07:00:00:000" \
+  --end   "2026-09-14 08:00:00:000" \
+  --details-out /task-scratch/nipple-details.json
+```
+
+Only add:
+
+```bash
+--artifact-dir /agent-data/left-camera
+```
+
+when saved JPG/JSON cross-checks are actually useful. The stdout is compact `scopex_role=business_facts`; full per-cow rows stay in `/task-scratch/nipple-details.json` and should only be read for targeted follow-up.
+
+## Final 2D result
 
 The final 2D nipple count for one cow is not `max(NippleNum)` and not a sum across frames. Resolve it through the actual consumed frame:
 
@@ -36,13 +70,11 @@ New cow detecte finished ... LastImgTimeStamp[T]
 
 The `NippleNum[N]` belonging to `LastImgTimeStamp[T]` is the cow's final 2D result.
 
-This prevents an earlier frame with 4 boxes from hiding a later final frame with only 2 or 3 boxes.
-
 ## Cow denominator
 
 V1 counts unique named cow detection cycles whose first `DetectingNumCurRound` frame starts inside the requested time window.
 
-This is a log-backed business denominator. A physical cow that is completely invisible to the perception system and never creates a named cow cycle cannot be recovered from this source alone; that requires an independent ground-truth source later (for example RFID/video/other site truth).
+A physical cow completely invisible to the perception system and never creating a named cow cycle cannot be recovered from this source alone; that requires independent ground truth later.
 
 ## KPIs
 
@@ -57,32 +89,8 @@ For all counted cow cycles:
 - final 2D count distribution;
 - unfinished/missing-result/over-detection quality counters.
 
-## Saved JPG / JSON
+## Log context and stop
 
-JPG and JSON are optional supporting artifacts, not the KPI denominator.
+Use shared `log-context` only when the user asks why a specific cow/time failed or when an abnormal interval needs explanation.
 
-If `--artifact-dir` is available, the tool may cross-check:
-
-- whether the selected `LastImgTimeStamp` has a saved image/JSON;
-- whether saved JSON marker labels `1..4` agree with log final 2D count.
-
-Do not infer failure only from a missing artifact unless the supplied artifact directory is known to be complete for that time window.
-
-## Log context
-
-The KPI script already consumes the stable business anchors needed for counting. Use the shared `log-context` Skill only when the user asks why a specific cow/time failed or when an abnormal interval needs explanation.
-
-Do not scan unrelated logs/images merely because they exist.
-
-## Output discipline
-
-Separate:
-
-1. time/log coverage and denominator definition;
-2. 2D KPI facts;
-3. incomplete/missing/over-detection data-quality facts;
-4. artifact coverage/cross-checks when available;
-5. contextual explanation only when requested or needed;
-6. unknowns.
-
-Do not turn 3D calculation failures into 2D recognition failures unless the user explicitly asks about the 3D downstream pipeline.
+Do not scan unrelated images/logs merely because they exist. Stop after the requested KPI is supported unless a concrete anomaly requires bounded follow-up.
