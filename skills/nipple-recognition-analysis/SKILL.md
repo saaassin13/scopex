@@ -21,7 +21,9 @@ Primary KPI source:
 
 - `cowdisinfect_logs` -> `/agent-data/logs`
 - host: `/opt/ScalingRobotics/CowDisinfect/Log`
-- hourly files: `CowDisinfect-YYYYMMDD-HHMMSS.log[.N]`
+- files: `CowDisinfect-YYYYMMDD-HHMMSS.log[.N]`
+
+A log group may start at a non-round clock time; do not guess relevant files from natural-hour strings.
 
 Optional supporting artifacts:
 
@@ -31,31 +33,37 @@ Optional supporting artifacts:
 
 Saved image/JSON files do not exist for every failed detection/inference path, so they are never the denominator.
 
-Do not recursively enumerate either mounted root. The stable script selects only the requested log hours and, when artifact checking is enabled, only the matching `YYYYMMDD/HH` directories.
+## Preferred bounded path
 
-## Preferred invocation
+1. Use data-locator for the requested log window:
 
-Run the existing script directly; do not inspect its source first and do not use inline Python/heredoc.
+```bash
+python3 /workspace/skills/data-locator/scripts/data_locator.py \
+  --source cowdisinfect_logs \
+  --start "2026-09-14 07:00:00" \
+  --end   "2026-09-14 08:00:00"
+```
+
+2. Pass exactly the returned log files into the KPI tool:
 
 ```bash
 python3 {baseDir}/scripts/nipple_stats.py \
-  --log-dir /agent-data/logs \
+  /agent-data/logs/<file1> \
+  /agent-data/logs/<file2> \
   --start "2026-09-14 07:00:00:000" \
   --end   "2026-09-14 08:00:00:000" \
   --details-out /task-scratch/nipple-details.json
 ```
 
-Only add:
+Only add `--artifact-dir /agent-data/left-camera` when saved JPG/JSON cross-checks are actually useful. The script will then inspect only target `YYYYMMDD/HH` directories, never the whole history tree.
 
-```bash
---artifact-dir /agent-data/left-camera
-```
+Do not inspect script source first and do not use inline Python/heredoc. `--log-dir` remains a helper/test convenience; product time-window selection should prefer data-locator.
 
-when saved JPG/JSON cross-checks are actually useful. The stdout is compact `scopex_role=business_facts`; full per-cow rows stay in `/task-scratch/nipple-details.json` and should only be read for targeted follow-up.
+The stdout is compact `scopex_role=business_facts`; full per-cow rows stay in `/task-scratch/nipple-details.json` and should only be read for targeted follow-up.
 
 ## Final 2D result
 
-The final 2D nipple count for one cow is not `max(NippleNum)` and not a sum across frames. Resolve it through the actual consumed frame:
+The final 2D nipple count for one cow is not `max(NippleNum)` and not a sum across frames:
 
 ```text
 Start left camera AI detect
@@ -73,17 +81,14 @@ The `NippleNum[N]` belonging to `LastImgTimeStamp[T]` is the cow's final 2D resu
 ## Cow denominator
 
 V1 counts unique named cow detection cycles whose first `DetectingNumCurRound` frame starts inside the requested time window.
-
 A physical cow completely invisible to the perception system and never creating a named cow cycle cannot be recovered from this source alone; that requires independent ground truth later.
 
 ## KPIs
 
-For all counted cow cycles:
-
 - `total_cows`;
 - `complete_four_nipple_cows`;
-- `complete_four_nipple_rate = complete_four_nipple_cows / total_cows`;
-- `capped_2d_detections = Σ min(final_2d_count, 4)`; unfinished/missing final results contribute 0 to the conservative numerator;
+- `complete_four_nipple_rate`;
+- `capped_2d_detections = Σ min(final_2d_count, 4)`;
 - `expected_nipples = total_cows × 4`;
 - `nipple_recognition_rate = capped_2d_detections / expected_nipples`;
 - final 2D count distribution;
@@ -92,5 +97,4 @@ For all counted cow cycles:
 ## Log context and stop
 
 Use shared `log-context` only when the user asks why a specific cow/time failed or when an abnormal interval needs explanation.
-
 Do not scan unrelated images/logs merely because they exist. Stop after the requested KPI is supported unless a concrete anomaly requires bounded follow-up.
