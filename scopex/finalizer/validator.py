@@ -19,6 +19,7 @@ _CLAIM_FIELDS = {
     "scope",
     "relation",
 }
+_MAX_EVIDENCE_REFS_PER_CLAIM = 4
 
 
 def normalize_claim_payload(payload: Any) -> tuple[Any, tuple[str, ...]]:
@@ -161,6 +162,8 @@ def validate_claim_payload(payload: Any, catalog: EvidenceCatalog) -> list[str]:
         if not refs_ok or any(ref not in valid_refs for ref in refs):
             errors.append(prefix + ".evidence_refs")
             refs = []
+        elif len(refs) > _MAX_EVIDENCE_REFS_PER_CLAIM:
+            errors.append(prefix + ".evidence_refs_limit")
 
         if kind == "fact":
             if not refs:
