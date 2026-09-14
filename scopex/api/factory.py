@@ -11,6 +11,7 @@ from scopex.evidence.media import EvidenceMediaLoader
 from scopex.evidence.projector import OpenClawEvidenceProjector
 from scopex.events.progress import EventSink
 from scopex.finalizer.client import StreamingFinalizerClient
+from scopex.finalizer.report import ConstrainedReportComposer
 from scopex.finalizer.structured import StructuredFinalizer
 from scopex.host_snapshot import write_current_host_snapshot
 from scopex.runtime.convergence import ConvergencePolicy
@@ -38,6 +39,7 @@ class LocalRuntimeConfig:
     max_tokens: int = 2048
     finalizer_max_tokens: int = 768
     finalizer_timeout_s: int = 180
+    report_max_tokens: int = 1024
     skills: tuple[str, ...] = ()
     data_binds: tuple[str, ...] = ()
     data_catalog_summary: str = ""
@@ -49,7 +51,7 @@ class LocalRuntimeConfig:
 
 
 class OpenClawRuntimeFactory:
-    """Create per-task production coordinators and fresh finalizers for the API."""
+    """Create per-task OpenClaw runtime plus no-tool product post-processors."""
 
     def __init__(self, config: LocalRuntimeConfig) -> None:
         self.config = config
@@ -69,6 +71,8 @@ class OpenClawRuntimeFactory:
             raise ValueError("max_requests must be between 2 and 30")
         if not 256 <= config.finalizer_max_tokens <= 1024:
             raise ValueError("finalizer_max_tokens must be between 256 and 1024")
+        if not 256 <= config.report_max_tokens <= 2048:
+            raise ValueError("report_max_tokens must be between 256 and 2048")
         if not 30 <= config.finalizer_timeout_s <= 600:
             raise ValueError("finalizer_timeout_s must be between 30 and 600")
         if len(config.data_catalog_summary) > 8192:
@@ -98,11 +102,6 @@ class OpenClawRuntimeFactory:
             raise ValueError("task scratch escaped work_root") from exc
         task_scratch_bind = f"{resolved_scratch}:{TASK_SCRATCH_PATH}:rw"
 
-        # Current-state host resources are sampled once at task creation. This is
-        # intentionally not a historical collector and it does not grant the
-        # Agent gateway/host shell access. If collection partially fails, the
-        # snapshot contains explicit errors and system-health must report the
-        # unavailable fields instead of falling back to sandbox-local metrics.
         host_root = task_root / "host"
         host_snapshot = host_root / "current.json"
         try:
@@ -165,9 +164,6 @@ class OpenClawRuntimeFactory:
                 collector,
                 exec_host=self.config.exec_host,
                 sandbox_binds=task_binds,
-                # The OpenClaw visual bridge may omit members of larger image
-                # batches. Only <=2-image calls are accepted as claim-grade so
-                # Fresh Finalizer never treats an unviewed image as inspected.
                 max_claim_images=2,
             ),
             audit=audit,
@@ -183,4 +179,15 @@ class OpenClawRuntimeFactory:
             model=self.config.model_id,
             max_tokens=self.config.finalizer_max_tokens,
             media_loader=EvidenceMediaLoader(self.config.data_binds),
+        )
+
+    def report_composer(self) -> ConstrainedReportComposer:
+        return ConstrainedReportComposer(
+            StreamingFinalizerClient(
+                self.config.base_url,
+                api_key=self.config.api_key,
+                timeout_s=self.config.finalizer_timeout_s,
+            ),
+            model=self.config.model_id,
+            max_tokens=self.config.report_max_tokens,
         )
