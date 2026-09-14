@@ -5,7 +5,15 @@ export interface TaskSnapshot {
   session_key?: string
   created_at?: string
   updated_at?: string
+  started_at?: string | null
+  finished_at?: string | null
+  duration_ms?: number | null
+  mode?: 'task' | 'conversation'
+  trigger_type?: 'manual' | 'schedule'
+  schedule_id?: string | null
+  scheduled_for?: string | null
   metadata?: Record<string, unknown>
+  last_reason?: string | null
 }
 
 export interface ProgressEvent {
@@ -47,6 +55,8 @@ export interface ProductAnswer {
 
 export interface ResultPayload extends Record<string, unknown> {
   answer?: ProductAnswer
+  answer_text?: string
+  mode?: string
 }
 
 export interface ResultResponse {
@@ -62,4 +72,29 @@ export interface EventsResponse {
   after: number
   next_after: number
   events: ProgressEvent[]
+}
+
+export interface ScheduleSnapshot {
+  id: string
+  name: string
+  message: string
+  kind: 'interval' | 'daily' | 'once'
+  interval_minutes?: number | null
+  daily_time?: string | null
+  run_at?: string | null
+  enabled: boolean
+  created_at: string
+  updated_at: string
+  next_run_at?: string | null
+  last_run_at?: string | null
+  last_status?: string | null
+  last_task_id?: string | null
+}
+
+export interface Evaluation {
+  task_id: string
+  rating: 'up' | 'down'
+  tags: string[]
+  note: string
+  updated_at: string
 }
