@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import json
 from pathlib import Path
+import json
 import tempfile
 import unittest
 
@@ -62,21 +62,15 @@ class RuntimeApiFactoryTests(unittest.TestCase):
             self.assertEqual(coordinator.agent.spec.timeout_s, 181)
             self.assertEqual(coordinator.agent.spec.max_requests, 6)
             self.assertTrue(coordinator.agent.spec.compaction_enabled)
-
-            # Configured business-data binds are preserved and ScopeX adds one
-            # task-local, read-only current-host snapshot capability. The latter
-            # is intentional product plumbing for system-health, not an
-            # unexpected expansion of external business-data access.
             binds = coordinator.agent.spec.sandbox_binds
             self.assertEqual(binds[0], "/srv/logs:/agent-data/logs:ro")
             self.assertEqual(len(binds), 2)
-            expected_host = (root / "work" / "task-1" / "host").resolve()
-            self.assertEqual(binds[1], f"{expected_host}:/scopex-host:ro")
-            host_snapshot = expected_host / "current.json"
-            self.assertTrue(host_snapshot.is_file())
-            snapshot = json.loads(host_snapshot.read_text(encoding="utf-8"))
-            self.assertEqual(snapshot["source"], "scopex_host_snapshot")
-
+            host_bind = binds[1]
+            self.assertTrue(host_bind.endswith(":/scopex-host:ro"))
+            host_root = Path(host_bind.rsplit(":", 2)[0])
+            self.assertEqual(host_root, (root / "work" / "task-1" / "host").resolve())
+            host_snapshot = json.loads((host_root / "current.json").read_text(encoding="utf-8"))
+            self.assertEqual(host_snapshot["source"], "scopex_host_snapshot")
             expected_scratch = (root / "work" / "task-1" / "scratch").resolve()
             self.assertTrue(expected_scratch.is_dir())
             self.assertEqual(
@@ -89,12 +83,7 @@ class RuntimeApiFactoryTests(unittest.TestCase):
                 coordinator.agent.spec.tools,
                 ("read", "exec", "process", "view_image", "progress_card"),
             )
-            self.assertIsInstance(
-                coordinator.evidence_pipeline,
-                OpenClawEvidenceProjector,
-            )
-            # Hard request/time budgets are propagated to OpenClaw/ModelProxy;
-            # ScopeX convergence no longer duplicates them.
+            self.assertIsInstance(coordinator.evidence_pipeline, OpenClawEvidenceProjector)
             self.assertEqual(coordinator.convergence_policy.max_stale_rounds, 3)
 
 
