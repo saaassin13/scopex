@@ -21,7 +21,7 @@ OpenClaw 负责模型驱动的 Agent Loop、工具和 Skill；ScopeX 负责 Task
 | 6F | Same complex task under product default 600 s / 16 requests | **PASS** |
 | Step 7A | Claim-bounded Product Answer over revalidated Claims/Evidence | **已实现，待完整回归** |
 | Step 7B | Result-first Vue UI | **已实现，待完整回归** |
-| Business V1 | system / image / nipple JSON / encoder / log-context | **已实现第一版，待真实业务验收** |
+| Business V1 | system / image / nipple 2D KPI / encoder / log-context | **已实现第一版，待真实业务验收** |
 | Step 7C | Spark FastAPI + Vue real integration | **进行中** |
 | Step 7D | 真实业务产品验收 | **进行中** |
 
@@ -126,7 +126,8 @@ image-quality-diagnosis
   原图模糊 / 起雾 / 脏污
 
 nipple-recognition-analysis
-  推理 JSON -> 按牛聚合 -> 四乳头率 / 乳头识别率
+  CowDisinfect 牛周期 + 最终采用帧 2D NippleNum -> 四乳头率 / 乳头识别率
+  每头牛最多计 4；3D nipple validity 不参与 KPI
 
 encoder-health
   sample gap / 无效值 / raw 回退 / 大跳变候选 / flat
@@ -134,6 +135,8 @@ encoder-health
 log-context
   只捞小范围原始日志上下文，不独立判根因
 ```
+
+乳头业务里，JPG/JSON 只作为成功结果和 2D marker 的辅助核对；检测/推理失败时文件可能不存在，因此文件数量不能作为总牛数分母。最终每头牛的 2D 数量由 `New cow detecte finished -> LastImgTimeStamp` 回挂到对应检测帧的 `NippleNum`，不能简单取一头牛所有帧的最大值。
 
 ScopeX 启动时把内置 Skill 同步到 `<workspace>/skills` 后交给 OpenClaw allowlist。Skill 提供业务语义、证据纪律、停止原则和稳定脚本入口；模型仍自主决定具体工具与调查顺序。
 
@@ -292,7 +295,7 @@ Step 6 已冻结。当前主线已经进入真实业务验收：
 2. Vue `npm run build` 通过；
 3. `scopex-sandbox-analysis:step7` 在 Spark ARM64 构建并验证 toolbox；
 4. system metrics timer 连续产出，system-health 能区分当前/历史宿主机状态；
-5. 提供真实乳头推理 JSON，冻结字段 mapping 和 selected/latest/max 业务语义；
+5. 用完整一小时轮转日志人工对账牛周期、最终 2D `NippleNum`、四乳头率和乳头识别率；保存的 JSON/JPG 只做辅助抽查；
 6. 用真实编码器日志验证 gap/backstep/flat/candidate 事件与 log-context；
 7. 单图明确范围任务在少量请求内完成，且不访问用户明确排除的数据；
 8. FastAPI + Vue 跑至少一个真实业务 Task 完成 Result-first 产品闭环；
