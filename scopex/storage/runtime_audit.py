@@ -69,16 +69,20 @@ class RuntimeAudit:
         """Persist deterministic product fallback."""
         self.store.write_json(self.task_id, "answer.json", payload)
 
-    def persist_report(self, payload: dict[str, Any]) -> None:
-        """Persist primary user-facing report and attach it to result.json."""
-        self.store.write_json(self.task_id, "report.json", payload)
+    def _patch_result(self, **updates: Any) -> None:
         try:
             result = self.store.read_json(self.task_id, "result.json")
         except (FileNotFoundError, OSError, ValueError):
             result = {}
-        if isinstance(result, dict):
-            result["report"] = payload
-            self.store.write_json(self.task_id, "result.json", result)
+        if not isinstance(result, dict):
+            result = {}
+        result.update(updates)
+        self.store.write_json(self.task_id, "result.json", result)
+
+    def persist_report(self, payload: dict[str, Any]) -> None:
+        """Persist primary user-facing report and attach it to result.json."""
+        self.store.write_json(self.task_id, "report.json", payload)
+        self._patch_result(report=payload)
 
     def persist_report_result(self, result: ReportComposerResult) -> None:
         meta = {
@@ -94,8 +98,10 @@ class RuntimeAudit:
             payload = result.report.to_dict()
             self.persist_report(payload)
             self.store.write_json(self.task_id, "report-meta.json", meta)
+            self._patch_result(report=payload, report_meta=meta)
             return
         self.store.write_json(self.task_id, "report-error.json", meta)
+        self._patch_result(report_meta=meta)
 
     def persist_result(self, result: dict[str, Any], *, rendered: str | None = None) -> None:
         payload = dict(result)
