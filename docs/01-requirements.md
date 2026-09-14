@@ -80,18 +80,43 @@ log-context（公共上下文能力）
 
 ### R18 nipple-recognition-analysis
 
-主数据源为推理 JSON，不再以日志 `NippleNum` 作为产品 KPI 主来源。
+产品统计对象是 **2D 乳头检测框**，不是 3D 乳头坐标有效数。
 
-必须按牛聚合后再统计：
+固定业务口径：
 
-- 时间窗口内有效牛数；
-- 最终乳头数分布；
-- 恰好 4 乳头牛数；
+- 一头牛限定 4 个乳头；
+- 乳头识别数量来自日志 `NippleNum[N]`；
+- 每头牛最多按 4 个计，`N > 4` 单独报告 over-detection；
+- 3D 坐标、`IsValid`、3D 转换成功数、3D valid count 不参与识别率。
+
+由于检测/推理失败时 JPG/JSON 可能不会保存，JPG/JSON 文件数不能作为总牛数或识别率分母。主 KPI 必须从 CowDisinfect 日志恢复牛周期。
+
+一头牛多轮检测时，不能取 `max(NippleNum)`，也不能把所有帧相加。最终结果必须按实际采用帧绑定：
+
+```text
+Start left camera AI detect ... ImgTimeStamp[T], CowOccuredCount[C], DetectingNumCurRound[R]
+        ↓
+Left camera cow [C] detecting [R] finished ... NippleNum[N]
+        ↓
+New cow detecte finished ... LastImgTimeStamp[T]
+```
+
+因此该牛最终 2D 识别数为 `LastImgTimeStamp[T]` 对应帧的 `NippleNum[N]`。
+
+至少输出：
+
+- `total_cows`：时间窗内开始命名检测周期的唯一牛周期数；
+- 最终 2D 数量分布；
+- `complete_four_nipple_cows`；
 - `complete_four_nipple_rate`；
-- `nipple_recognition_rate = Σ min(count,4) / (cow_count×4)`；
-- `count>4` 单独报告，不能抬高识别率。
+- `capped_2d_detections = Σ min(final_count,4)`；
+- `expected_nipples = total_cows × 4`；
+- `nipple_recognition_rate = capped_2d_detections / expected_nipples`；
+- unfinished / missing final result / over-detection 数据质量计数。
 
-一头牛多条推理记录时，`selected/latest/max` 必须根据真实 JSON/业务语义显式选择，不能由脚本偷偷决定。
+保存的 JPG/JSON 只作为辅助结果证据；若 artifact 目录完整，可核对 `LastImgTimeStamp` 是否存在对应文件，以及 JSON 的 2D marker `1..4` 是否与日志最终 `NippleNum` 一致。
+
+边界：系统完全漏掉、从未进入命名检测周期的真实奶牛不能由当前日志凭空恢复，后续需 RFID/视频/其他独立 ground truth。
 
 ### R19 encoder-health
 
@@ -267,7 +292,7 @@ Step 6F 已在当前本地模型路径上以 `371.1 s / 14 requests` 通过既�
 2. Vue build；
 3. Spark ARM64 analysis sandbox build；
 4. system metrics timer + system-health 真实历史窗口；
-5. 真实乳头 JSON 冻结字段 mapping 和 record selection 语义；
+5. 真实一小时轮转日志人工复算 `total_cows / final 2D NippleNum / nipple_recognition_rate`，并用保存的 JSON/JPG 做辅助抽查；
 6. 真实编码器日志验证 candidate 事件和 log-context；
 7. 单图范围任务；
 8. FastAPI + Vue 真实业务闭环；
