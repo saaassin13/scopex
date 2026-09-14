@@ -21,7 +21,7 @@ class StubTasks:
 
 
 class ScheduleServiceTests(unittest.TestCase):
-    def test_schedule_triggers_ordinary_task_with_metadata(self):
+    def test_schedule_triggers_ordinary_task_with_metadata_without_shifting_cadence(self):
         with tempfile.TemporaryDirectory() as td:
             tasks = StubTasks()
             service = ScheduleService(Path(td), tasks)
@@ -31,8 +31,10 @@ class ScheduleServiceTests(unittest.TestCase):
                 kind='interval',
                 interval_minutes=30,
             )
+            original_next = row['next_run_at']
             run = service.run_now(row['id'])
             self.assertEqual(run['status'], 'TRIGGERED')
+            self.assertTrue(run['manual_run_now'])
             self.assertEqual(run['task_id'], 'task-scheduled')
             message, kwargs = tasks.calls[-1]
             self.assertEqual(message, '检查过去30分钟编码器')
@@ -40,6 +42,7 @@ class ScheduleServiceTests(unittest.TestCase):
             self.assertEqual(kwargs['trigger_type'], 'schedule')
             self.assertEqual(kwargs['schedule_id'], row['id'])
             self.assertTrue(kwargs['scheduled_for'])
+            self.assertEqual(service.get(row['id'])['next_run_at'], original_next)
 
     def test_busy_schedule_is_skipped_not_queued(self):
         with tempfile.TemporaryDirectory() as td:
@@ -52,10 +55,12 @@ class ScheduleServiceTests(unittest.TestCase):
                 kind='interval',
                 interval_minutes=30,
             )
+            original_next = row['next_run_at']
             run = service.run_now(row['id'])
             self.assertEqual(run['status'], 'SKIPPED_BUSY')
             self.assertIsNone(run['task_id'])
             self.assertEqual(tasks.calls, [])
+            self.assertEqual(service.get(row['id'])['next_run_at'], original_next)
 
     def test_daily_and_once_validation(self):
         with tempfile.TemporaryDirectory() as td:
