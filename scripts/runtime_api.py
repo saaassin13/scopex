@@ -20,6 +20,8 @@ from scopex.api.factory import LocalRuntimeConfig, OpenClawRuntimeFactory
 from scopex.api.fastapi_app import create_app
 from scopex.api.service import TaskService
 
+SYSTEM_METRICS_AGENT_DIR = "/scopex-system-metrics"
+
 
 def loopback_host(host: str) -> bool:
     if host == "localhost":
@@ -68,6 +70,11 @@ def main(argv=None) -> int:
         help="read-only host directory exposed to the OpenClaw sandbox; repeatable",
     )
     parser.add_argument(
+        "--system-metrics-dir",
+        type=Path,
+        help="host system-metrics directory mounted read-only at /scopex-system-metrics",
+    )
+    parser.add_argument(
         "--exec-host",
         choices=("sandbox", "gateway", "node"),
         default="sandbox",
@@ -103,8 +110,6 @@ def main(argv=None) -> int:
     parser.add_argument("--api-key-env", default="SCOPEX_API_KEY")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8787)
-    # Per-turn defaults are sized from the Step 6B complex-image probe
-    # (~439 s, 11 forwarded model requests) with modest headroom.
     parser.add_argument("--timeout", type=int, default=600)
     parser.add_argument("--max-requests", type=int, default=16)
     parser.add_argument("--max-tokens", type=int, default=2048)
@@ -146,6 +151,16 @@ def main(argv=None) -> int:
         builtin_root=ROOT / "skills",
     )
 
+    data_binds = list(args.data_dir)
+    if args.system_metrics_dir is not None:
+        metrics_dir = args.system_metrics_dir.expanduser().resolve()
+        metrics_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+        if metrics_dir.is_symlink():
+            raise ValueError("system metrics directory symlink is not allowed")
+        if any(f":{SYSTEM_METRICS_AGENT_DIR}:" in bind for bind in data_binds):
+            raise ValueError("system metrics target conflicts with --data-dir")
+        data_binds.append(f"{metrics_dir}:{SYSTEM_METRICS_AGENT_DIR}:ro")
+
     data_root = args.data_root.expanduser().resolve()
     config = LocalRuntimeConfig(
         cli_path=args.openclaw_bin.expanduser().resolve(),
@@ -162,7 +177,7 @@ def main(argv=None) -> int:
         finalizer_max_tokens=args.finalizer_max_tokens,
         finalizer_timeout_s=args.finalizer_timeout,
         skills=skills,
-        data_binds=tuple(args.data_dir),
+        data_binds=tuple(data_binds),
         exec_host=args.exec_host,
         exec_mode=args.exec_mode,
         enable_view_image=args.enable_view_image,
