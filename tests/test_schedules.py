@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 from pathlib import Path
 import tempfile
 import unittest
@@ -26,10 +27,7 @@ class ScheduleServiceTests(unittest.TestCase):
             tasks = StubTasks()
             service = ScheduleService(Path(td), tasks)
             row = service.create(
-                name='encoder',
-                message='检查过去30分钟编码器',
-                kind='interval',
-                interval_minutes=30,
+                name='encoder', message='检查过去30分钟编码器', kind='interval', interval_minutes=30,
             )
             original_next = row['next_run_at']
             run = service.run_now(row['id'])
@@ -50,10 +48,7 @@ class ScheduleServiceTests(unittest.TestCase):
             tasks.busy = True
             service = ScheduleService(Path(td), tasks)
             row = service.create(
-                name='images',
-                message='检查过去30分钟图片',
-                kind='interval',
-                interval_minutes=30,
+                name='images', message='检查过去30分钟图片', kind='interval', interval_minutes=30,
             )
             original_next = row['next_run_at']
             run = service.run_now(row['id'])
@@ -61,6 +56,54 @@ class ScheduleServiceTests(unittest.TestCase):
             self.assertIsNone(run['task_id'])
             self.assertEqual(tasks.calls, [])
             self.assertEqual(service.get(row['id'])['next_run_at'], original_next)
+
+    def test_offline_interval_misses_advance_without_creating_historical_tasks(self):
+        with tempfile.TemporaryDirectory() as td:
+            tasks = StubTasks()
+            service = ScheduleService(Path(td), tasks)
+            row = service.create(
+                name='encoder', message='检查过去30分钟编码器', kind='interval', interval_minutes=30,
+            )
+            with service._lock:
+                service._items[row['id']]['next_run_at'] = '2026-09-14T10:00:00+08:00'
+                service._reconcile_offline_misses_locked(datetime.fromisoformat('2026-09-14T11:10:00+08:00'))
+            updated = service.get(row['id'])
+            self.assertEqual(tasks.calls, [])
+            self.assertEqual(updated['missed_count'], 3)
+            self.assertEqual(updated['last_missed_at'], '2026-09-14T11:00:00+08:00')
+            self.assertEqual(updated['next_run_at'], '2026-09-14T11:30:00+08:00')
+            self.assertEqual(updated['last_status'], 'MISSED_OFFLINE')
+
+    def test_offline_once_schedule_expires_without_task(self):
+        with tempfile.TemporaryDirectory() as td:
+            tasks = StubTasks()
+            service = ScheduleService(Path(td), tasks)
+            service._items['schedule-once'] = {
+                'id': 'schedule-once',
+                'name': 'once',
+                'message': 'x',
+                'kind': 'once',
+                'interval_minutes': None,
+                'daily_time': None,
+                'run_at': '2026-09-14T10:00:00+08:00',
+                'enabled': True,
+                'created_at': '2026-09-14T09:00:00+08:00',
+                'updated_at': '2026-09-14T09:00:00+08:00',
+                'next_run_at': '2026-09-14T10:00:00+08:00',
+                'last_run_at': None,
+                'last_status': None,
+                'last_task_id': None,
+                'missed_count': 0,
+                'last_missed_at': None,
+            }
+            with service._lock:
+                service._reconcile_offline_misses_locked(datetime.fromisoformat('2026-09-14T11:00:00+08:00'))
+            updated = service.get('schedule-once')
+            self.assertFalse(updated['enabled'])
+            self.assertIsNone(updated['next_run_at'])
+            self.assertEqual(updated['missed_count'], 1)
+            self.assertEqual(updated['last_status'], 'MISSED_OFFLINE')
+            self.assertEqual(tasks.calls, [])
 
     def test_daily_and_once_validation(self):
         with tempfile.TemporaryDirectory() as td:
