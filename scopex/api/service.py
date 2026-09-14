@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 import json
 from pathlib import Path
 import threading
 import time
 import uuid
 from typing import Callable, Protocol
+import zipfile
 
 from scopex.agent.runtime import OpenClawTurnResult
 from scopex.events.progress import EventSink, InMemoryEventSink
@@ -66,11 +68,12 @@ class TaskHandle:
 
 
 class TaskService:
-    """Single-user local task service over the proven ScopeX Runtime.
+    """Single-user local execution service shared by chat, manual and scheduled tasks.
 
-    One non-terminal major task owns the execution slot. A PAUSED task still
-    owns that slot because its OpenClaw session/sandbox must remain resumable.
-    Historical reads come from AuditStore, so no database is required.
+    Conversation and audited business tasks use the same OpenClaw/Skill/Tool
+    runtime. The only special case is completion policy: a conversation may
+    complete from OpenClaw's final visible answer without claim-grade Evidence,
+    while an audited task still requires Evidence before product finalization.
     """
 
     def __init__(
@@ -93,8 +96,20 @@ class TaskService:
             self._release_terminal_active_locked()
             return self._active_task_id
 
-    def create_task(self, message: str) -> dict:
+    def create_task(
+        self,
+        message: str,
+        *,
+        mode: str = "task",
+        trigger_type: str = "manual",
+        schedule_id: str | None = None,
+        scheduled_for: str | None = None,
+    ) -> dict:
         message = self._message(message)
+        if mode not in {"task", "conversation"}:
+            raise ValueError("mode must be task or conversation")
+        if trigger_type not in {"manual", "schedule"}:
+            raise ValueError("trigger_type must be manual or schedule")
         with self._lock:
             self._release_terminal_active_locked()
             if self._active_task_id is not None:
@@ -105,7 +120,16 @@ class TaskService:
             task_id = "task-" + uuid.uuid4().hex[:12]
             agent_id = "sxapi" + uuid.uuid4().hex[:8]
             session_key = f"agent:{agent_id}:{task_id}"
-            task = Task(task_id, message, session_key, metadata={"agent_id": agent_id})
+            task = Task(
+                task_id,
+                message,
+                session_key,
+                metadata={"agent_id": agent_id},
+                mode=mode,
+                trigger_type=trigger_type,
+                schedule_id=schedule_id,
+                scheduled_for=scheduled_for,
+            )
             session = Session(task_id, session_key)
             memory_events = InMemoryEventSink()
             events = AuditEventSink(self.store, downstream=memory_events)
@@ -156,11 +180,15 @@ class TaskService:
         except (FileNotFoundError, OSError):
             raise TaskNotFoundError(task_id) from None
 
-    def list_tasks(self) -> list[dict]:
+    def list_tasks(self, *, mode: str | None = None) -> list[dict]:
+        if mode is not None and mode not in {"task", "conversation"}:
+            raise ValueError("mode must be task or conversation")
         tasks: list[dict] = []
         for task_id in self.store.list_task_ids():
             try:
-                tasks.append(self.get_task(task_id))
+                row = self.get_task(task_id)
+                if mode is None or row.get("mode", "task") == mode:
+                    tasks.append(row)
             except (TaskNotFoundError, json.JSONDecodeError, OSError):
                 continue
         tasks.sort(key=lambda row: str(row.get("created_at", "")), reverse=True)
@@ -212,16 +240,96 @@ class TaskService:
             "rendered": rendered,
         }
 
+    def get_evaluation(self, task_id: str) -> dict | None:
+        self._require_task(task_id)
+        try:
+            value = self.store.read_json(task_id, "evaluation.json")
+        except FileNotFoundError:
+            return None
+        return value if isinstance(value, dict) else None
+
+    def set_evaluation(
+        self,
+        task_id: str,
+        *,
+        rating: str,
+        tags: list[str] | None = None,
+        note: str = "",
+    ) -> dict:
+        self._require_task(task_id)
+        if rating not in {"up", "down"}:
+            raise ValueError("rating must be up or down")
+        allowed_tags = {
+            "wrong_result",
+            "incomplete",
+            "scope_too_broad",
+            "too_slow",
+            "wrong_skill",
+            "tool_failed",
+            "hard_to_read",
+            "insufficient_evidence",
+            "other",
+        }
+        clean_tags = []
+        for tag in tags or []:
+            if tag not in allowed_tags:
+                raise ValueError(f"unsupported evaluation tag: {tag}")
+            if tag not in clean_tags:
+                clean_tags.append(tag)
+        note = note.strip()
+        if len(note) > 4000:
+            raise ValueError("evaluation note exceeds 4000 characters")
+        payload = {
+            "task_id": task_id,
+            "rating": rating,
+            "tags": clean_tags,
+            "note": note,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
+        self.store.write_json(task_id, "evaluation.json", payload)
+        return payload
+
+    def export_review_bundle(self, task_id: str) -> Path:
+        task_dir = self.store.existing_task_dir(task_id)
+        export_root = self.store.root.parent / "exports"
+        export_root.mkdir(parents=True, exist_ok=True)
+        target = export_root / f"scopex-review-{task_id}.zip"
+        allow = (
+            "task.json",
+            "session.json",
+            "result.json",
+            "answer.json",
+            "claims.json",
+            "evidence.json",
+            "events.jsonl",
+            "final.txt",
+            "evaluation.json",
+            "runtime-limit.json",
+            "runtime-guard.json",
+            "investigation-error.json",
+            "worker-error.json",
+            "cleanup.json",
+        )
+        included = [name for name in allow if (task_dir / name).is_file()]
+        manifest = {
+            "schema": 1,
+            "task_id": task_id,
+            "exported_at": datetime.now(timezone.utc).isoformat(),
+            "purpose": "offline/larger-model review of ScopeX task quality",
+            "included": included,
+            "raw_external_business_files_included": False,
+            "review_instruction": (
+                "Review why ScopeX produced this result. Separate model, Skill, tool, runtime, "
+                "Evidence, Finalizer and UI issues. Do not silently redo the business diagnosis."
+            ),
+        }
+        with zipfile.ZipFile(target, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+            archive.writestr("manifest.json", json.dumps(manifest, ensure_ascii=False, indent=2) + "\n")
+            for name in included:
+                archive.write(task_dir / name, arcname=name)
+        return target
+
     def shutdown(self, timeout_s: float = 10.0) -> None:
-        """Stop active work and wait for every worker to finish touching local state.
-
-        A task can become terminal before its worker finishes sandbox cleanup and
-        cleanup.json persistence. Shutdown therefore joins all known workers,
-        not only the current active task. This gives callers a quiescence
-        boundary before unmounting/removing the audit directory or exiting the
-        process.
-        """
-
         timeout_s = max(0.0, float(timeout_s))
         deadline = time.monotonic() + timeout_s
         with self._lock:
@@ -304,9 +412,7 @@ class TaskService:
                                 "returncode": current_turn.process.returncode,
                                 "stop_reason": current_turn.process.stop_reason,
                                 "forwarded_model_requests": sum(
-                                    1
-                                    for row in current_turn.proxy_records
-                                    if row.get("forwarded") is True
+                                    1 for row in current_turn.proxy_records if row.get("forwarded") is True
                                 ),
                             },
                         )
@@ -314,14 +420,8 @@ class TaskService:
                             coordinator.begin_runtime_limit_finalization(runtime_limit_reason)
                             action = "finalize"
                         else:
-                            coordinator.controller.fail(
-                                "budget_reached_without_evidence"
-                            )
-                            handle.audit.snapshot_control(
-                                handle.task,
-                                handle.session,
-                                coordinator.catalog,
-                            )
+                            coordinator.controller.fail("budget_reached_without_evidence")
+                            handle.audit.snapshot_control(handle.task, handle.session, coordinator.catalog)
                             return
                     elif runtime_guard_reason is not None:
                         handle.audit.store.write_json(
@@ -335,9 +435,7 @@ class TaskService:
                                 "cli_blockers": list(current_turn.cli_outcome.blockers)
                                 if current_turn.cli_outcome is not None else ["missing_cli_outcome"],
                                 "forwarded_model_requests": sum(
-                                    1
-                                    for row in current_turn.proxy_records
-                                    if row.get("forwarded") is True
+                                    1 for row in current_turn.proxy_records if row.get("forwarded") is True
                                 ),
                             },
                         )
@@ -345,24 +443,15 @@ class TaskService:
                             coordinator.begin_runtime_guard_finalization(runtime_guard_reason)
                             action = "finalize"
                         else:
-                            coordinator.controller.fail(
-                                "runtime_guard_reached_without_evidence"
-                            )
-                            handle.audit.snapshot_control(
-                                handle.task,
-                                handle.session,
-                                coordinator.catalog,
-                            )
+                            coordinator.controller.fail("runtime_guard_reached_without_evidence")
+                            handle.audit.snapshot_control(handle.task, handle.session, coordinator.catalog)
                             return
                     elif not coordinator.catalog.items:
-                        coordinator.controller.fail(
-                            "investigation_completed_without_evidence"
-                        )
-                        handle.audit.snapshot_control(
-                            handle.task,
-                            handle.session,
-                            coordinator.catalog,
-                        )
+                        if handle.task.mode == "conversation" and self._turn_completed_normally(current_turn):
+                            self._complete_conversation(handle, current_turn)
+                            return
+                        coordinator.controller.fail("investigation_completed_without_evidence")
+                        handle.audit.snapshot_control(handle.task, handle.session, coordinator.catalog)
                         return
                     elif self._turn_completed_normally(current_turn):
                         coordinator.begin_finalization(goal_satisfied=True)
@@ -373,9 +462,7 @@ class TaskService:
                             coordinator.begin_finalization(goal_satisfied=False)
                             action = "finalize"
                         else:
-                            coordinator.controller.fail(
-                                "investigation_turn_incomplete"
-                            )
+                            coordinator.controller.fail("investigation_turn_incomplete")
                             handle.audit.store.write_json(
                                 handle.task.id,
                                 "investigation-error.json",
@@ -388,11 +475,7 @@ class TaskService:
                                     if current_turn.cli_outcome is not None else ["missing_cli_outcome"],
                                 },
                             )
-                            handle.audit.snapshot_control(
-                                handle.task,
-                                handle.session,
-                                coordinator.catalog,
-                            )
+                            handle.audit.snapshot_control(handle.task, handle.session, coordinator.catalog)
                             return
                 else:
                     return
@@ -402,10 +485,7 @@ class TaskService:
                     current_turn = coordinator.continue_pending_steering(turn_name=turn_name)
                 except ValueError:
                     with self._lock:
-                        if coordinator.controller.state in {
-                            TaskState.PAUSING,
-                            TaskState.PAUSED,
-                        }:
+                        if coordinator.controller.state in {TaskState.PAUSING, TaskState.PAUSED}:
                             continue
                     raise
                 continue
@@ -413,6 +493,22 @@ class TaskService:
             if action == "finalize":
                 coordinator.finish_fresh_finalization(self.finalizer_factory())
                 return
+
+    def _complete_conversation(self, handle: TaskHandle, turn: OpenClawTurnResult) -> None:
+        outcome = turn.cli_outcome
+        if outcome is None or outcome.answer is None:
+            raise ValueError("conversation completion requires visible OpenClaw answer")
+        handle.audit.persist_result(
+            {
+                "valid": True,
+                "mode": "conversation",
+                "answer_text": outcome.answer,
+                "task_state": TaskState.COMPLETED.value,
+            },
+            rendered=outcome.answer,
+        )
+        handle.coordinator.controller.complete()
+        handle.audit.snapshot_control(handle.task, handle.session, handle.coordinator.catalog)
 
     @staticmethod
     def _turn_completed_normally(turn: OpenClawTurnResult) -> bool:
@@ -437,16 +533,11 @@ class TaskService:
                 target(handle, arg)
             except Exception as exc:
                 if not handle.task.terminal:
-                    handle.coordinator.controller.fail(
-                        "runtime_api_worker_exception"
-                    )
+                    handle.coordinator.controller.fail("runtime_api_worker_exception")
                 handle.audit.store.write_json(
                     handle.task.id,
                     "worker-error.json",
-                    {
-                        "type": type(exc).__name__,
-                        "message": str(exc)[:800],
-                    },
+                    {"type": type(exc).__name__, "message": str(exc)[:800]},
                 )
                 handle.audit.snapshot_control(
                     handle.task,
@@ -472,10 +563,7 @@ class TaskService:
             self.store.write_json(
                 handle.task.id,
                 "cleanup.json",
-                {
-                    "container_ids": list(cleanup.container_ids),
-                    "warnings": list(cleanup.warnings),
-                },
+                {"container_ids": list(cleanup.container_ids), "warnings": list(cleanup.warnings)},
             )
         except Exception as exc:
             self.store.write_json(
@@ -499,9 +587,7 @@ class TaskService:
             if handle is not None:
                 return handle
         self._require_task(task_id)
-        raise TaskConflictError(
-            "task is historical and cannot be controlled after process restart"
-        )
+        raise TaskConflictError("task is historical and cannot be controlled after process restart")
 
     def _require_task(self, task_id: str) -> None:
         try:
