@@ -1,0 +1,47 @@
+name: verify
+
+on:
+  push:
+    branches: [main, business-skills/v1]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: scopex-verify-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  python-regression:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install API test dependencies
+        run: python -m pip install -r requirements-api.txt
+      - name: Compile Python sources
+        run: python -m compileall -q scopex scripts skills tests
+      - name: Run full regression suite
+        run: python -m unittest discover -s tests -v
+      - name: Check patch whitespace
+        run: git diff --check HEAD^ HEAD
+
+  frontend-build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.18.0'
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm install --no-audit --no-fund
+      - name: Build Vue frontend
+        working-directory: frontend
+        run: npm run build
