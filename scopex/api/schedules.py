@@ -33,9 +33,13 @@ class ScheduleService:
     """Tiny time trigger layer that creates ordinary ScopeX tasks.
 
     This is intentionally not a workflow engine. A schedule stores one normal
-    task message plus a simple clock rule. When due, it calls TaskService and
-    the resulting run follows the exact same OpenClaw/Skill/Audit path as a
-    manual task.
+    task message plus a simple clock rule. When due while ScopeX is online, it
+    calls TaskService and the resulting run follows the exact same OpenClaw/
+    Skill/Audit path as a manual task.
+
+    Offline history is never caught up. On process start, overdue trigger points
+    are counted as MISSED_OFFLINE and the schedule advances directly to its next
+    future occurrence without creating historical Task runs.
     """
 
     def __init__(self, root: Path, tasks: TaskService, *, poll_s: float = 2.0) -> None:
@@ -55,6 +59,7 @@ class ScheduleService:
         with self._lock:
             if self._thread is not None and self._thread.is_alive():
                 return
+            self._reconcile_offline_misses_locked(now_local())
             self._stop.clear()
             self._thread = threading.Thread(target=self._loop, name="scopex-scheduler", daemon=True)
             self._thread.start()
@@ -112,6 +117,8 @@ class ScheduleService:
             "last_run_at": None,
             "last_status": None,
             "last_task_id": None,
+            "missed_count": 0,
+            "last_missed_at": None,
         }
         with self._lock:
             self._items[row["id"]] = row
@@ -123,12 +130,15 @@ class ScheduleService:
             row = self._items.get(schedule_id)
             if row is None:
                 raise ScheduleNotFoundError(schedule_id)
-            row["enabled"] = bool(enabled)
-            row["updated_at"] = iso(now_local())
-            if enabled and not row.get("next_run_at"):
-                row["next_run_at"] = iso(self._next_after(now_local(), row["kind"], row))
-            if not enabled:
+            current = now_local()
+            if enabled:
+                if row["kind"] == "once" and parse_iso(str(row["run_at"])) <= current:
+                    raise ValueError("one-shot schedule has expired and cannot be re-enabled")
+                row["next_run_at"] = iso(self._next_after(current, row["kind"], row))
+            else:
                 row["next_run_at"] = None
+            row["enabled"] = bool(enabled)
+            row["updated_at"] = iso(current)
             self._persist_locked()
             return dict(row)
 
@@ -228,6 +238,57 @@ class ScheduleService:
                 self._persist_locked()
         return run
 
+    def _reconcile_offline_misses_locked(self, current: datetime) -> None:
+        changed = False
+        audit_rows: list[dict[str, Any]] = []
+        for schedule_id, row in self._items.items():
+            if not row.get("enabled") or not row.get("next_run_at"):
+                continue
+            try:
+                planned = parse_iso(str(row["next_run_at"]))
+            except ValueError:
+                continue
+            if planned > current:
+                continue
+
+            if row["kind"] == "once":
+                missed = 1
+                last_missed = planned
+                row["enabled"] = False
+                row["next_run_at"] = None
+            elif row["kind"] == "interval":
+                step = timedelta(minutes=int(row["interval_minutes"]))
+                missed = int((current - planned) // step) + 1
+                last_missed = planned + step * (missed - 1)
+                row["next_run_at"] = iso(planned + step * missed)
+            elif row["kind"] == "daily":
+                missed = (current.date() - planned.date()).days + 1
+                last_missed = planned + timedelta(days=missed - 1)
+                row["next_run_at"] = iso(planned + timedelta(days=missed))
+            else:
+                continue
+
+            row["missed_count"] = int(row.get("missed_count") or 0) + missed
+            row["last_missed_at"] = iso(last_missed)
+            row["last_status"] = "MISSED_OFFLINE"
+            row["updated_at"] = iso(current)
+            audit_rows.append({
+                "schedule_id": schedule_id,
+                "status": "MISSED_OFFLINE",
+                "missed_count": missed,
+                "first_missed_at": iso(planned),
+                "last_missed_at": iso(last_missed),
+                "reconciled_at": iso(current),
+                "task_id": None,
+                "reason": "ScopeX was not running at the scheduled trigger time; historical fires are not replayed",
+            })
+            changed = True
+
+        if changed:
+            self._persist_locked()
+            for audit_row in audit_rows:
+                self._append_run(audit_row)
+
     def _normalize_rule(
         self,
         kind: str,
@@ -283,7 +344,10 @@ class ScheduleService:
             return
         for row in value:
             if isinstance(row, dict) and isinstance(row.get("id"), str):
-                self._items[row["id"]] = dict(row)
+                normalized = dict(row)
+                normalized.setdefault("missed_count", 0)
+                normalized.setdefault("last_missed_at", None)
+                self._items[normalized["id"]] = normalized
 
     def _persist_locked(self) -> None:
         temp = self.path.with_suffix(".tmp")
