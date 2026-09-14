@@ -23,6 +23,7 @@ from scopex.api.service import TaskService
 from scopex.data_catalog import (
     catalog_binds,
     load_data_catalog,
+    provision_locator_catalog,
     provision_workspace_catalog,
     render_runtime_catalog_summary,
 )
@@ -87,7 +88,7 @@ def main(argv=None) -> int:
         "--data-catalog",
         type=Path,
         default=ROOT / "config" / "data-catalog.json",
-        help="ScopeX semantic data catalog copied into the OpenClaw workspace",
+        help="ScopeX semantic data catalog copied into host workspace and data-locator Skill",
     )
     parser.add_argument(
         "--no-catalog-binds",
@@ -161,6 +162,10 @@ def main(argv=None) -> int:
         workspace=workspace,
         catalog_path=catalog_path,
     )
+    locator_catalog = provision_locator_catalog(
+        workspace=workspace,
+        catalog_path=catalog_path,
+    )
     catalog_summary = render_runtime_catalog_summary(catalog)
     catalog_defaults = () if args.no_catalog_binds else catalog_binds(catalog, existing_only=True)
     data_binds = merge_data_binds(catalog_defaults, tuple(args.data_dir))
@@ -206,7 +211,8 @@ def main(argv=None) -> int:
 
     print(f"ScopeX FastAPI: http://{args.host}:{args.port}", flush=True)
     print(f"workspace: {config.workspace}", flush=True)
-    print(f"data catalog: {workspace_catalog}", flush=True)
+    print(f"data catalog (host): {workspace_catalog}", flush=True)
+    print(f"data catalog (locator): {locator_catalog}", flush=True)
     print(f"audit root: {data_root / 'tasks'}", flush=True)
     print(f"schedule root: {data_root / 'scheduler'}", flush=True)
     print(f"exec: host={config.exec_host} mode={config.exec_mode}", flush=True)
