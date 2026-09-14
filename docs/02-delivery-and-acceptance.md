@@ -1,9 +1,9 @@
 # 交付、验收与当前状态
 
-状态：**2026-09-14 当前有效版本**。本文件严格区分：
+状态：**2026-09-14 当前有效版本**。严格区分：
 
 - **PASS**：已有真实实施证据；
-- **已实现**：代码已落地，但当前版本仍需完整回归/真实环境验证；
+- **已实现**：代码已落地，但仍需当前版本完整回归/真实环境验证；
 - **待完成**：尚未完成。
 
 ## 1. 当前产品形态
@@ -19,7 +19,7 @@ OpenClaw + qwen3.8-27b-nvfp4
         ↓
 local vLLM
         ↓
-read / exec / process / view_image / Skills
+Business Skills + read / exec / process / view_image
         ↓
 Evidence -> Fresh Finalizer -> Validated Claims
         ↓
@@ -28,7 +28,7 @@ Claim-bounded Product Answer + deterministic fallback
 
 OpenClaw + 模型拥有自主调查/工具/动作/验证循环；ScopeX 不重新实现 Agent Loop，只负责产品控制、范围、权限、Evidence 和可信输出。
 
-## 2. 已验证的冻结基线
+## 2. 已验证冻结基线
 
 | 能力 | 状态 | 说明 |
 |---|---|---|
@@ -42,167 +42,183 @@ OpenClaw + 模型拥有自主调查/工具/动作/验证循环；ScopeX 不重�
 | 6E Complex Task Capability | **CAPABILITY PASS** | 日志 + telemetry + 图片 + constrained recovery + post-action verification |
 | 6F Product-default Gate | **PASS** | 同任务约 `371.1 s / 14 requests`，进入 `600 s / 16 requests` |
 
-Step 6A–6F 继续作为冻结回归基线，不因 Step 7 调整而重做架构。
+Step 6A–6F 继续作为冻结回归基线。
 
-## 3. Step 7 当前实现
+## 3. Step 7 产品实现
 
 | 子阶段 | 当前实现 | 状态 |
 |---|---|---|
-| 7A Product Answer | 对 `claims.json + evidence.json` 重新校验后生成 `answer.json`；每项保留 `claim_ids`；`final.txt` 保留 | **已实现** |
-| 7B Result-first UI | 结论 / 说明 / 执行情况 / 建议置顶，Progress/Evidence 降为辅助区 | **已实现** |
-| 7C Spark Product Integration | FastAPI/Vue 路径已进入真实任务测试，仍需本版本完整联调 | **进行中** |
-| 7D Real Business Acceptance | 已用真实图片数据暴露问题并修复，但尚未形成完整 PASS 证据 | **待完成** |
+| Product Answer | `claims + evidence` 重新校验后生成 `answer.json`；保留 claim ids 与 deterministic fallback | **已实现** |
+| Result-first UI | 结论 / 说明 / 执行情况 / 建议置顶；Progress/Evidence 辅助化 | **已实现** |
+| Spark Product Integration | FastAPI/Vue 路径已进入真实任务测试 | **进行中** |
+| Real Business Acceptance | 已进入第一批正式业务能力 | **进行中** |
 
-### 7A 可信边界
+真实业务阶段暴露并修复：
 
-Product Answer 不开启第二个业务诊断循环。当前投影只从已经校验通过的 ClaimSet/Evidence 生成，并在审计目录保留：
+- Finalizer `finish_reason=length` 截断：加入有界输出和同 Evidence 一次无工具恢复；
+- 单图/明确范围任务过度调查：加入 task-scope / minimal sufficient evidence / stop contract；
+- Generic shell output 不自动等同业务动作验证；
+- observed 文本/命令事实的用户可见内容继续以原始 Evidence 为准。
 
-```text
-claims.json
-answer.json
-result.json
-final.txt
-```
+## 4. 第一批业务能力 V1
 
-`final.txt` 仍是 deterministic trust fallback。
-
-### 7B 用户主视图
-
-主界面目标已经落到代码：
+当前默认 Built-in Skills：
 
 ```text
-诊断结果
-
-结论
-说明
-执行情况
-建议
-
-调查进度 >
-相关证据 >
-可信渲染 fallback >
+system-health
+image-quality-diagnosis
+nipple-recognition-analysis
+encoder-health
+log-context
 ```
 
-Evidence 不再占主视觉位置。
+旧 `cow-disinfect-diagnosis` 保留作历史/专项回归，不再默认加载。
 
-## 4. 真实业务测试新发现
+详细业务说明：
 
-### 4.1 Finalizer 长度截断
+```text
+docs/business/01-business-capabilities-v1.md
+```
 
-真实图片任务在 `model_request_budget` 到达后已有 Evidence，但 Fresh Finalizer 自身输出 JSON 被 `finish_reason=length` 截断，导致 Task 被标成 FAILED。
+### 4.1 system-health — 已实现 / 待 Spark 真实验收
 
-当前修复：
+已实现：
 
-- Finalizer Claim 数量保持小而有界；
-- 单 Claim `evidence_refs` 数量有上限；
-- 只有 `finish_reason=length` 时允许一次无工具、同 Evidence 的压缩重试；
-- `result.json` 记录 `finalizer_retry_count`。
+- host `scripts/collect_system_metrics.py`；
+- user-systemd 30 秒 timer；
+- CPU/load、内存、磁盘、GPU、Docker、top process 事实；
+- 有界 JSONL history；
+- Runtime `--system-metrics-dir` 只读挂载；
+- Skill 历史窗口摘要。
 
-这是可信输出 transport recovery，不是新的 Agent 调查回合。
+设计边界：Agent 不拿 Sandbox 的 `/proc/free/df/nvidia-smi` 当 Spark host 数据，也不因此获得 gateway shell。
 
-### 4.2 单图任务过度调查
+待验收：Spark 连续采样、历史 7 点窗口、Docker/GPU 字段真实形态、文件上限行为。
 
-用户明确要求“只看一张图/直接视觉判断”时，Agent 仍可能继续读取 JSON、日志、其他图片。这不是传统重复 tool loop，因此 OpenClaw loopDetection 不一定阻止。
+### 4.2 image-quality-diagnosis — 已实现 / 继续真实验收
 
-当前修复：
+已有 direct original `view_image` + bounded metrics；单图任务要求不默认 `exec`、不扫其他数据、证据够停止。
 
-- Runtime 加入通用 task-scope / minimal-sufficient-evidence / stop-when-supported 契约；
-- 用户显式指定 target/source/scope 视为约束，不是建议；
-- 默认同步并启用内置 Skill；
-- 新增 `image-quality-diagnosis` Skill；
-- 新增小型稳定 `image_quality_metrics.py`，仅在需要量化时使用，不默认扫描目录。
+### 4.3 nipple-recognition-analysis — 已实现框架 / 待真实 JSON 冻结口径
 
-这仍然保持模型自主调查，不引入 ScopeX Workflow Engine。
+已实现通用 `nipple_stats.py`：
 
-## 5. 当前工具与 Skill 交付
+- 显式 JSON schema mapping；
+- 可组合 cow key；
+- 强制显式 `selected/latest/max` per-cow policy；
+- exact-4 rate；
+- capped nipple recognition rate；
+- >4 over-detection 单列；
+- malformed/missing field 质量统计。
 
-### Analysis Sandbox
+待用户提供真实推理 JSON 后冻结：
 
-当前目标镜像：
+```text
+time field
+cow key
+nipple field
+final/selected semantics
+selected/latest/max 的真实业务口径
+```
+
+在此之前不能把临时 `max` 约定写成正式 KPI 真理。
+
+### 4.4 encoder-health — 已实现 V1 / 待真实日志验收
+
+已实现：
+
+- invalid/read failure；
+- sample gap；
+- negative raw jump；
+- large negative jump candidate；
+- positive delta outlier candidate；
+- flat raw candidate；
+- raw/filtered diff summary；
+- invalid sample 会打断连续区间，不跨失败样本制造假 delta。
+
+V1 不做漏牛/牛位推断，不继承旧脚本 `200 mm/s`、`1.5× pitch` 等经验根因规则。
+
+### 4.5 log-context — 已实现 V1
+
+按显式日志 + 时间/关键词提取 bounded raw lines，保留 source/line/time/raw，只作为其他业务 Skill 的上下文，不独立诊断根因。
+
+## 5. Analysis Sandbox
+
+目标镜像：
 
 ```text
 scopex-sandbox-analysis:step7
 ```
 
-预装：
+预装：numpy / scipy / pandas / OpenCV / Pillow / scikit-image / matplotlib / openpyxl / PyYAML / psutil / scikit-learn；Open3D 可选。
 
-```text
-numpy / scipy / pandas / cv2 / Pillow / scikit-image
-matplotlib / openpyxl / PyYAML / psutil / scikit-learn
-Open3D（发行版提供 ARM64 apt 包时）
-```
-
-镜像内写 `/opt/scopex/toolbox.json` 作为真实能力清单。
-
-### Built-in Skills
-
-```text
-cow-disinfect-diagnosis
-image-quality-diagnosis
-```
-
-Runtime 启动时把内置 Skill 同步到 `<workspace>/skills`，再交给 OpenClaw。
+镜像内 `/opt/scopex/toolbox.json` 是实际能力清单。
 
 ## 6. 部署交付
 
-新增：
+当前部署拆成两层：
 
 ```text
-docs/09-zero-to-one-build-and-offline-deployment.md
-scripts/export_offline_bundle.sh
-scripts/install_offline_bundle.sh
-deploy/systemd/scopex-runtime.service
-deploy/systemd/runtime.env.example
+Device Base Package（低频）
+  DGX OS / Docker / NVIDIA Runtime / OpenClaw / vLLM image / model weights
+
+ScopeX Update Bundle（高频）
+  source / frontend / wheelhouse / analysis sandbox / Skills / checksum
 ```
 
-离线 bundle 设计包含：
+`docs/09-zero-to-one-build-and-offline-deployment.md` 已补齐：
 
-- 固定 git commit 的 source archive；
-- 预构建 `frontend/dist`；
-- ARM64/Python 对应 wheelhouse；
-- `scopex-sandbox-analysis` Docker image；
-- manifest / SHA256。
+- DGX Spark Docker/NVIDIA runtime 验证；
+- vLLM official container 基础启动模板；
+- 当前 served id 与下载 repo 的区别；
+- `MODEL_REPO + MODEL_REVISION` 固定；
+- Hugging Face `hf download`；
+- model/vLLM 离线搬运；
+- Device Base 与 ScopeX update 分层；
+- TUNA APT/PyPI 使用边界；
+- systemd / rollback。
 
-Dockerfile build-time APT 主源切换到清华 TUNA；host Python 在线构建/下载 wheel 时默认使用清华 PyPI 镜像。运行期仍保持 Sandbox 无网络。
-
-OpenClaw、vLLM、模型权重继续作为设备基础环境独立管理，不随 ScopeX 小版本 bundle 重复传输。
+当前 `qwen3.8-27b-nvfp4` 的真实 `MODEL_REPO + MODEL_REVISION` 仍需从现有部署补录到设备 manifest，这是从零重建前必须解决的事实缺口。
 
 ## 7. 当前验收 Gate
 
-本轮合入 main 后，以下项目必须继续实测，只有有证据后才能改成 PASS：
+只有有实际证据后才改成 PASS：
 
 1. `python3 -m unittest discover -s tests -v` 全量通过；
-2. `frontend npm run build` 通过；
-3. Spark ARM64 构建 `scopex-sandbox-analysis:step7` 成功；
-4. `/opt/scopex/toolbox.json` 中必需包真实可 import；
-5. FastAPI + Vue 创建/轮询/result/evidence/control 联调；
-6. 单张明确图片任务正常在少量请求内结束，并且不访问用户明确排除的数据；
-7. 一个真实复杂业务任务完成 Result-first 产品闭环；
-8. Stop / Resume / Steering + 页面刷新/重连验收；
-9. 导出一次真实 ARM64 offline bundle，并在新目录完成离线安装 smoke；
-10. systemd `Restart=on-failure` 和回滚路径验证。
+2. `tests.test_business_skill_tools / skill_provisioning / deployment_assets` 专项通过；
+3. Vue `npm run build`；
+4. Spark ARM64 analysis sandbox build + toolbox import；
+5. system metrics timer 连续运行并能分析历史时间窗；
+6. 真实乳头 JSON 人工复算一致；
+7. 真实编码器日志 candidate 与人工原始行一致；
+8. log-context 不越界扩张；
+9. 单图明确范围任务少量请求完成；
+10. FastAPI + Vue 至少一个真实业务 Task；
+11. Stop / Resume / Steering + refresh/reconnect；
+12. Device Base + ScopeX update 双层离线 smoke + rollback。
 
 ## 8. 当前已知缺口
 
-- `execution` 产品区目前只有显式 `evidence_role=action_verification` 才会展示，通用业务动作 provenance 仍需后续能力边界完善；
-- 前端尚无 npm lockfile；离线部署依赖预构建 `frontend/dist`，源码完全可复现构建仍需补 lockfile；
-- Open3D 在 ARM64 基础发行版中不是强制可用项，以 toolbox manifest 为准；
-- OpenClaw/vLLM/model 尚未纳入 ScopeX 离线 bundle；它们属于设备基础环境；
-- task scratch retention/cleanup 仍简单；
-- mixed gateway/sandbox 对共享 scratch 尚缺真实业务复测。
+- 乳头真实 JSON schema 与最终结果 selection 语义未冻结；
+- 编码器 invalid/reset/物理阈值尚需真实协议/固件 profile；
+- 网络 topology 未确认；
+- current model 的真实 `MODEL_REPO + MODEL_REVISION` 未写入仓库/设备 manifest；
+- 通用 business action provenance 仍需后续能力边界完善；
+- 前端暂无 npm lockfile；
+- Open3D 在 ARM64 不是强制项；
+- task scratch retention/cleanup 和 mixed gateway/sandbox scratch 仍需真实复测。
 
 ## 9. 验收原则
 
-- 不用扩大 timeout/request budget 掩盖行为问题；
+- 不扩大 timeout/request budget 掩盖行为问题；
 - 不通过降低任务要求提高通过率；
 - 不把固定业务流程写成 Runtime Handler；
-- 不把模型自然语言当原始 Evidence；
-- 不把 exit code 0 当业务动作成功；
-- 用户明确给出范围时，不允许为了“更全面”无边界读取其他业务数据；
-- 代码合入 main 不等同于 PASS；PASS 必须来自日志、测试、真实运行结果。
+- 不把旧实验脚本的经验阈值无验证升级成产品规则；
+- 不把模型话术当原始 Evidence；
+- 不把统计异常直接等同物理根因；
+- 用户范围优先，够证据即停；
+- 代码合入不等于 PASS。
 
 ## 10. 当前阶段结论
 
-截至 2026-09-14：
-
-> **ScopeX 已从“证明 Agent 能处理复杂任务”进入“产品结果、任务范围、Skill/工具箱和端侧部署工程化”阶段。Step 7A/7B 和相应 Runtime/部署增强已经实现；当前剩余工作是完整 Spark 回归、真实业务产品验收和离线安装 smoke，而不是再设计第二套 Agent Loop。**
+> **ScopeX 已正式进入业务能力阶段。第一批能力不是“把旧脚本自动执行”，而是把系统负载、图片质量、乳头 JSON KPI、编码器数据健康拆成独立主能力，再用 bounded log-context 提供必要上下文。当前代码与文档已实现第一版，下一步是用真实 JSON/日志/Spark 运行证据冻结业务口径。**
