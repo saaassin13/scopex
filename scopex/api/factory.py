@@ -165,6 +165,10 @@ class OpenClawRuntimeFactory:
                 collector,
                 exec_host=self.config.exec_host,
                 sandbox_binds=task_binds,
+                # The OpenClaw visual bridge may omit members of larger image
+                # batches. Only <=2-image calls are accepted as claim-grade so
+                # Fresh Finalizer never treats an unviewed image as inspected.
+                max_claim_images=2,
             ),
             audit=audit,
         )
