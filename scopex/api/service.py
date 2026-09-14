@@ -339,7 +339,7 @@ class TaskService:
             "runtime_context": runtime_context,
             "raw_external_business_files_included": False,
             "review_instruction": (
-                "Review why ScopeX produced this result. Separate model, Skill, tool, runtime, "
+                "Review why ScopeX produced this result. Separate Model, Skill, Tool, Runtime, "
                 "Evidence, Finalizer and UI issues. Do not silently redo the business diagnosis."
             ),
         }
