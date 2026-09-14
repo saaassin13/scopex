@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 import tempfile
 import unittest
@@ -61,10 +62,21 @@ class RuntimeApiFactoryTests(unittest.TestCase):
             self.assertEqual(coordinator.agent.spec.timeout_s, 181)
             self.assertEqual(coordinator.agent.spec.max_requests, 6)
             self.assertTrue(coordinator.agent.spec.compaction_enabled)
-            self.assertEqual(
-                coordinator.agent.spec.sandbox_binds,
-                ("/srv/logs:/agent-data/logs:ro",),
-            )
+
+            # Configured business-data binds are preserved and ScopeX adds one
+            # task-local, read-only current-host snapshot capability. The latter
+            # is intentional product plumbing for system-health, not an
+            # unexpected expansion of external business-data access.
+            binds = coordinator.agent.spec.sandbox_binds
+            self.assertEqual(binds[0], "/srv/logs:/agent-data/logs:ro")
+            self.assertEqual(len(binds), 2)
+            expected_host = (root / "work" / "task-1" / "host").resolve()
+            self.assertEqual(binds[1], f"{expected_host}:/scopex-host:ro")
+            host_snapshot = expected_host / "current.json"
+            self.assertTrue(host_snapshot.is_file())
+            snapshot = json.loads(host_snapshot.read_text(encoding="utf-8"))
+            self.assertEqual(snapshot["source"], "scopex_host_snapshot")
+
             expected_scratch = (root / "work" / "task-1" / "scratch").resolve()
             self.assertTrue(expected_scratch.is_dir())
             self.assertEqual(
