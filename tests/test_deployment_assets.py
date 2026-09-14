@@ -13,14 +13,8 @@ class DeploymentAssetTests(unittest.TestCase):
         self.assertIn("https://mirrors.tuna.tsinghua.edu.cn", text)
         self.assertIn("ubuntu-ports", text)
         for package in (
-            "python3-numpy",
-            "python3-scipy",
-            "python3-pandas",
-            "python3-opencv",
-            "python3-skimage",
-            "python3-pil",
-            "python3-openpyxl",
-            "python3-sklearn",
+            "python3-numpy", "python3-scipy", "python3-pandas", "python3-opencv",
+            "python3-skimage", "python3-pil", "python3-openpyxl", "python3-sklearn",
         ):
             self.assertIn(package, text)
         self.assertIn("/opt/scopex/toolbox.json", text)
@@ -37,9 +31,7 @@ class DeploymentAssetTests(unittest.TestCase):
 
     def test_offline_install_verifies_before_loading(self):
         text = (ROOT / "scripts" / "install_offline_bundle.sh").read_text(encoding="utf-8")
-        checksum = text.index("sha256sum -c SHA256SUMS")
-        docker_load = text.index("docker load")
-        self.assertLess(checksum, docker_load)
+        self.assertLess(text.index("sha256sum -c SHA256SUMS"), text.index("docker load"))
         self.assertIn("architecture mismatch", text)
         self.assertIn("--no-index", text)
         self.assertIn("--find-links", text)
@@ -50,7 +42,14 @@ class DeploymentAssetTests(unittest.TestCase):
         self.assertIn("Restart=on-failure", text)
         self.assertIn("NoNewPrivileges=true", text)
         self.assertIn("runtime.env", text)
+        self.assertIn("--workspace %h/.local/share/scopex/workspace", text)
+        self.assertIn("--data-root %h/.local/share/scopex/runtime-api", text)
+        self.assertNotIn("current/.local", text)
+        self.assertNotIn("--data-dir", text)
         self.assertNotIn("--system-metrics-dir", text)
+        env = (ROOT / "deploy" / "systemd" / "runtime.env.example").read_text(encoding="utf-8")
+        self.assertIn("SCOPEX_MAX_IMAGES_PER_PROMPT=4", env)
+        self.assertNotIn("SCOPEX_DATA_DIR=", env)
         self.assertFalse((ROOT / "deploy" / "systemd" / "scopex-system-metrics.timer").exists())
         self.assertFalse((ROOT / "deploy" / "systemd" / "scopex-system-metrics.service").exists())
 
@@ -67,15 +66,13 @@ class DeploymentAssetTests(unittest.TestCase):
 
     def test_deployment_doc_covers_device_base_vllm_and_model_revision(self):
         text = (ROOT / "docs" / "09-zero-to-one-build-and-offline-deployment.md").read_text(encoding="utf-8")
-        self.assertIn("Device Base Package", text)
-        self.assertIn("vllm/vllm-openai", text)
-        self.assertIn("MODEL_REPO", text)
-        self.assertIn("MODEL_REVISION", text)
-        self.assertIn("--served-model-name", text)
-        self.assertIn("/v1/models", text)
-        self.assertIn("hf download", text)
-        self.assertIn("不部署系统资源 timer", text)
-        self.assertIn("/scopex-host/current.json", text)
+        for token in (
+            "Device Base Package", "nvcr.io/nvidia/vllm:26.08-py3", "MODEL_REPO",
+            "MODEL_REVISION", "f0b7c9e722f5565102fff8481c99e4d86ae099c7",
+            "--served-model-name", "/v1/models", "hf download", "不部署系统资源 timer",
+            "/scopex-host/current.json", "SCOPEX_MAX_IMAGES_PER_PROMPT", "--data-root",
+        ):
+            self.assertIn(token, text)
 
 
 if __name__ == "__main__":

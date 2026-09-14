@@ -32,13 +32,13 @@
         "notes": [
           "JPG/JSON/PCD 使用同一时间戳 stem 关联。",
           "失败路径可能没有保存 JPG/JSON，不能用文件数量作为牛总数。",
-          "PCD 文件体积大，必须先定位时间窗和具体文件，再读取或降采样。"
+          "PCD 文件体积大，必须先定位时间窗和具体文件，再读取或降采样。",
+          "模型图片附件额度由 Runtime 的 SCOPEX_MAX_IMAGES_PER_PROMPT 统一配置，Catalog 不另设重复图片上限。"
         ]
       },
       "access": {
         "max_hour_buckets": 24,
         "max_files_per_operation": 256,
-        "max_claim_images": 4,
         "max_pointcloud_files_per_operation": 8,
         "recursive_scan": false
       }

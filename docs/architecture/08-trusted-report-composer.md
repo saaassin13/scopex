@@ -1,192 +1,79 @@
-# ScopeX 可信业务报告 Composer
+# ScopeX 受约束业务报告
 
-状态：**2026-09-14 设计冻结，进入实现与 Spark 验收**。
+更新：2026-09-14，主链已实现，真实模型表达质量待验收。
 
-## 1. 为什么调整
-
-此前产品结果主要依赖 deterministic `ProductAnswer` 把 Claims/Evidence 逐项映射成人类可读文本。该方案适合作为可信 fallback，但不适合作为长期主表达层：每增加一个业务字段都需要维护 Python label/if-else，最终会把“通用 Agent”重新写成大量业务展示规则。
-
-新的边界是：
+## 1. 职责边界
 
 ```text
-OpenClaw investigation
-    ↓
-Evidence
-    ↓
-Fresh Structured Finalizer
-    ↓
-Validated Claims
-    ↓
-Constrained Report Composer
-    ↓
-Report Validator
-    ↓
-用户报告
+OpenClaw：调查 / 决策 / 工具 / 业务动作 / 验证 / 停止
+  -> Evidence
+Fresh Structured Finalizer：依据当前目录和直接附加原图，生成Claims
+  -> 结构、引用与分类校验
+Constrained Report Composer：一次无工具模型请求组织中文
+  -> 报告引用/分类校验
+用户：结论 / 事实依据 / 可能性分析 / 下一步 / 数据限制
 ```
 
-**OpenClaw 仍拥有调查/执行；Fresh Finalizer 仍拥有 Claims 可信边界；Report Composer 只负责表达，不重新诊断。**
+Report Composer 不是另一个 Agent，不读文件、不调工具、不增加Evidence、不重新诊断。`scopex/finalizer/answer.py` 的确定性renderer仅保留兼容/fallback，不能继续靠每个业务字段一条翻译规则建设通用产品。
 
-## 2. Report Composer 不是第二个 Agent
+## 2. 输入和输出
 
-Report Composer：
+输入为用户问题、已通过当前校验的Claims及其引用的Evidence。优先提供相关结构化事实与少量具体事件；不发送全部工具过程。原始证据必须视为数据而非执行指令。
 
-- 只进行一次无工具模型请求；
-- 不允许 read/exec/view_image 等工具；
-- 不允许新增 Evidence；
-- 不允许重新调查；
-- 只能使用已经验证的 Claim 与这些 Claim 已引用的 Evidence；
-- 失败时不使业务任务失败，退回 deterministic renderer。
-
-因此它不是 Workflow/Agent Loop，而是受约束的产品表达层。
-
-## 3. 固定用户报告结构
-
-第一版统一为：
-
-```text
-结论
-事实依据
-可能性分析
-下一步
-数据限制（可选）
-```
-
-示例：
-
-```text
-结论
-12:00–13:00 编码器数据存在异常，发现 2 次明显回退恢复毛刺和 1 段连续回退；未发现明显采样缺口。
-
-事实依据
-- 12:13:21.120：812345 → 812291，下降 54 pulse，随后约 40 ms 内恢复。
-- 12:42:09.xxx：连续 3 个采样下降，共回退 73 pulse。
-- 全时段采样中位间隔约 21 ms，没有明显采样缺口。
-
-可能性分析
-- 第一类事件符合短时读数毛刺形态。
-- 连续回退可能是真实反转、reset 或采集链路异常；当前证据不足以区分。
-
-下一步
-- 围绕异常点检查 ±2 秒 raw/filtered、reset 和通信错误日志。
-```
-
-## 4. 报告 schema
+固定schema：
 
 ```json
 {
   "version": 1,
-  "conclusion": {
-    "text": "...",
-    "claim_ids": ["C1"],
-    "evidence_refs": ["E1"]
-  },
-  "facts": [
-    {"text": "...", "claim_ids": ["C1"], "evidence_refs": ["E1"]}
-  ],
-  "possibilities": [
-    {"text": "...", "claim_ids": ["C2"], "evidence_refs": ["E2"]}
-  ],
-  "next_steps": [
-    {"text": "...", "claim_ids": ["C2"], "evidence_refs": []}
-  ],
+  "conclusion": {"text": "直接回答问题", "claim_ids": ["C1"], "evidence_refs": ["E1"]},
+  "facts": [{"text": "重要观察事实", "claim_ids": ["C1"], "evidence_refs": ["E1"]}],
+  "possibilities": [],
+  "next_steps": [],
   "limitations": []
 }
 ```
 
-## 5. Validator 规则
+区块可空，不为了填满模板而制造可能性/建议。facts最多6条、possibilities4、next_steps4、limitations3；条目文本和引用有界。
 
-代码负责校验引用和认识论边界，而不是负责写中文：
+## 3. Prompt约束与代码实际保证
 
-- 所有 `claim_ids` 必须真实存在；
-- `evidence_refs` 必须属于对应 Claim 已验证过的 Evidence；
-- `facts` 只能引用 `fact + observed`；
-- `possibilities` 只能引用 inference / causal_hypothesis / temporal_association / unknown，不得把 observed fact 改写成原因；
-- `next_steps` 必须围绕已存在的 unresolved/inference Claim，不能凭空增加故障事实；
-- `limitations` 用于 unknown / 证据边界；
-- 文本长度和条目数量有界；
-- Composer 结果解析/校验失败时使用 deterministic `answer` fallback。
+Prompt要求模型：保持数字/单位/时间/范围；事实与假设分开；不新增原因；未知不能变确定；输出自然中文而非JSON字段/源码/工具链；建议只能围绕已有未决问题，不把未执行动作写成已完成。
 
-## 6. Prompt 原则
+**Prompt目标不等于代码证明。** 当前validator保证的是schema、引用归属、条目长度以及对应Claim分类：facts仅fact+observed；可能性/下一步/限制须按非observed或未决Claim规则。conclusion可综合已有Claim，但代码尚不能完全判断其自由文本是否夸大确定性。
 
-System prompt 必须强调：
+它并不能仅凭C/E编号正确，就证明任意中文句子被原始证据蕴含。数值与单位关系、遗漏关键信息、因果措辞、局部扩大全局、提示注入等都需要真实评测和专项约束。不得把UI的“已校验”解释为人工诊断正确率保证。
 
-1. 你是业务结果编辑器，不是诊断 Agent；
-2. 调查已经结束，没有工具；
-3. 不增加新的事实、时间、数字、原因；
-4. `observed fact` 才能进入事实依据；
-5. inference/temporal 只能写“相关/可能”；
-6. causal hypothesis 必须明确待验证；
-7. unknown 不得包装成确定结论；
-8. 不显示 JSON 字段名、Skill、Python、工具调用或模型工作过程；
-9. 优先回答用户问题，再给最重要依据；
-10. 输出固定 JSON schema，不输出 Markdown 报告。
+同一份structured_business_facts包含多个统计/事件，可支持多个不同Claim；相同scope+refs并不必然重复。完全相同聚合命题仍拒绝，旧line-evidence去重保留。
 
-## 7. Evidence 与用户事实分层
+## 4. 真实接线和落盘
+
+`OpenClawRuntimeFactory.coordinator()` 注入 `report_composer()`；`InvestigationCoordinator.finish_fresh_finalization()` 在合法Claims生成后调用；`RuntimeAudit.persist_report_result()`保存：
 
 ```text
-Trace
-  Skill / Tool / Model / Script
-
-Working Data
-  /task-scratch
-
-Internal Evidence
-  working_derived
-
-Claim-grade Evidence
-  原始业务行 / 原图 / host structured fact / business_facts
-
-Validated Claims
-  可信语义层
-
-User Facts
-  Report Composer 基于 observed Claims 生成的人类可读事实
+report.json / report-meta.json       成功
+report-error.json                   表达失败
+result.json: report / report_meta    页面读取
+answer.json / final.txt             确定性fallback与审计
 ```
 
-UI 不再把 Evidence Catalog 本身当成“事实依据”。原始 Evidence 仅在折叠的“查看原始依据/技术记录”中提供审计。
+报告失败不把原本合法的业务调查标记为算法失败；保留明确降级状态和fallback。Finalizer失败则不能跳过Claims校验直接发布报告。历史任务不会因为升级自动重新调用模型或被改写。
 
-## 8. 三个首批业务 Skill 的结果边界
+## 5. 用户事实不是Evidence列表
 
-### 图片质量
+主报告显示Composer生成的人话；C/E引用在原始依据/技术详情中保留。源码、Skill、目录定位、工具错误和scratch过程不应变成用户主事实。
 
-- Laplacian/亮度/对比度/clip ratio 只用于多图筛选/分区，不可作为“无起雾/无脏污”的决定证据；
-- 最终判断必须直接查看代表性原图；
-- 每次 `view_image` 保持小批量，若工具返回 omitted/truncated，该调用不得升级为 claim-grade image Evidence；
-- 多图综合判断脏污、模糊、起雾/雾化、水珠、运动模糊、失焦；
-- “没有起雾”的负结论要求跨不同时间/场景的视觉覆盖。
+working_derived只作为内部派生材料兼容Step6，不因为“存在于Evidence目录”就和原始观察等价。事实页面要人工验收，包括fallback情况下是否仍泄漏大JSON、内部编号或不相干信息。
 
-### 编码器
+## 6. 业务校验重点
 
-沿用现场参考分析思路：
+图片：数值指标只筛选，最终看原图；抽样未覆盖不能说整小时正常；可见雾化不等于确定凝露。
 
-- sampling gap；
-- signed increment；
-- 相对局部正常窗口明显异常的 positive spike；
-- isolated negative + near-term catch-up → reverse-glitch candidate；
-- consecutive negative increments → reverse interval；
-- 小幅负增量不直接视为异常；
-- 应用 `EncoderVal` 作为主要业务序列，raw/filtered 用于确认异常是否在底层出现/是否被滤波；
-- 数据异常与硬件根因必须分开。
+编码器：数值下降、毛刺候选、连续回退、采样缺口与硬件根因分开；事件个数、负增量个数、脉冲幅度不是同一单位。正向大增量还要检查dt，恢复腿不要双计异常。
 
-### 乳头识别率
+乳头：最终采用帧2D框，最多4，命名牛周期分母；缺最终结果不是观察到0；统计率不是人工标注精确率。
 
-```text
-请求时间窗
-→ data-locator
-→ CowDisinfect logs
-→ 建立牛检测周期
-→ LastImgTimeStamp 对应最终采用帧
-→ 2D NippleNum（每牛最多 4）
-→ KPI
-```
+系统：当前host快照不是历史资源；负载高不是业务根因；缺字段不可从Sandbox补值。
 
-主指标：总牛数、4/3/2/1/0/无最终结果分布、完整四乳头率、总体乳头识别率。JPG/JSON 只做辅助核对，不作为总牛数分母。
+## 7. 验收
 
-## 9. 验收
-
-1. 新任务 `result.report` 存在且通过引用校验；
-2. 用户页面不再依赖 `_LABELS` 才能正常阅读；
-3. `facts` 只显示人类可读事实，不展示 raw JSON/Evidence 行；
-4. Composer 故意返回不存在的 C/E 时被拒绝并 fallback；
-5. Composer transport/JSON 失败时 Task 仍 COMPLETED，deterministic fallback 可用；
-6. 图片、编码器、乳头识别率三个真实任务验证报告表达与业务含义。
+测试验证引用越界、fact/inference分类、无工具请求、错误JSON与降级。真实任务另外验证：直接回答问题、事实人话、数字单位一致、未知保留、限制清楚、原始证据可追溯。不能只检查report.json存在就宣布完成。

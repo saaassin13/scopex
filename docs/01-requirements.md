@@ -1,351 +1,129 @@
 # ScopeX 产品需求基线
 
-状态：**2026-09-14 当前有效基线**。
+状态：2026-09-14 阶段收口。当前实现/验收状态见 `02-delivery-and-acceptance.md`，接手状态见 `08-local-usage-and-handoff.md`。
 
-## 1. 项目目标
+## 1. 定位与架构
 
-在 NVIDIA DGX Spark 上交付本地、可交互、证据可追溯、可执行的工业 Agent Runtime。
+交付运行在 NVIDIA DGX Spark 的本地、可交互、可执行、可审计工业 Agent。用户给目标，模型自主观察、推理、选择工具、执行业务动作并验证结果，不是只展示数据的看板。
 
-固定基线：
+**OpenClaw owns execution. ScopeX owns product control and trust.** OpenClaw + 模型负责调查、决策、执行、验证和停止。ScopeX 提供业务能力、权限、Run/Session、范围、预算、Evidence、审计、报告和 FastAPI/Vue。禁止第二套 Agent Loop / Workflow Engine、Router Model、Schedule Agent。
 
-- Agent Runtime：OpenClaw；
-- 当前已验证 served model id：`qwen3.8-27b-nvfp4`；
-- 推理：本地 vLLM OpenAI-compatible `/v1`；
-- 产品：ScopeX Runtime + FastAPI + Vue；
-- 业务数据、模型调用、审计默认在端侧完成。
+当前实机模型标识与部署参数见 `09-zero-to-one-build-and-offline-deployment.md`；模型名称、下载仓库、revision、served id 必须分开记录，不能凭名称替换已验证模型。
 
-> **OpenClaw owns execution. ScopeX owns product control and trust.**
+## 2. 通用需求（R01–R15）
 
-OpenClaw + 模型负责调查、工具选择、执行、验证和停止；ScopeX 负责 Run/Session、范围、能力、权限、预算、Facts/Evidence、审计、可信结果、时间触发和产品 API/UI。不得在 ScopeX 中重做第二套 Agent Loop / Workflow Engine。
+| ID | 要求 |
+|---|---|
+| R01 | 本地 OpenClaw / vLLM / 文件与工具 / 审计链；Sandbox 默认 network=none |
+| R02 | 模型自主调查，用户不需逐步教工具，不把完整业务流程写死在 Handler |
+| R03 | 原始大数据不全量塞 Context；先定位时间窗，再计算/抽样，有界输出 |
+| R04 | 多图最后结论依赖实际看过的原图，累计模型图片额度和每次工具额度分别管理 |
+| R05 | 有副作用的动作受能力/权限控制；当前只读诊断不能隐含授权重启或机器人动作 |
+| R06 | 动作后验证业务状态；命令 exit code=0 不是业务成功证明 |
+| R07 | 复用 OpenClaw 原生 compaction；不自建第二个上下文调度器 |
+| R08 | Stop/Resume/Steering，安全模型请求边界接管，保留审计 |
+| R09 | 请求/时间/Sandbox CPU、内存、PID、exec timeout 有界；预算不是根因判据 |
+| R10 | 正式结论可追溯至业务依据/可复验原图；不把工作过程当事实 |
+| R11 | 所有主结论、事实说明、建议用人话；模型负责表达，代码负责约束，禁止逐字段翻译成为主路线 |
+| R12 | 任务/事件/证据/Claims/报告/评价可复盘，区分运行失败和业务结果错误 |
+| R13 | 用户显式 target/source/scope 有约束力；最短充分路径，够证据即停 |
+| R14 | Skill 提供领域语义、稳定脚本和停止原则，不代替 Agent 的自主执行 |
+| R15 | Device Base 与 ScopeX Update 分层离线部署、校验、版本切换/回滚 |
 
-## 2. 通用产品需求
+600 秒、16 次请求是冻结的调查 turn 配置，不应把额外 Finalizer / Report 调用隐藏成“端到端一定 600 秒”。业务新增后的性能需重新计量。
 
-| ID | 需求 | 当前验收口径 |
-|---|---|---|
-| R01 | 本地执行链 | OpenClaw、vLLM、文件/Shell/图片、Evidence、Finalizer 本地完成；Sandbox 默认无网络 |
-| R02 | 自主调查 | 用户给目标后模型自主决定调查顺序/工具，不要求逐步教操作 |
-| R03 | 大数据工作集 | 大日志/CSV/图片/点云不直接全量进入 Context；先定位、筛选、计算、有界摘要 |
-| R04 | 多图分析 | 大图片集先筛选；最终视觉结论依赖的原图实际查看且集合有界 |
-| R05 | 可执行动作 | 高风险动作必须经过 capability / permission boundary |
-| R06 | 动作后验证 | exit code 0 不等于业务成功；动作后验证真实状态 |
-| R07 | 上下文持续 | 使用 OpenClaw 原生 compaction；Context 不是原始数据仓库 |
-| R08 | 可接管 | Stop / Resume / Steering 保持有效 Session |
-| R09 | 防失控 | request/time budget 单一来源；原生 loopDetection；Sandbox 有 CPU/memory/PID/exec-time 硬限制 |
-| R10 | 可信输出 | 正式业务事实来自 claim-grade Evidence / 原图重新验证 / 稳定 structured business facts |
-| R11 | 可读结果 | 主视图使用业务语言；Trace/原始技术字段下沉；可读化不得增加 unsupported facts |
-| R12 | 可审计复测 | Run/Trace/Evidence/Claims/Result/评价/关键版本可回归 |
-| R13 | 范围与停止 | 显式 target/source/scope 是约束；最短充分路径；够证据即停止 |
-| R14 | Skill / 稳定脚本 | Skill 提供业务语义/稳定原语，但不替代 Agent Loop |
-| R15 | 离线部署 | Device Base 与 ScopeX Update 分层，可离线安装/回滚 |
+## 3. 统一入口与生命周期（R16–R17）
 
-## 3. 用户统一入口与内部结果策略
+用户只有一个输入入口，`POST /runs` 创建 auto Run，底层所有任务共用 TaskService / OpenClaw / 模型 / Session / 工具 / 审计。
 
-### R16 Unified Run
+未触及业务数据、正常回答可作为 conversation 完成，不强制 Evidence。已经尝试业务调查却无依据，必须报告失败/不可用，不得降级成聊天成功。定时触发始终是正式 task。兼容 API 不是用户必须选择的模式。
 
-用户不需要选择 Conversation / Task。手动输入统一创建：
+Run 保存开始、结束、耗时、trigger_type、schedule_id、scheduled_for 和状态。运行失败也要给可读原因；内部错误码放技术详情。
 
-```text
-mode=auto
-  ↓
-TaskService -> OpenClaw -> Skill/Tool -> Progress/Audit
-  ↓
-依据实际执行行为内部落成 conversation 或 task
-```
+## 4. 定时触发（R18）
 
-禁止额外增加一个 Router Model 只用于分类。
+配置只需要名称、普通任务内容、时间/周期、启用状态。支持每 N 分钟、每天 HH:MM、一次执行、立即执行。
 
-内部规则：
+到点只创建普通 task，绝不编排业务步骤。例如当前磁盘、过去 30 分钟编码器、过去 30 分钟图片。相对窗口使用 planned/scheduled_for 为基准，不能在排队/重启后悄悄改变统计时间。
 
-- 没有访问业务数据/业务能力，OpenClaw 正常回答：落成 `conversation`，允许 Evidence=0；
-- 已访问 `/agent-data`、`/scopex-host`、原图或正式业务脚本：落成 `task`；
-- 已尝试业务调查但未形成可信业务事实：不得降级为普通聊天回答；
-- Schedule 永远创建 audited `task`。
+设备离线/断电期间错过的触发全部跳过，不补跑，也不为每个错过时间生成失败 Run。interval 保持原周期相位；daily 推进到未来日期；once 过期则停用并标记 MISSED_OFFLINE。立即执行不改变 recurring 周期。
 
-显式 `/tasks`、`/conversations` API 可保留做兼容/测试，但普通 UI 只使用统一 `/runs`。
+当前单执行槽位在线 busy 记 SKIPPED_BUSY。并发/在线队列是后续设计，不改变“离线历史不补跑”。
 
-### R17 Run 生命周期
+## 5. 记录、删除、评价与复盘（R19–R22）
 
-每次执行至少记录：
+首页：月份日历显示每天数量/状态，点日期显示当天所有 Run，再进详情。统计只读取 ScopeX 元数据，不扫描业务目录。
+
+终态 Run 可删除 ScopeX audit/work/scratch/快照/报告/评价/导出包，不得删除 `/agent-data` 外部日志、图片、JSON、PCD。非终态先安全停止，不直接删除；暂停与真正终止要区分。
+
+任务评价：正确/有问题、问题标签、备注；不能根据用户评价自动改变模型/Skill。复盘导出包含存在的任务/报告/依据/技术错误和版本信息，默认不含整份外部数据或密钥。目标是定位 Model / Skill / Tool / Runtime / Evidence / Finalizer / Report / UI 的问题，不静默重做诊断。
+
+## 6. 数据目录（R23–R24）
+
+唯一源为 `config/data-catalog.json`：
 
 ```text
-mode
-trigger_type
-schedule_id (optional)
-scheduled_for (optional)
-started_at
-finished_at
-duration_ms
+/opt/ScalingRobotics/CowDisinfect/Log -> /agent-data/logs
+  CowDisinfect-YYYYMMDD-HHMMSS.log[.N]
+
+/opt/ScalingRobotics/CowDisinfect/GrabbedImages/LeftCamera -> /agent-data/left-camera
+  YYYYMMDD/HH/YYYYMMDD-HHMMSSmmm.jpg|json|pcd
 ```
 
-UI 显示开始、结束、耗时、手动/定时触发和状态。
+Runtime 将语义摘要注入模型，不注入全盘文件清单；存在的 host path 自动只读挂载。机器 Catalog 随 data-locator Skill provision 到 `skills/data-locator/references/data-catalog.json`。不能假定 workspace 根文件一定映射到 Sandbox `/workspace`。
 
-## 4. 简单定时触发
+日志组文件名时间可能非整点，Locator 用组区间重叠定位；LeftCamera 直接进目标日期/小时；超预算图片分散时间抽样，不只取前半小时。日志不抽样冒充完整统计。PCD 先定位，再加载/降采样。
 
-### R18 Schedule
+禁止普通任务递归扫描数据根。Catalog/Skill 说明与稳定脚本预算不能被宣传为任意 Shell 的全局 I/O 硬限制；尚未实现的 guard/索引明确记录。
 
-Schedule 只保存普通任务内容 + 简单时钟规则，不是 Workflow。
+## 7. 首批业务（R25–R29）
 
-V1 支持：
+### R25 当前设备资源
 
-- 每 N 分钟；
-- 每天 HH:MM；
-- 一次执行；
-- 启用/停用；
-- 立即执行；
-- 上次执行/状态；
-- 下次执行；
-- missed count / last missed time。
+只分析当前宿主机快照 `/scopex-host/current.json`。不部署历史资源 timer，不做历史 CPU/内存/GPU 分析。源不可用必须说明不可用，不允许 Sandbox fallback。一次 snapshot 的高负载不足以证明业务故障。
 
-到点只调用普通 `TaskService.create_task(... mode="task", trigger_type="schedule")`。Scheduler 不决定 Skill、步骤、诊断逻辑。
+### R26 图片质量
 
-### 离线/重启语义
+单图直接看原图；多图先有界定位，再按时间/场景及可选指标分区抽样，多批视觉判断脏污、模糊、起雾、水珠、运动模糊、失焦。Laplacian/亮度/对比度/clip ratio 只供筛选和参考，不能决定“没有起雾”。
 
-设备断电或 ScopeX 未运行期间错过的历史触发**全部跳过，不补跑**：
+每次 view_image 最多 2 张，完整请求按 `SCOPEX_MAX_IMAGES_PER_PROMPT` 计累计附件。缺失/省略的图片不是已查看依据。负结论限定实际覆盖；看到雾化特征不等于证明冷凝水物理原因。
 
-- interval：统计 missed 次数，直接推进到原相位的下一个未来时间；
-- daily：历史日期只计 missed，推进到下一个未来 daily；
-- once：已过期则 `MISSED_OFFLINE` 并停用；
-- 不为离线历史时间点创建 Task Run。
+### R27 乳头 2D 识别率
 
-当前单机仍只有一个主要执行槽位；在线到点时 busy 记 `SKIPPED_BUSY`，不偷偷排队。“立即执行”不改变 recurring `next_run_at`。
+从日志建立命名牛周期，最终 `LastImgTimeStamp` 对应帧的 `NippleNum` 为识别数。每头最多 4，超过 4 保留原值/过检标记并封顶。3D 坐标/IsValid 不参与，不取多帧 max、不多帧累加。
 
-## 5. 执行记录、删除、评价与复盘
+图片和 JSON 在失败路径可能没有，不作为总牛数分母。完整四乳头率=完整四框牛数/总牛数；总体乳头率=最终封顶框数之和/(总牛数×4)。缺最终结果保留于分母且单列，不能称为观察到 0；需要说明这是含缺失的保守统计。日志无命名周期的物理漏牛需要独立真值。
 
-### R19 Calendar Run History
+### R28 编码器事件
 
-执行记录主页面按月显示日历：
+Locator -> 显式相关轮转文件 -> 一次稳定分析 -> 具体异常事件 -> 必要时小范围上下文。优先应用层累计值；raw/filtered 作为对照，无应用流需声明改用 raw。
+
+检查毛刺/快速恢复、连续回退、单步回退、异常正跳、采样缺口。恒值可能是正常停止，小幅负值不自动判故障。增量要结合实际 dt 和局部正常变化；无效数据、复位、时间异常必须谨慎处理，不能删除断点再连算。结果列时间、前后值、增量和恢复，不以数千次负增量代替异常定位。候选不是硬件根因。
+
+### R29 日志上下文
+
+显式日志+时间/关键词，返回有界 source/line/time/raw。用于回答具体原因或补足证据，不能无锚点无限扩大或无请求扫描其他系统。
+
+## 8. 结果与证据
 
 ```text
-月历日期格 -> 当日 Run 数量/失败状态
-点击日期 -> 当天全部 Run
-点击 Run -> Result / Facts / Progress / Feedback
+Trace / Working Data / Internal working_derived
+  -> 供调查审计，不直接展示成用户事实
+
+业务依据 / 原图 / structured business_facts
+  -> Evidence -> Fresh Finalizer -> Validated Claims
+  -> 无工具 Report Composer -> 引用/分类校验
+  -> 结论 / 人话事实依据 / 可能性 / 下一步 / 限制
 ```
 
-日历只基于 ScopeX Run 元数据，不扫描业务原始目录。
+Skill、源码和 Locator 是工作过程；scratch 有界派生读取可作为 working_derived 内部 Evidence 保留 Step 6 兼容，不能直接当作用户事实。结构化统计整体是一份 Evidence，可以支持不同命题，不能因共用 E 就误判重复。
 
-### R20 Run Delete
+Composer 只组织已支持内容，无工具、不增加证据、不重新诊断；未知必须保留，因果假设不能改成事实。校验只保证当前实现的结构、引用和分类，不能宣称自动证明一切语义/数值。故障保留安全 fallback 并明确降级，不把 JSON 当正常报告。
 
-终态 Run 可删除。删除必须级联清理 ScopeX 自有：
+## 9. 部署和未做范围
 
-- audit/result/claims/evidence/events/evaluation；
-- task work / scratch / host snapshot / runtime artifacts；
-- 已导出的该 Run review ZIP。
+业务数据只读，task scratch 独立可写，Sandbox 无网络，包在构建期预装。默认资源为 512 MiB memory/memory+swap 上限、1 CPU、256 PID、exec 30s；这些不是完整 I/O 预算。重型点云按实测再设计独立资源配置。
 
-删除函数禁止触及外部只读业务数据源 `/agent-data`。运行中/暂停中/Finalizing Run 不可直接删除。
+离线包区分 Device Base / ScopeX Update；镜像架构、模型 revision、文件 SHA256、版本目录均可核对。可变任务数据不能放在升级会替换的 release 内。保留旧版本，不自动修改/删除现机其他服务。
 
-### R21 Task Evaluation
-
-终态 Run 支持 👍 / 👎、问题标签、可选说明。评价是优化证据，不自动修改 Prompt/Skill。
-
-### R22 Review Export
-
-Run 可导出有界 review ZIP，包含存在的 Task/Session/Result/Answer/Claims/Evidence/Events/Evaluation/错误审计文件和 manifest。默认不打包整份外部业务日志/图片/点云。
-
-目标是让更大模型区分：Model / Skill / Tool / Runtime / Evidence / Finalizer / UI 哪一层需要优化，而不是静默重新做业务诊断。
-
-## 6. 真实 Data Catalog 与有界访问
-
-### R23 Data Catalog
-
-统一配置：
-
-```text
-config/data-catalog.json
-```
-
-当前真实源：
-
-```text
-cowdisinfect_logs
-  host  /opt/ScalingRobotics/CowDisinfect/Log
-  agent /agent-data/logs
-  file  CowDisinfect-YYYYMMDD-HHMMSS.log[.N]
-
-left_camera_multimodal
-  host  /opt/ScalingRobotics/CowDisinfect/GrabbedImages/LeftCamera
-  agent /agent-data/left-camera
-  dir   YYYYMMDD/HH
-  file  YYYYMMDD-HHMMSSmmm.jpg|json|pcd
-```
-
-Runtime 启动时把 Catalog 复制到 `/workspace/scopex-data-catalog.json`，声明目录存在时默认只读挂载；显式 `--data-dir` 可追加/覆盖 agent target。
-
-Catalog 是语义目录，不是启动时构建的全量文件索引。
-
-### R24 Data Locator
-
-默认内部支持 Skill `data-locator` 负责按明确时间窗定位文件，不下根因结论。
-
-要求：
-
-- 普通任务禁止递归 `find / grep -R / du -a / rg --files` 整个 `/agent-data`；
-- LeftCamera 直接进入目标 `YYYYMMDD/HH`；
-- 日志文件名是**文件组起始时间**，可能是 `10:23:36` 这样的非自然整点；查询 11:00 时仍可能需要 `10:23:36` 组；Locator 必须按相邻文件组起始区间重叠选择，而不是简单匹配小时字符串；
-- PCD 先定位具体文件，单次默认最多少量文件，禁止全历史 load。
-
-详细见 `docs/business/02-data-catalog-and-bounded-access.md`。
-
-## 7. 第一批业务能力 V1
-
-默认 Built-in Skills：
-
-```text
-data-locator
-system-health
-image-quality-diagnosis
-nipple-recognition-analysis
-encoder-health
-log-context
-```
-
-网络能力暂缓，必须先确认 topology、节点、链路、协议和业务依赖。
-
-### R25 system-health
-
-只分析**当前** DGX Spark 宿主机资源：CPU/load、内存、磁盘、GPU、Docker、关键进程。
-
-每 Run 创建时生成 host current snapshot 并只读挂载 `/scopex-host/current.json`。不启用历史资源 timer，不做历史 CPU/memory/GPU 分析；禁止 Sandbox fallback。
-
-### R26 image-quality-diagnosis
-
-- 单图优先原图视觉；
-- 时间窗图片先由 data-locator 定位目标小时；
-- 不默认扫描 sibling 日志/JSON/历史图片；
-- 需要量化才使用稳定指标脚本；
-- 物理原因不足时输出 unknown；
-- 最终 claim-grade 原图集合有界。
-
-### R27 nipple-recognition-analysis
-
-统计对象固定为 **2D `NippleNum` 检测框数量**：
-
-- 一头牛固定 4 个乳头；
-- 3D 坐标、`IsValid`、3D valid count 不参与 KPI；
-- `NippleNum > 4` 单列过检，指标最多计 4；
-- JPG/JSON 失败路径可能不存在，不能用文件数做总牛数；
-- 从 CowDisinfect 日志恢复牛周期；
-- `LastImgTimeStamp` 对应最终帧 `NippleNum` 为最终 2D 数；
-- 不求和、不取周期 max。
-
-稳定脚本 stdout 只输出 compact `business_facts`；逐牛明细放 `/task-scratch/nipple-details.json`。
-
-### R28 encoder-health
-
-产品路径：
-
-```text
-requested time window
- -> data-locator selects explicit rotated files
- -> encoder_health.py analyzes all selected files once
- -> compact business_facts
- -> optional bounded log-context for important candidates
-```
-
-要求：
-
-- invalid sample 打断连续 pair；
-- 跨显式轮转文件检查连续性；
-- 所有小 raw decrease 只统计次数/幅度分布，不逐条提升为异常 Evidence；
-- 显著 negative/positive、large negative、gap、flat 才形成 bounded candidates；
-- 旧脚本阈值不自动升级成硬件事实。
-
-### R29 log-context
-
-按明确日志 + 时间/关键词返回 bounded 原始上下文，保留 source/line/time/raw；无 anchor 不无限扩大；自身不下根因。
-
-详细业务口径见 `docs/business/01-business-capabilities-v1.md`。
-
-## 8. Evidence / Trace 分层
-
-必须区分：
-
-```text
-Trace
-  Skill / script source / locator / shell / model requests
-
-Working Data
-  /task-scratch intermediate data
-
-Claim-grade Evidence
-  raw business log lines / original images / host facts / structured business_facts
-
-User Facts
-  UI-visible factual basis derived from claim-grade Evidence
-```
-
-固定规则：
-
-1. `/workspace/skills/**` read 不进入 Claim-grade Evidence；
-2. `/workspace/scopex-data-catalog.json` read 不进入 Claim-grade Evidence；
-3. `/task-scratch/**` read 不进入 Claim-grade Evidence；
-4. `scopex_role=locator` 是 Trace-only；
-5. `scopex_role=business_facts` 整体成为一条结构化 Evidence，不按 stdout 每行拆成几百 E refs；
-6. UI 默认展示“事实依据”，不是 Agent 调查材料；
-7. Trace 继续用于技术调查和 Review Bundle。
-
-可信链：
-
-```text
-Raw Business Source / Original Image / Stable Business Facts
-        ↓
-Claim-grade Evidence
-        ↓
-Fresh Structured Finalizer
-        ↓
-Validated Claims
-        ↓
-Claim-bounded Product Answer
-        ↓
-Result-first UI + User Facts
-```
-
-## 9. Sandbox / 资源边界
-
-- 业务数据只读 bind；
-- 每 Run 有 `/task-scratch`；
-- Runtime network=none；
-- 默认 Sandbox limits：512 MiB memory / 512 MiB swap / 1 CPU / 256 PIDs / exec 30s；
-- toolbox 在 build 阶段准备；
-- 重型 PCD 若真实 workload 超过 512 MiB，不直接全局放大所有任务资源；应基于实测再设计 capability-specific resource profile。
-
-## 10. 端侧部署
-
-现场网络不能是正常运行前提：
-
-```text
-Device Base Package
-  DGX OS / Docker / NVIDIA Runtime / OpenClaw / vLLM image / model weights
-
-ScopeX Update Bundle
-  source / frontend dist / Python wheelhouse / analysis sandbox / Skills / manifest
-```
-
-要求 ARM64 一致、SHA256、commit/image 可追溯、Python `--no-index`、现场不 npm install、Docker/vLLM save/load、模型固定 `MODEL_REPO + MODEL_REVISION + served id`、保留旧版本回滚。
-
-## 11. 当前性能基线
-
-```text
-OpenClaw turn timeout = 600 s
-model requests / turn = 16
-context baseline = 32768
-```
-
-Step 6F 在既定复杂任务上约 `371.1 s / 14 requests` PASS。该结果不自动覆盖新的业务任务/模型。
-
-## 12. 当前验收主线
-
-1. Data Catalog / Locator / Evidence 分层专项测试；
-2. Python 全量单测；
-3. Vue build；
-4. Spark ARM64 analysis sandbox；
-5. 真实 Data Catalog 两个 host path 自动挂载；
-6. `/runs` 普通咨询内部落成 conversation；业务调查内部落成 task；
-7. 3点编码器使用 locator + 单次 compact analysis 完成；
-8. 1小时乳头 2D KPI 人工对账；
-9. Facts UI 不显示 Skill/source/scratch；
-10. Schedule 重启不补跑历史 missed；
-11. Calendar/day list/delete；
-12. 评价 + review ZIP；
-13. FastAPI + Vue 真实业务闭环；
-14. Device Base + ScopeX Update 离线 smoke / rollback；
-15. 以上稳定后再进入 bounded concurrency。
+并发、网络 topology、独立漏牛真值、完整历史清理策略和业务动作锁仍为后续范围。判断已完成必须依据测试或真实执行证据，不能以文档/代码存在替代验收。

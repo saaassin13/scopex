@@ -28,8 +28,6 @@ jobs:
         run: python -m compileall -q scopex scripts skills tests
       - name: Run full regression suite
         run: python -m unittest discover -s tests -v
-      - name: Check patch whitespace
-        run: git diff --check HEAD^ HEAD
 
   frontend-build:
     runs-on: ubuntu-24.04
@@ -45,3 +43,34 @@ jobs:
       - name: Build Vue frontend
         working-directory: frontend
         run: npm run build
+
+  repository-hygiene:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      - name: Check patch whitespace
+        run: git diff --check HEAD^ HEAD
+      - name: Reject tracked runtime files and merge markers
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import subprocess
+          paths = subprocess.check_output(['git', 'ls-files', '-z']).decode().split('\0')
+          errors = []
+          for name in filter(None, paths):
+              path = Path(name)
+              if set(path.parts) & {'.local', '.venv', 'node_modules', '__pycache__'} or name.endswith(('.pyc', '.pyo')) or path.name == '.env':
+                  errors.append('runtime artifact: ' + name)
+              if path.suffix not in {'.py', '.ts', '.vue', '.md', '.json', '.yml', '.yaml', '.sh'}:
+                  continue
+              for line in path.read_text(encoding='utf-8').splitlines():
+                  if line.startswith(('<<<<<<< ', '>>>>>>> ')):
+                      errors.append('merge marker: ' + name)
+                      break
+          if errors:
+              raise SystemExit('\n'.join(errors))
+          print('Repository hygiene OK')
+          PY
