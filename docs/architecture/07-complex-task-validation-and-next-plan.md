@@ -2,11 +2,11 @@
 
 状态：**2026-09-14 当前有效**。
 
-## 1. Frozen architecture boundary
+## 1. Frozen boundary
 
 > **OpenClaw owns execution. ScopeX owns product control and trust.**
 
-OpenClaw + 本地模型负责调查、工具选择、执行、验证和停止；ScopeX 提供任务范围、能力、权限、生命周期、Evidence、预算、审计、时间触发和可信产品结果。不增加第二套 Workflow / Decision / Action Engine。
+不增加第二套 Workflow / Decision / Action Engine。
 
 ## 2. Step 6 — frozen
 
@@ -19,223 +19,236 @@ OpenClaw + 本地模型负责调查、工具选择、执行、验证和停止；
 | 6E Complex Task Capability | **CAPABILITY PASS** |
 | 6F 600s / 16-request Product Gate | **PASS** |
 
-6F 既定综合任务约 `371.1 s / 14 requests`。这些结论只证明冻结基线，不自动覆盖新业务代码。
+既定综合任务约 `371.1 s / 14 requests`。该结论只证明冻结基线。
 
-## 3. Step 7 / Product V1 当前实现
+## 3. 当前主阶段 — Business + Product V1
 
 ```text
-Conversation / Manual Task / Scheduled Trigger
+Unified Manual Run / Schedule
         ↓
 TaskService
         ↓
 OpenClaw + local model
         ↓
-Skills / tools
+Data Catalog + Business Skills
         ↓
-Progress / Audit
+Trace / Working Data / Claim-grade Evidence
         ↓
-Conversation result
+conversation answer
 或
-Evidence -> Finalizer -> Claims -> Product Answer
+Finalizer -> Claims -> Product Answer
 ```
 
-当前代码已实现、尚待回归：
+当前代码已实现、待本轮验收：
 
-- Claim-bounded Product Answer；
-- deterministic business readability；
-- Result-first UI；
-- Conversation 与 Task 共用 Runtime；
-- Conversation 正常结束时允许无 Evidence；
-- 正式 Task 无 Evidence 仍失败；
-- started/finished/duration/trigger metadata；
-- interval/daily/once 简单 Schedule；
-- busy 时 `SKIPPED_BUSY`；
-- run-now 不改变 recurring cadence；
-- Task 评价；
-- review ZIP export；
-- FastAPI/Vue 对应页面/API。
+- 用户单一 `/runs` 入口；
+- auto → conversation/task 内部分类，不调用 Router Model；
+- 业务调查失败不能降级为普通对话；
+- current system-health；
+- image-quality；
+- nipple 2D KPI；
+- encoder compact window analysis；
+- bounded log-context；
+- Data Catalog + data-locator；
+- Evidence Trace/Working/Claim/User Facts 分层；
+- interval/daily/once；
+- offline missed skip/no replay；
+- run timing；
+- 月历/day list；
+- terminal task safe delete；
+- feedback + review ZIP；
+- Result-first / User Facts UI。
 
-Scheduler 仅是时间 Trigger，不决定 Skill 或业务步骤。
-
-## 4. 真实产品问题与对应修复
-
-### 4.1 Finalizer length truncation
-
-已有 Evidence 时结构化输出可能 `finish_reason=length`。当前：Claims 数量/Evidence refs 有界；仅 length 时同 Evidence 一次无工具恢复。
-
-### 4.2 Explicit scope over-expansion
-
-用户明确 target/source/scope 是约束。走最短充分路径，只有原范围不足时才最小扩展，证据够即停止。
-
-### 4.3 普通问答被诊断流程误判失败
-
-旧行为：无 Evidence → `investigation_completed_without_evidence`。
-
-当前：Conversation 与 Task 仍共用 TaskService/OpenClaw，但 Conversation 的正常 final answer 可直接发布；正式 Task 仍要求 Evidence。`tests/test_conversation_mode.py` 专门锁定这一边界。
-
-### 4.4 Product Answer 太机械
-
-当前增加受 Claims 约束的确定性字段格式化：百分比、单位、常见业务字段翻译。原始 Evidence/技术错误下沉详情；不调用第二次诊断模型。
-
-## 5. Business V1
-
-默认 Skills：
+## 4. Real data baseline
 
 ```text
-system-health
-image-quality-diagnosis
-nipple-recognition-analysis
-encoder-health
-log-context
+/opt/ScalingRobotics/CowDisinfect/Log
+  -> /agent-data/logs
+  CowDisinfect-YYYYMMDD-HHMMSS.log[.N]
+
+/opt/ScalingRobotics/CowDisinfect/GrabbedImages/LeftCamera
+  -> /agent-data/left-camera
+  YYYYMMDD/HH/YYYYMMDD-HHMMSSmmm.jpg|json|pcd
 ```
 
-### system-health
+统一定义在 `config/data-catalog.json`，Runtime 复制到 workspace 并自动挂载存在的 host path。
 
-只做**当前 host state**：
+### Log selection
+
+日志文件组起始时间可能不是自然小时。Locator 依据：
 
 ```text
-Task create
- -> host snapshot
- -> <task-work>/host/current.json
- -> read-only /scopex-host/current.json
- -> Agent
+[group_start, next_group_start)
 ```
 
-已取消：30 秒 timer、`system_metrics.jsonl`、历史 CPU/memory/disk/GPU 分析。
+和请求窗口是否重叠决定是否选择该组及其 `.1/.2/...`。
 
-Agent 不获得 host shell；Snapshot 不可用时必须 unknown，禁止 Sandbox fallback。
+### Multimodal selection
 
-### image-quality
+LeftCamera 直接进入目标 `YYYYMMDD/HH`，再按 filename timestamp 过滤，不递归历史树。
 
-原图优先，必要时稳定 metrics；严格范围、证据够停止。
+## 5. Evidence correction from real failure
 
-### nipple-recognition-analysis
-
-正式口径：
+真实编码器失败包曾包含约 990 Evidence，主要来自 Skill.md、脚本源码和多个 15KB 分析 stdout。该设计已纠正：
 
 ```text
-rotated CowDisinfect logs
- -> named cow cycles
- -> per-frame 2D NippleNum
- -> New cow detecte finished / LastImgTimeStamp
- -> final consumed 2D NippleNum
- -> KPI
+Trace
+  Skill / script / locator / shell / model request
+
+Working Data
+  /task-scratch
+
+Claim-grade Evidence
+  business source / original image / host fact / structured business_facts
+
+User Facts
+  UI-visible factual basis
 ```
 
-- 一头牛固定 4 个乳头；
-- 只统计 2D boxes，不使用 3D valid；
-- 不取 max，不求和；
-- JPG/JSON 失败路径可能不存在，因此不做 denominator；
-- `>4` 单列过检、KPI cap=4；
-- unfinished cycle 保留在保守分母。
+`business_facts` 一次稳定分析只形成一条结构化 Evidence，不再按 stdout 每行拆分。
 
-### encoder-health
+## 6. Encoder failure correction
 
-V1 只分析 invalid/read failure、sample gap、negative jump、large negative candidate、positive delta outlier candidate、flat raw、raw/filtered diff。旧业务阈值不直接继承。
-
-### log-context
-
-公共 bounded raw log window，不独立判根因。
-
-## 6. Deployment baseline
-
-部署分层：
+正式路径：
 
 ```text
-Device Base Package
-  DGX OS / Docker / NVIDIA Runtime / OpenClaw / vLLM / model
-
-ScopeX Update Bundle
-  source / frontend dist / wheelhouse / analysis sandbox / Skills / checksum
+requested window
+ -> data-locator
+ -> explicit rotated log list
+ -> encoder_health.py once
+ -> compact business_facts
+ -> bounded context only for significant candidates
 ```
 
-当前 served id：`qwen3.8-27b-nvfp4`；仍需补录真实 `MODEL_REPO + MODEL_REVISION`。完整流程见 `docs/09-zero-to-one-build-and-offline-deployment.md`。
+所有小 negative delta 只统计次数/P95/max。显著 negative outlier、large negative、positive outlier、gap、flat 才进入 candidate list。
 
-## 7. Remaining acceptance order
+此外 `investigation-error.json` 现在保留 OpenClaw CLI flags/liveness/error 信息，方便 review bundle 继续定位 `investigation_turn_incomplete`。
 
-### Gate 1 — Focused backend
+## 7. Scheduler offline semantics
+
+ScopeX 启动时 reconciliation：
+
+- overdue interval/daily trigger 只增加 `missed_count`；
+- next_run 推到下一个未来时点；
+- once 过期 → `MISSED_OFFLINE` + disabled；
+- 不创建历史补跑 Task。
+
+在线单槽位 busy 当前仍 `SKIPPED_BUSY`。不要在本轮同时引入 queue/concurrency。
+
+## 8. Product history / delete
+
+首页：单一 Agent 输入 + 月历。
+
+```text
+month calendar
+ -> select day
+ -> that day's runs
+ -> run detail
+```
+
+terminal Run 可删除 ScopeX audit/work/review export；原始 `/agent-data` 永不删除。
+
+## 9. Remaining acceptance order
+
+### Gate 1 — focused backend
 
 ```bash
 python3 -m unittest \
-  tests.test_conversation_mode \
-  tests.test_product_answer \
-  tests.test_product_answer_readability \
+  tests.test_data_catalog \
   tests.test_business_skill_tools \
+  tests.test_evidence_projector \
+  tests.test_product_answer_readability \
   tests.test_schedules \
-  tests.test_task_run_metadata \
+  tests.test_conversation_mode \
+  tests.test_conversation_continuation \
+  tests.test_conversation_api \
+  tests.test_task_calendar_delete \
+  tests.test_task_feedback_export \
   tests.test_fastapi_app \
-  tests.test_skill_provisioning \
-  tests.test_deployment_assets -v
+  tests.test_runtime_api_factory \
+  tests.test_skill_provisioning -v
 ```
 
-### Gate 2 — Full backend
+### Gate 2 — full backend
 
 ```bash
 python3 -m unittest discover -s tests -v
 ```
 
-### Gate 3 — Frontend
+### Gate 3 — frontend
 
 ```bash
 cd frontend
 npm run build
 ```
 
-### Gate 4 — ARM64 Sandbox
+### Gate 4 — ARM64 sandbox
 
-构建 `scopex-sandbox-analysis:step7`，验证 toolbox imports + manifest。
+Build/import `scopex-sandbox-analysis:step7`.
 
-### Gate 5 — Conversation
+### Gate 5 — real data wiring
 
-输入“当前可用的 Skill 有哪些”，应正常完成；可以没有 Evidence；不得进入 `investigation_completed_without_evidence`。
+- Runtime startup automatically binds real Log / LeftCamera sources;
+- `/workspace/scopex-data-catalog.json` exists;
+- Locator query around non-round log start returns correct file group;
+- LeftCamera query only visits target hour dir.
 
-### Gate 6 — Current system-health
+### Gate 6 — unified entry
 
-- `/scopex-host/current.json` 存在且采样时间接近 Task；
-- 当前磁盘/内存/CPU/GPU 能正确读取；
-- 某字段 collector 失败时显示 unavailable；
-- Trace 不用 Sandbox `/proc/free/df/nvidia-smi` 代替 host。
+- “当前有哪些能力” → normal answer, internal conversation;
+- “检查3点编码器” → audited task;
+- business attempt without facts cannot downgrade to chat.
 
-### Gate 7 — nipple 2D KPI
+### Gate 7 — encoder real acceptance
 
-用完整一小时轮转日志人工核对：牛周期、`LastImgTimeStamp`、最终 `NippleNum`、分布、`Σmin(N,4)/(total×4)`；有完整 artifact 时只做辅助核对。
+Repeat failed task “3点的编码器数据是否存在异常”:
 
-### Gate 8 — encoder
+- expected path near `locator -> one encoder_health -> optional small log-context`;
+- no script-source inspection;
+- no unrelated image listing;
+- no `cd && python` preflight errors;
+- Evidence count drastically lower than previous 990;
+- Product Answer readable;
+- manual candidate spot-check agrees with raw lines.
 
-用正常 + 已知毛刺/回退/读取失败样本核对 candidate events，再小窗口 log-context 解释。
+### Gate 8 — nipple KPI
 
-### Gate 9 — image scope
+Full one-hour manual reconciliation of named cow cycles / final `LastImgTimeStamp` / 2D `NippleNum` / KPI.
 
-明确单图：实际查看原图、不读排除数据、不默认 exec、少量请求结束。
+### Gate 9 — image
 
-### Gate 10 — Schedule / timing / feedback / export
+Strict single-image regression + bounded time-window image lookup.
 
-- interval/daily/once；
-- busy → `SKIPPED_BUSY`；
-- run-now 不改 next_run；
-- started/finished/duration；
-- 评价保存/修改；
-- review ZIP 可供大模型复盘。
+### Gate 10 — scheduler/history/delete
 
-### Gate 11 — Product integration
+- offline missed not replayed;
+- run-now cadence stable;
+- calendar/day aggregation correct;
+- terminal deletion removes only ScopeX-owned data.
 
-FastAPI + Vue 跑 Conversation、手动 Task、Scheduled Task 至少各一个；检查 Result/Evidence/refresh/Stop/Resume/Steer。
+### Gate 11 — product integration
 
-### Gate 12 — Offline
+Timing / User Facts / feedback / review ZIP / Stop-Resume-Steer / refresh.
 
-Device Base + ScopeX Update 双层 ARM64 离线安装、自恢复、rollback。
+### Gate 12 — offline
 
-## 8. Non-blocking gaps
+Device Base + ScopeX Update install, self-recovery, rollback.
 
-- 完全漏检且无命名牛周期的物理牛仍缺 ground truth；
-- encoder firmware/site profile 未冻结；
-- 网络 topology 未确认；
-- current model repo/revision 未补录；
-- generic high-risk business action provenance 仍需后续扩展；
-- frontend npm lockfile 缺失；
-- task scratch retention/cleanup 仍需真实验证；
-- review bundle 环境版本清单可继续增强。
+### Gate 13 — concurrency discussion
 
-## 9. Merge policy
+Only after Gates 1–11 are stable, move from single active slot to bounded concurrency. Initial direction remains max ~2 running tasks, schedule queue/coalesce semantics and future high-risk device resource locks. Do not implement unlimited parallelism.
 
-PR #14 保持 Draft。完成 focused/full Python、Vue build 和最小 Spark 真实验收前不合入 main；不要在这一批再混入网络 topology、机器人新动作或模型性能实验。handoff 文档在本大阶段验收完成后再更新。
+## 10. Non-blocking gaps
+
+- log root locator currently does non-recursive filename scanning; add lightweight index only if real file count proves this becomes slow;
+- PCD workload may need capability-specific Sandbox resource profile after real measurements;
+- completely missed cows need external ground truth;
+- encoder firmware/site profile not frozen;
+- network topology unknown;
+- current model repo/revision not recorded;
+- frontend npm lockfile missing;
+- bounded concurrency not yet implemented.
+
+## 11. Merge policy
+
+PR #14 remains Draft until focused/full Python, Vue build and minimum Spark real-data evidence pass. `docs/08-local-usage-and-handoff.md` is updated only after this major stage is actually accepted.
