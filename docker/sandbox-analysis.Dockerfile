@@ -41,8 +41,8 @@ RUN set -eux; \
         for f in /etc/apt/sources.list /etc/apt/sources.list.d/debian.sources; do \
           [ -f "$f" ] || continue; \
           sed -i -E \
+            -e "s#https?://(deb\.debian\.org|security\.debian\.org)/debian-security/?#${TUNA_MIRROR}/debian-security/#g" \
             -e "s#https?://deb\.debian\.org/debian/?#${TUNA_MIRROR}/debian/#g" \
-            -e "s#https?://security\.debian\.org/debian-security/?#${TUNA_MIRROR}/debian-security/#g" \
             "$f"; \
         done \
         ;; \
