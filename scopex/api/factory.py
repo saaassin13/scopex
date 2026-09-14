@@ -40,6 +40,7 @@ class LocalRuntimeConfig:
     finalizer_timeout_s: int = 180
     skills: tuple[str, ...] = ()
     data_binds: tuple[str, ...] = ()
+    data_catalog_summary: str = ""
     exec_host: str = "sandbox"
     exec_mode: str = "full"
     enable_view_image: bool = False
@@ -70,6 +71,8 @@ class OpenClawRuntimeFactory:
             raise ValueError("finalizer_max_tokens must be between 256 and 1024")
         if not 30 <= config.finalizer_timeout_s <= 600:
             raise ValueError("finalizer_timeout_s must be between 30 and 600")
+        if len(config.data_catalog_summary) > 8192:
+            raise ValueError("data_catalog_summary exceeds 8192 characters")
         config.work_root.mkdir(parents=True, exist_ok=True)
 
     def coordinator(
@@ -147,6 +150,7 @@ class OpenClawRuntimeFactory:
             tools=tuple(tools),
             sandbox_binds=task_binds,
             task_scratch_bind=task_scratch_bind,
+            data_catalog_summary=self.config.data_catalog_summary,
             exec_host=self.config.exec_host,
             exec_mode=self.config.exec_mode,
             compaction_enabled=self.config.enable_compaction,
