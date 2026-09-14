@@ -2,7 +2,7 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { RouterLink, useRoute } from 'vue-router'
 import { api, ApiError } from '../api'
-import type { EvidenceItem, ProductAnswer, ProgressEvent, ResultResponse, TaskSnapshot } from '../types'
+import type { Evaluation, EvidenceItem, ProductAnswer, ProgressEvent, ResultResponse, TaskSnapshot } from '../types'
 
 const route = useRoute()
 const taskId = computed(() => String(route.params.id))
@@ -10,15 +10,38 @@ const task = ref<TaskSnapshot | null>(null)
 const events = ref<ProgressEvent[]>([])
 const evidence = ref<EvidenceItem[]>([])
 const result = ref<ResultResponse | null>(null)
+const evaluation = ref<Evaluation | null>(null)
 const cursor = ref(0)
 const instruction = ref('')
 const error = ref('')
 const actionBusy = ref(false)
+const feedbackOpen = ref(false)
+const feedbackRating = ref<'up' | 'down'>('up')
+const feedbackTags = ref<string[]>([])
+const feedbackNote = ref('')
+const feedbackBusy = ref(false)
 let timer: number | undefined
+
+const evaluationOptions = [
+  ['wrong_result', '结果错误'],
+  ['incomplete', '分析不完整'],
+  ['scope_too_broad', '调查范围过大'],
+  ['too_slow', '耗时过长'],
+  ['wrong_skill', 'Skill 使用不正确'],
+  ['tool_failed', '工具调用失败'],
+  ['hard_to_read', '结果难以理解'],
+  ['insufficient_evidence', '证据不足'],
+  ['other', '其他'],
+] as const
 
 const isRunning = computed(() => task.value?.state === 'RUNNING')
 const isPaused = computed(() => task.value?.state === 'PAUSED')
 const isTerminal = computed(() => ['COMPLETED', 'FAILED', 'CANCELLED'].includes(task.value?.state ?? ''))
+const isConversation = computed(() => task.value?.mode === 'conversation')
+const conversationAnswer = computed(() => {
+  const value = result.value?.result?.answer_text
+  return typeof value === 'string' && value.trim() ? value : null
+})
 const answer = computed<ProductAnswer | null>(() => {
   const value = result.value?.result?.answer
   return value && typeof value === 'object' ? value as ProductAnswer : null
@@ -31,24 +54,49 @@ const lastTaskFailed = computed(() => {
   return null
 })
 
+function fmt(value?: string | null) {
+  if (!value) return '—'
+  const date = new Date(value)
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleString()
+}
+
+function durationText(ms?: number | null) {
+  if (typeof ms !== 'number') return '—'
+  const sec = Math.max(0, Math.round(ms / 1000))
+  if (sec < 60) return `${sec} 秒`
+  const min = Math.floor(sec / 60)
+  return `${min} 分 ${sec % 60} 秒`
+}
+
+function friendlyReason(reason: string) {
+  const labels: Record<string, string> = {
+    investigation_turn_incomplete: 'Agent 调查过程未正常结束，因此没有形成可信的最终结果。',
+    investigation_completed_without_evidence: '这次业务任务没有形成可审计 Evidence，因此没有发布诊断结论。',
+    fresh_structured_finalizer_failed: '调查已经形成证据，但最终结构化整理失败。',
+    budget_reached_without_evidence: '任务达到运行预算前仍未形成可发布 Evidence。',
+    runtime_guard_reached_without_evidence: '运行时安全边界终止了调查，且没有形成可发布 Evidence。',
+  }
+  return labels[reason] || '任务未正常完成，请查看技术详情。'
+}
+
 const resultProblem = computed(() => {
-  if (!isTerminal.value || answer.value || result.value?.rendered) return ''
+  if (!isTerminal.value || answer.value || conversationAnswer.value || result.value?.rendered) return ''
+  const reason = lastTaskFailed.value?.data?.reason
+  return typeof reason === 'string' && reason ? friendlyReason(reason) : '任务已结束，但没有形成可展示结果。'
+})
+
+const technicalProblem = computed(() => {
   const details: string[] = []
   const payload = result.value?.result
   if (payload) {
     const parseError = payload.parse_error
     if (typeof parseError === 'string' && parseError) details.push(`parse_error: ${parseError}`)
     const errors = payload.errors
-    if (Array.isArray(errors)) {
-      for (const item of errors) if (typeof item === 'string' && item) details.push(item)
-    }
+    if (Array.isArray(errors)) for (const item of errors) if (typeof item === 'string' && item) details.push(item)
   }
   const failedReason = lastTaskFailed.value?.data?.reason
   if (typeof failedReason === 'string' && failedReason) details.push(`runtime: ${failedReason}`)
-  if (details.length) return [...new Set(details)].join('\n')
-  return result.value?.available
-    ? '结果记录已经生成，但没有可展示的产品结果。请检查 answer.json / claims.json。'
-    : '当前终态没有 result.json。请检查 TASK_FAILED、worker-error.json 或 investigation-error.json。'
+  return [...new Set(details)].join('\n')
 })
 
 function dataString(event: ProgressEvent, key: string): string {
@@ -99,6 +147,14 @@ async function refresh() {
     }
     evidence.value = (await api.getEvidence(taskId.value)).items
     result.value = await api.getResult(taskId.value)
+    if (isTerminal.value) {
+      evaluation.value = (await api.getEvaluation(taskId.value)).evaluation
+      if (evaluation.value && !feedbackOpen.value) {
+        feedbackRating.value = evaluation.value.rating
+        feedbackTags.value = [...evaluation.value.tags]
+        feedbackNote.value = evaluation.value.note
+      }
+    }
   } catch (exc) {
     error.value = exc instanceof Error ? exc.message : String(exc)
   }
@@ -127,6 +183,25 @@ async function perform(kind: 'stop' | 'resume' | 'steer') {
   }
 }
 
+function toggleFeedbackTag(tag: string) {
+  feedbackTags.value = feedbackTags.value.includes(tag)
+    ? feedbackTags.value.filter(value => value !== tag)
+    : [...feedbackTags.value, tag]
+}
+
+async function saveFeedback() {
+  feedbackBusy.value = true
+  error.value = ''
+  try {
+    evaluation.value = await api.setEvaluation(taskId.value, feedbackRating.value, feedbackTags.value, feedbackNote.value)
+    feedbackOpen.value = false
+  } catch (exc) {
+    error.value = exc instanceof ApiError ? `${exc.code}: ${exc.message}` : String(exc)
+  } finally {
+    feedbackBusy.value = false
+  }
+}
+
 onMounted(() => {
   void refresh()
   timer = window.setInterval(refresh, 1500)
@@ -138,9 +213,16 @@ onBeforeUnmount(() => timer && window.clearInterval(timer))
   <section class="task-page">
     <div class="task-header panel">
       <div>
-        <RouterLink class="back-link" to="/">← 返回任务列表</RouterLink>
-        <div class="eyebrow">TASK · {{ taskId }}</div>
+        <RouterLink class="back-link" to="/">← 返回执行记录</RouterLink>
+        <div class="eyebrow">{{ isConversation ? 'CONVERSATION' : 'TASK' }} · {{ taskId }}</div>
         <h1>{{ task?.user_request || '加载任务…' }}</h1>
+        <div class="run-meta">
+          <span>触发：{{ task?.trigger_type === 'schedule' ? '定时' : '手动' }}</span>
+          <span>开始：{{ fmt(task?.started_at) }}</span>
+          <span>结束：{{ fmt(task?.finished_at) }}</span>
+          <span>耗时：{{ durationText(task?.duration_ms) }}</span>
+          <span v-if="task?.scheduled_for">计划：{{ fmt(task.scheduled_for) }}</span>
+        </div>
       </div>
       <span class="state-pill large" :data-state="task?.state">{{ task?.state || 'LOADING' }}</span>
     </div>
@@ -153,12 +235,16 @@ onBeforeUnmount(() => timer && window.clearInterval(timer))
           <div class="section-heading">
             <div>
               <div class="eyebrow">RESULT</div>
-              <h2>诊断结果</h2>
+              <h2>{{ isConversation ? '回答' : '任务结果' }}</h2>
             </div>
             <span v-if="answer" class="trust-badge">Validated Claims</span>
           </div>
 
-          <template v-if="answer">
+          <div v-if="conversationAnswer" class="conversation-answer">
+            <p>{{ conversationAnswer }}</p>
+          </div>
+
+          <template v-else-if="answer">
             <div class="result-section result-conclusion">
               <h3>结论</h3>
               <p v-if="!answer.conclusion.length" class="muted">暂无可发布结论。</p>
@@ -180,19 +266,16 @@ onBeforeUnmount(() => timer && window.clearInterval(timer))
             <div class="result-grid">
               <div class="result-section">
                 <h3>执行情况</h3>
-                <p v-if="!answer.execution.length" class="muted">当前 Validated Claims 未形成可验证的执行/状态结论。</p>
+                <p v-if="!answer.execution.length" class="muted">本任务没有需要展示的业务执行动作。</p>
                 <article v-for="item in answer.execution" :key="`run-${item.claim_ids.join('-')}`" class="answer-item">
                   <p>{{ item.text }}</p>
-                  <span>{{ item.claim_ids.join(' · ') }}</span>
                 </article>
               </div>
-
               <div class="result-section">
                 <h3>建议</h3>
-                <p v-if="!answer.recommendations.length" class="muted">当前没有基于未证实项生成的额外建议。</p>
+                <p v-if="!answer.recommendations.length" class="muted">当前没有额外待验证建议。</p>
                 <article v-for="item in answer.recommendations" :key="`rec-${item.claim_ids.join('-')}`" class="answer-item">
                   <p>{{ item.text }}</p>
-                  <span>{{ item.claim_ids.join(' · ') }}</span>
                 </article>
               </div>
             </div>
@@ -204,20 +287,52 @@ onBeforeUnmount(() => timer && window.clearInterval(timer))
           </template>
 
           <pre v-else-if="result?.available && result.rendered" class="result-text">{{ result.rendered }}</pre>
-          <div v-else-if="isTerminal" class="empty-state">
-            <strong>{{ task?.state === 'FAILED' ? '任务失败，未生成可展示诊断结果。' : '任务已结束，但没有可展示诊断结果。' }}</strong>
-            <pre v-if="resultProblem" class="result-text">{{ resultProblem }}</pre>
+          <div v-else-if="isTerminal" class="empty-state result-failure">
+            <strong>{{ resultProblem }}</strong>
+            <details v-if="technicalProblem" class="technical-details">
+              <summary>技术详情</summary>
+              <pre class="result-text">{{ technicalProblem }}</pre>
+            </details>
           </div>
-          <div v-else class="empty-state">调查完成并通过证据校准后显示最终结果。</div>
+          <div v-else class="empty-state">执行结束后显示结果。</div>
+        </section>
+
+        <section v-if="isTerminal" class="panel feedback-panel">
+          <div class="section-heading">
+            <div>
+              <div class="eyebrow">FEEDBACK</div>
+              <h2>任务评价与复盘</h2>
+            </div>
+            <a class="ghost-button export-link" :href="api.exportUrl(taskId)" download>导出复盘包</a>
+          </div>
+          <div v-if="evaluation && !feedbackOpen" class="saved-feedback">
+            <strong>{{ evaluation.rating === 'up' ? '👍 结果正确' : '👎 结果有问题' }}</strong>
+            <span v-if="evaluation.tags.length">{{ evaluation.tags.join(' · ') }}</span>
+            <p v-if="evaluation.note">{{ evaluation.note }}</p>
+            <button class="ghost-button" @click="feedbackOpen = true">修改评价</button>
+          </div>
+          <div v-else class="feedback-editor">
+            <div class="feedback-rating">
+              <button :class="{ active: feedbackRating === 'up' }" @click="feedbackRating = 'up'">👍 正确</button>
+              <button :class="{ active: feedbackRating === 'down' }" @click="feedbackRating = 'down'">👎 有问题</button>
+            </div>
+            <div v-if="feedbackRating === 'down'" class="feedback-tags">
+              <button
+                v-for="option in evaluationOptions"
+                :key="option[0]"
+                :class="{ active: feedbackTags.includes(option[0]) }"
+                @click="toggleFeedbackTag(option[0])"
+              >{{ option[1] }}</button>
+            </div>
+            <textarea v-model="feedbackNote" rows="3" placeholder="补充说明（可选）"></textarea>
+            <button class="primary-button" :disabled="feedbackBusy" @click="saveFeedback">{{ feedbackBusy ? '保存中…' : '保存评价' }}</button>
+          </div>
         </section>
 
         <section class="panel">
           <details class="secondary-details" :open="!isTerminal">
             <summary class="details-heading">
-              <span>
-                <span class="eyebrow">PROGRESS</span>
-                <strong>调查进度</strong>
-              </span>
+              <span><span class="eyebrow">PROGRESS</span><strong>调查进度</strong></span>
               <span class="muted">{{ events.length }} events</span>
             </summary>
             <div class="timeline">
@@ -239,7 +354,7 @@ onBeforeUnmount(() => timer && window.clearInterval(timer))
         <section class="panel control-panel">
           <div class="eyebrow">CONTROL</div>
           <h2>任务控制</h2>
-          <textarea v-model="instruction" rows="4" placeholder="追加方向，例如：优先检查 system.log，不要继续排查机器人。"></textarea>
+          <textarea v-model="instruction" rows="4" placeholder="追加方向，例如：只检查编码器原始值，不要继续检查图片。"></textarea>
           <div class="control-actions">
             <button v-if="isRunning" class="secondary-button" :disabled="actionBusy" @click="perform('steer')">Steer</button>
             <button v-if="isRunning" class="danger-button" :disabled="actionBusy" @click="perform('stop')">Stop</button>
@@ -251,13 +366,10 @@ onBeforeUnmount(() => timer && window.clearInterval(timer))
         <section class="panel evidence-panel compact-evidence">
           <details>
             <summary class="details-heading">
-              <span>
-                <span class="eyebrow">EVIDENCE</span>
-                <strong>相关证据</strong>
-              </span>
+              <span><span class="eyebrow">EVIDENCE</span><strong>相关证据</strong></span>
               <span class="muted">{{ evidence.length }}</span>
             </summary>
-            <div v-if="!evidence.length" class="empty-state">暂未形成 Evidence。</div>
+            <div v-if="!evidence.length" class="empty-state">{{ isConversation ? '普通对话不要求必须形成 Evidence。' : '暂未形成 Evidence。' }}</div>
             <article v-for="item in evidence" :key="item.ref" class="evidence-card">
               <div class="evidence-meta">
                 <strong>{{ item.ref }}</strong>
