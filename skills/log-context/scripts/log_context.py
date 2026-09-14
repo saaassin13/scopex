@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+from collections import deque
 from datetime import datetime, timedelta
 import json
 from pathlib import Path
@@ -29,13 +30,14 @@ def line_time(text: str) -> datetime | None:
         return None
 
 
-def keyword_match(text: str, keywords: list[str], regex: bool) -> bool:
-    if not keywords:
-        return True
-    if regex:
-        return any(re.search(pattern, text) is not None for pattern in keywords)
-    lower = text.lower()
-    return any(word.lower() in lower for word in keywords)
+def row(line_no: int, text: str, *, anchor: bool) -> dict[str, Any]:
+    m = TS_RE.match(text)
+    return {
+        'line_no': line_no,
+        'ts': m.group('ts') if m else None,
+        'anchor': anchor,
+        'raw': text,
+    }
 
 
 def main() -> int:
@@ -56,55 +58,91 @@ def main() -> int:
         ap.error('use --center or --start/--end, not both')
     if not args.center and not args.start and not args.end and not args.keyword:
         ap.error('at least one time boundary or --keyword is required')
+    if args.max_lines <= 0:
+        ap.error('--max-lines must be positive')
+
+    patterns: list[re.Pattern[str]] = []
+    if args.regex:
+        try:
+            patterns = [re.compile(p) for p in args.keyword]
+        except re.error as exc:
+            ap.error(f'invalid regex: {exc}')
+
     if args.center:
         start = args.center - timedelta(seconds=args.window_s)
         end = args.center + timedelta(seconds=args.window_s)
     else:
         start, end = args.start, args.end
 
+    def matches(text: str) -> bool:
+        if not args.keyword:
+            return True
+        if args.regex:
+            return any(pattern.search(text) is not None for pattern in patterns)
+        lower = text.lower()
+        return any(word.lower() in lower for word in args.keyword)
+
     output: list[dict[str, Any]] = []
     total_anchors = 0
     total_selected = 0
+    global_truncated = False
+
     for path in args.logs:
+        if total_selected >= args.max_lines:
+            global_truncated = True
+            break
         if not path.is_file():
-            output.append({'source': str(path), 'error': 'file_not_found', 'lines': []})
+            output.append({'source': str(path), 'error': 'file_not_found', 'anchors': 0, 'lines': [], 'truncated': False})
             continue
-        lines = path.read_text(encoding='utf-8', errors='replace').splitlines()
-        anchors: list[int] = []
-        for i, text in enumerate(lines):
-            ts = line_time(text)
-            if start is not None and (ts is None or ts < start):
-                continue
-            if end is not None and (ts is None or ts >= end):
-                continue
-            if not keyword_match(text, args.keyword, args.regex):
-                continue
-            anchors.append(i)
-        total_anchors += len(anchors)
-        selected: set[int] = set()
-        for i in anchors:
-            lo = max(0, i - max(0, args.before))
-            hi = min(len(lines), i + max(0, args.after) + 1)
-            selected.update(range(lo, hi))
-        rows = []
-        for i in sorted(selected):
-            if total_selected >= args.max_lines:
-                break
-            rows.append({
-                'line_no': i + 1,
-                'ts': TS_RE.match(lines[i]).group('ts') if TS_RE.match(lines[i]) else None,
-                'anchor': i in anchors,
-                'raw': lines[i],
-            })
-            total_selected += 1
+
+        before_buf: deque[tuple[int, str]] = deque(maxlen=max(0, args.before))
+        selected: dict[int, dict[str, Any]] = {}
+        anchors = 0
+        pending_after = 0
+        scan_truncated = False
+
+        with path.open(encoding='utf-8', errors='replace') as f:
+            for line_no, raw in enumerate(f, 1):
+                text = raw.rstrip('\n')
+                ts = line_time(text)
+                in_time = True
+                if start is not None and (ts is None or ts < start):
+                    in_time = False
+                if end is not None and (ts is None or ts >= end):
+                    in_time = False
+                is_anchor = in_time and matches(text)
+
+                if is_anchor:
+                    anchors += 1
+                    total_anchors += 1
+                    for prev_no, prev_text in before_buf:
+                        if prev_no not in selected and total_selected + len(selected) < args.max_lines:
+                            selected[prev_no] = row(prev_no, prev_text, anchor=False)
+                    if line_no not in selected and total_selected + len(selected) < args.max_lines:
+                        selected[line_no] = row(line_no, text, anchor=True)
+                    elif line_no in selected:
+                        selected[line_no]['anchor'] = True
+                    pending_after = max(pending_after, max(0, args.after))
+                elif pending_after > 0:
+                    if line_no not in selected and total_selected + len(selected) < args.max_lines:
+                        selected[line_no] = row(line_no, text, anchor=False)
+                    pending_after -= 1
+
+                before_buf.append((line_no, text))
+
+                if total_selected + len(selected) >= args.max_lines:
+                    scan_truncated = True
+                    global_truncated = True
+                    break
+
+        rows = [selected[key] for key in sorted(selected)]
+        total_selected += len(rows)
         output.append({
             'source': str(path),
-            'anchors': len(anchors),
+            'anchors': anchors,
             'lines': rows,
-            'truncated': total_selected >= args.max_lines,
+            'truncated': scan_truncated,
         })
-        if total_selected >= args.max_lines:
-            break
 
     result = {
         'schema': 1,
@@ -119,6 +157,7 @@ def main() -> int:
         },
         'anchors': total_anchors,
         'selected_lines': total_selected,
+        'truncated': global_truncated,
         'sources': output,
     }
     print(json.dumps(result, ensure_ascii=False, indent=2, allow_nan=False))
