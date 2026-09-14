@@ -32,15 +32,12 @@ class DataCatalogTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             workspace = Path(td) / 'workspace'
             workspace.mkdir()
-            target = provision_workspace_catalog(
-                workspace=workspace,
-                catalog_path=ROOT / 'config/data-catalog.json',
-            )
+            target = provision_workspace_catalog(workspace=workspace, catalog_path=ROOT / 'config/data-catalog.json')
             self.assertTrue(target.is_file())
             self.assertFalse(target.is_symlink())
             self.assertEqual(json.loads(target.read_text(encoding='utf-8'))['schema'], 1)
 
-    def test_locator_selects_only_requested_hour_logs_and_multimodal_files(self):
+    def test_locator_uses_file_start_intervals_and_only_target_multimodal_hour(self):
         script = ROOT / 'skills/data-locator/scripts/data_locator.py'
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
@@ -51,12 +48,13 @@ class DataCatalogTests(unittest.TestCase):
             (camera / '20260914' / '14').mkdir(parents=True)
 
             for name in (
-                'CowDisinfect-20260914-025900.log',
-                'CowDisinfect-20260914-030001.log',
-                'CowDisinfect-20260914-030001.log.1',
-                'CowDisinfect-20260914-040001.log',
+                'CowDisinfect-20260914-092336.log',
+                'CowDisinfect-20260914-102336.log',
+                'CowDisinfect-20260914-102336.log.1',
+                'CowDisinfect-20260914-112336.log',
             ):
                 (logs / name).write_text('x\n', encoding='utf-8')
+
             hour13 = camera / '20260914' / '13'
             (hour13 / '20260914-130002161.jpg').write_bytes(b'jpg')
             (hour13 / '20260914-130002161.json').write_text('{}', encoding='utf-8')
@@ -79,15 +77,18 @@ class DataCatalogTests(unittest.TestCase):
                 },
             }), encoding='utf-8')
 
+            # 11:00 is still inside the file group that started at 10:23:36.
             proc = subprocess.run([
                 sys.executable, str(script), '--catalog', str(catalog_path),
-                '--source', 'cowdisinfect_logs', '--start', '2026-09-14 03:00:00', '--end', '2026-09-14 04:00:00',
+                '--source', 'cowdisinfect_logs', '--start', '2026-09-14 11:00:00', '--end', '2026-09-14 11:10:00',
             ], capture_output=True, text=True, timeout=10)
             self.assertEqual(proc.returncode, 0, proc.stderr)
             data = json.loads(proc.stdout)
             self.assertEqual(data['scopex_role'], 'locator')
             self.assertEqual(data['matching_count'], 2)
-            self.assertTrue(all('030001' in path for path in data['files']))
+            self.assertTrue(all('102336' in path for path in data['files']))
+            self.assertEqual(data['selected_log_intervals'][0]['start'], '2026-09-14 10:23:36')
+            self.assertEqual(data['selected_log_intervals'][0]['end_exclusive'], '2026-09-14 11:23:36')
 
             proc = subprocess.run([
                 sys.executable, str(script), '--catalog', str(catalog_path),
