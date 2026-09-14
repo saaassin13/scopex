@@ -9,7 +9,7 @@ from pathlib import Path
 import re
 from typing import Any
 
-CATALOG_DEFAULT = Path('/workspace/scopex-data-catalog.json')
+CATALOG_DEFAULT = Path('/workspace/skills/data-locator/references/data-catalog.json')
 TIME_FMT = '%Y-%m-%d %H:%M:%S'
 LOG_RE = re.compile(r'^CowDisinfect-(?P<date>\d{8})-(?P<time>\d{6})\.log(?:\.(?P<rotation>\d+))?$')
 MM_RE = re.compile(r'^(?P<stamp>\d{8}-\d{9})\.(?P<ext>jpg|jpeg|json|pcd)$', re.IGNORECASE)
@@ -71,8 +71,6 @@ def log_groups(root: Path) -> list[tuple[datetime, list[tuple[int, str]]]]:
 
 
 def locate_logs(root: Path, start: datetime, end: datetime, *, max_hours: int, max_files: int) -> dict[str, Any]:
-    # Bound requested duration, but do not equate natural clock hours with log
-    # file start hours: files may start at e.g. 10:23:36 and cover data past 11:00.
     hour_buckets(start, end, maximum=max_hours)
     groups = log_groups(root)
     matched: list[tuple[datetime, int, str]] = []
