@@ -7,8 +7,11 @@ import shutil
 
 _SKILL_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 DEFAULT_BUILTIN_SKILLS = (
-    "cow-disinfect-diagnosis",
+    "system-health",
     "image-quality-diagnosis",
+    "nipple-recognition-analysis",
+    "encoder-health",
+    "log-context",
 )
 
 
