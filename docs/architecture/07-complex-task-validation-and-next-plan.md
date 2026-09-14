@@ -2,388 +2,285 @@
 
 状态：**2026-09-14 当前有效**。
 
-This document records what has actually been demonstrated on Spark, what is now implemented in the product, what real-business failures exposed, and the remaining acceptance order. Capability, trust, usability and deployment are tracked separately.
+本文件记录已经在 Spark 证明的能力、当前产品实现、第一批业务能力以及剩余验收顺序。
 
-## Frozen architecture boundary
+## 1. Frozen architecture boundary
 
 > **OpenClaw owns execution. ScopeX owns product control and trust.**
 
-OpenClaw + the local model own investigation order, tool choice, execution, verification and stopping. ScopeX provides data/capabilities, task scope, permissions, product lifecycle, Evidence projection, hard runtime boundaries, audit and trusted result composition.
+OpenClaw + 本地模型负责调查顺序、工具选择、执行、验证和停止。ScopeX 提供任务范围、能力、权限、生命周期、Evidence、预算、审计和可信产品结果。
 
-Do not add a second workflow/decision/action engine in ScopeX.
+不增加第二套 Workflow / Decision / Action Engine。
 
----
+## 2. Step 6 — frozen
 
-## Step 6 validation status — frozen
+| Step | Result |
+|---|---|
+| 6A Context / Compaction | **PASS** |
+| 6B Large Data / Multi-Image | **PASS** |
+| 6C Hard Budget | **PASS** |
+| 6D Native Loop Convergence | **PASS** |
+| 6E Complex Task Capability | **CAPABILITY PASS** |
+| 6F 600s / 16-request Product Gate | **PASS** |
 
-| Step | Question | Result |
-|---|---|---|
-| 6A | Can a long task survive context pressure/compaction without losing critical structured state? | **PASS** |
-| 6B | Can large CSV/image inputs be handled through a bounded working set instead of being dumped into context? | **PASS** |
-| 6C | Are hard request/time budgets owned by one enforcement layer with trustworthy partial finalization? | **PASS** |
-| 6D | Can runaway tool loops be stopped by OpenClaw without ScopeX rebuilding loop detection? | **PASS** |
-| 6E | Can the local Agent complete a genuinely complex multi-source task including a constrained action and post-action verification? | **CAPABILITY PASS** |
-| 6F | Can the same complex task complete inside the product default 600 s / 16-request budget without weakening the task? | **PASS** |
+6F 综合任务：120k telemetry + 15k+ logs + 48 images + constrained recovery + post-action verification，约 `371.1 s / 14 requests`。
 
-### 6A — Context / compaction
+该结论只证明当前基线和任务，不自动证明新模型、新业务 Skill 或任何未知任务满足同样 Gate。
 
-Validated native OpenClaw compaction and structured state retention in one persistent session. Memory Search remains disabled; compaction is current-task working memory, not durable memory.
+## 3. Step 7 产品层
 
-### 6B — Working set
+当前：
 
-Validated:
+| 能力 | 状态 |
+|---|---|
+| Claim-bounded Product Answer | **IMPLEMENTED / ACCEPTANCE PENDING** |
+| Result-first UI | **IMPLEMENTED / ACCEPTANCE PENDING** |
+| Spark FastAPI + Vue | **IN PROGRESS** |
+| Real business acceptance | **IN PROGRESS** |
+| Edge/offline deployment | **IMPLEMENTED / SMOKE PENDING** |
 
-- 120k-row CSV processing without putting the raw dataset into model context;
-- task-local writable `/task-scratch` while external data remains read-only;
-- 48-image investigation with deterministic preprocessing plus bounded `view_image` confirmation;
-- final claim-grade image set limited to 1–4 read-only originals;
-- Fresh Finalizer re-opens/hash-validates original image Evidence;
-- grouped finalizer Evidence avoids repeated metadata expansion.
+### 已解决的真实产品问题
 
-### 6C — Hard budget semantics
+#### Finalizer length truncation
 
-Hard `max_requests` / turn timeout are enforced by ModelProxy/OpenClaw/Runner, not duplicated inside ScopeX Convergence.
+真实任务到达 request budget 后已有 Evidence，但 Fresh Finalizer JSON 可能被 `finish_reason=length` 截断。当前实现：
 
-- budget reached + existing Evidence -> Fresh Finalizer from observed facts;
-- budget reached + no Evidence -> explicit failure;
-- request/time budgets are per OpenClaw turn; task totals are audit metrics.
+- 少量重要 Claims；
+- 每 Claim bounded Evidence refs；
+- 仅 length 时同 Evidence 一次无工具短 JSON 恢复；
+- `result.json` 记录 retry count。
 
-### 6D — Native loop convergence
+这不是第二次调查。
 
-OpenClaw native `tools.loopDetection` is enabled. ScopeX does not maintain a second result-fingerprint/stale-loop detector.
+#### Explicit-scope task over-expansion
 
-Runtime-control messages remain in Trace/Progress but are filtered out of claim-grade Evidence.
-
-### 6E / 6F — Integrated complex task and product-default budget
-
-Real Spark task combined:
-
-- 120,000 telemetry rows;
-- 15,000+ log lines with a historical distractor;
-- 48 original images;
-- a read-only recovery capability and task-local mutable device state.
-
-The Agent correlated the current overload condition, telemetry window, safety stop and relevant images; executed recovery exactly once; then independently queried status and observed the real post-action state.
-
-Initial capability run: about `1008.5 s / 23 requests`.
-
-Product-default rerun:
+真实单图任务证明“native loop detection”不等于“业务范围控制”。当前 Runtime 通用契约：
 
 ```text
-timeout = 600 s
-max_requests = 16
-wall time ≈ 371.1 s
-forwarded requests = 14
-within_product_default_budget = true
-```
-
-Correctness Gate stayed unchanged: large data remained bounded, source data stayed read-only, recovery executed once, post-action state was independently verified, and Fresh Finalizer remained valid.
-
-**Conclusion:** Step 6 capability and product-default budget Gate are proven and frozen.
-
----
-
-## Step 7 current implementation status
-
-Step 7 is no longer only a plan. Product-answer/UI code and several real-task hardening changes now exist, but the current combined revision still needs full Spark regression before any new PASS label.
-
-| Step | Goal | Current status |
-|---|---|---|
-| 7A | Constrained Product Answer over Validated Claims | **IMPLEMENTED / ACCEPTANCE PENDING** |
-| 7B | Result-first UI | **IMPLEMENTED / ACCEPTANCE PENDING** |
-| 7C | Real Spark FastAPI + Vue integration | **IN PROGRESS** |
-| 7D | Real business product acceptance | **PENDING** |
-| 7E | Offline/edge deployment baseline | **IMPLEMENTED / SMOKE PENDING** |
-
-### 7A — Claim-bounded Product Answer
-
-Current flow:
-
-```text
-Evidence
-  -> Fresh Structured Finalizer
-  -> Validated Claims
-  -> deterministic trust renderer
-  -> revalidation from persisted claims.json + evidence.json
-  -> Product Answer
-```
-
-Product Answer currently exposes:
-
-```text
-conclusion
-explanation
-execution
-recommendations
-```
-
-Every Answer item retains `claim_ids`. Runtime audit writes `answer.json` and includes the structured answer in `result.json`; `final.txt` remains the deterministic trust fallback.
-
-Important current limitation:
-
-- the `execution` section only includes claims backed by explicit `evidence_role=action_verification` provenance;
-- generic `command_line` Evidence is deliberately not interpreted as “business action succeeded”.
-
-This is safer than guessing execution semantics from shell command text, but generic action provenance remains a known follow-up.
-
-### 7B — Result-first UI
-
-The Vue task page now prioritizes:
-
-1. conclusion;
-2. explanation;
-3. execution state;
-4. recommendation;
-5. expandable Progress / Evidence / deterministic fallback.
-
-This reflects the product principle that users care first about the result. Evidence remains available for audit but no longer dominates the main page.
-
-### 7C — Real Spark integration: findings so far
-
-Real API/business-data runs have already produced useful failures. These failures are retained as product evidence rather than dismissed as model randomness.
-
-#### Finding A — budget finalization could still fail inside the Finalizer
-
-Observed real path:
-
-```text
-Agent reaches 16-request hard boundary
-    ↓
-existing Evidence available
-    ↓
-Fresh Finalizer starts
-    ↓
-structured JSON output hits finish_reason=length
-    ↓
-structured_finalizer_truncated
-    ↓
-Task FAILED
-```
-
-This showed that “6C hard budget semantics PASS” did not automatically prove that Finalizer serialization was robust on large real Evidence sets.
-
-Current fix:
-
-- Finalizer prompt requires a small Claim set;
-- each Claim has a bounded number of Evidence refs;
-- only `finish_reason=length` triggers one bounded no-tool retry over the **same Evidence**;
-- retry asks for a shorter JSON shape and may use a larger finalizer token budget;
-- `result.json` records `finalizer_retry_count`.
-
-This is transport/serialization recovery, not a second investigation turn.
-
-#### Finding B — single-image task could over-expand scope
-
-Observed real behavior:
-
-- user explicitly asked to inspect one image / use direct visual ability;
-- Agent still inspected other data files and continued making model requests;
-- the behavior was not a literal repeated-tool loop, so native loopDetection was not the right control.
-
-Root cause is not proven to be one component only. The product lacked three supporting layers:
-
-1. a generic scope/stop contract;
-2. a properly provisioned built-in Skill path in the production workspace;
-3. a complete common analysis toolbox, so the model did not repeatedly probe for missing packages.
-
-Current fix keeps model autonomy but adds product constraints:
-
-```text
-explicit user target/source/scope = task boundary
+explicit target/source/scope = binding
         ↓
-minimal sufficient evidence path
+minimal sufficient evidence
         ↓
-expand only when needed to answer the original question
+expand only if required by original question
         ↓
-stop when evidence is sufficient
+stop when supported
 ```
 
-This rule is generic to images/logs/CSV/point cloud tasks and is not a business Workflow Engine.
+## 4. 当前主阶段 — Business V1
 
-### Built-in Skill provisioning
+产品能力不再以“日志分析器”为中心，也不直接把历史脚本包装成 Skill。
 
-Runtime API now provisions built-in repository Skills into `<workspace>/skills` before OpenClaw starts and allowlists them.
-
-Default built-ins:
+当前设计：
 
 ```text
-cow-disinfect-diagnosis
+业务问题
+   ↓
+独立业务 Skill 的主数据源
+   ↓
+确定性事实/候选
+   ↓ 仅在需要解释时
+bounded log-context
+   ↓
+Agent 综合判断
+```
+
+默认 Built-in Skills：
+
+```text
+system-health
 image-quality-diagnosis
+nipple-recognition-analysis
+encoder-health
+log-context
 ```
 
-`image-quality-diagnosis` explicitly distinguishes direct visual inspection from optional quantitative metrics. A single explicit image task should normally inspect the specified original and stop when the visual evidence is sufficient; it should not scan sibling logs/JSON/images unless the user asks for correlation or the original scope is genuinely insufficient.
+旧 `cow-disinfect-diagnosis` 留作历史/专项回归，不再默认加载。
 
-### Stable image-quality script
+完整业务口径见 `docs/business/01-business-capabilities-v1.md`。
 
-The image Skill includes a small deterministic metric script for explicit image paths. It does not scan directories and does not output a business root cause; it only provides objective measurements such as blur/gradient/brightness/contrast indicators.
+### 4.1 system-health
 
----
+业务对象：DGX Spark host，而不是 Agent Sandbox。
 
-## Analysis Sandbox baseline
-
-The Step 6F image only added Pillow. Real business runs showed repeated dependency probes are a concrete usability cost, so the Step 7 image now targets a reusable offline analysis baseline:
+实现：
 
 ```text
-numpy
-scipy
-pandas
-cv2
-Pillow
-scikit-image
-matplotlib
-openpyxl
-PyYAML
-psutil
-scikit-learn
-Open3D when available from the current ARM64 apt distribution
+user systemd timer / 30s
+   ↓
+scripts/collect_system_metrics.py
+   ↓
+~/.local/share/scopex/system-metrics/system_metrics.jsonl
+   ↓ read-only bind
+system-health Skill
 ```
 
-The image writes `/opt/scopex/toolbox.json` so actual availability is inspectable.
+事实包括 CPU/load、memory、disk、GPU、Docker、top processes、collector errors。
 
-Build-time Ubuntu/Debian APT sources are rewritten to Tsinghua TUNA. Runtime networking remains disabled.
+设计目标：回答当前/历史负载，又不把 Agent `exec_host` 切到 gateway。
 
-This is capability provisioning, not Agent-loop logic.
+### 4.2 image-quality-diagnosis
 
----
+主数据源是原图。单图优先 direct view；需要量化才调用稳定 metrics。脏污/起雾原因不足时允许 unknown。
 
-## Step 7E — edge/offline deployment baseline
+### 4.3 nipple-recognition-analysis
 
-Added deployment assets:
+产品 KPI 改为以 inference JSON 为主。
+
+流程：
 
 ```text
-docs/09-zero-to-one-build-and-offline-deployment.md
-scripts/export_offline_bundle.sh
-scripts/install_offline_bundle.sh
-deploy/systemd/scopex-runtime.service
-deploy/systemd/runtime.env.example
+JSON records
+ -> explicit schema mapping
+ -> per-cow selection (selected/latest/max, 必须显式)
+ -> cow-level nipple count
+ -> hourly KPI
 ```
 
-Offline bundle design:
+V1 KPI：
+
+- total cows；
+- exact 4 cows；
+- complete four-nipple rate；
+- capped nipple recognition rate；
+- >4 over-detection；
+- selected nipple count distribution。
+
+当前最大未决：真实 JSON schema / cow key / final-selection 语义，必须用真实数据冻结。
+
+### 4.4 encoder-health
+
+V1 只做编码器数据健康：
+
+- invalid/read failure；
+- sampling gap；
+- negative jump；
+- large negative candidate；
+- positive delta statistical outlier；
+- flat raw candidate；
+- raw/filtered diff。
+
+不在 V1 做漏牛/牛位推断，也不直接继承历史 `200mm/s`、`1.5×pitch` 等经验规则。
+
+### 4.5 log-context
+
+公共辅助能力。按明确日志 + 时间/关键词返回 bounded raw evidence；不独立诊断根因，无 anchor 时不无限扩大窗口。
+
+## 5. Analysis Sandbox
+
+当前目标：
 
 ```text
-fixed-commit source archive
-prebuilt frontend/dist
-ARM64/Python-compatible wheelhouse
-scopex-sandbox-analysis Docker image
-manifest + SHA256SUMS
+numpy scipy pandas cv2 Pillow scikit-image matplotlib
+openpyxl PyYAML psutil scikit-learn
+Open3D when ARM64 apt provides it
 ```
 
-OpenClaw, vLLM and model weights are currently treated as device-base assets instead of being bundled into every ScopeX update.
+`/opt/scopex/toolbox.json` 记录实际可用能力。Runtime 网络保持 `none`。
 
-Systemd is preferred for the host Runtime API because ScopeX itself launches Docker sandboxes through the host daemon; Docker-in-Docker is intentionally avoided.
+复杂 interpreter 使用原则：优先已有 Skill script；必须临时写复杂 Python 时先写 `/task-scratch/*.py`，再直接 `python3 file.py`，避免被 OpenClaw complex-interpreter preflight 拦截。
 
----
+## 6. Deployment baseline
 
-## Remaining acceptance order
+部署拆两层：
 
-Do not branch into unrelated architecture work before these Gates are complete.
+```text
+Device Base Package
+  DGX OS / Docker / NVIDIA Runtime / OpenClaw / vLLM image / model weights
 
-### Gate 1 — Python regression
+ScopeX Update Bundle
+  source / frontend / wheelhouse / analysis sandbox / Skills / checksum
+```
+
+`docs/09-zero-to-one-build-and-offline-deployment.md` 已补 Docker、vLLM、模型选择/下载/离线搬运。
+
+当前生产 served id：`qwen3.8-27b-nvfp4`。
+
+必须补录真实：
+
+```text
+MODEL_REPO
+MODEL_REVISION
+vLLM image tag/digest
+OpenClaw version
+```
+
+新模型必须重新跑 Agent/tool/image/business Gate。NVIDIA 当前 agent-ready 推荐可以作为候选，不自动替换现有模型。
+
+## 7. Remaining acceptance order
+
+### Gate 1 — Backend regression
 
 ```bash
 python3 -m unittest discover -s tests -v
 ```
 
-Expected: all tests pass on the current integrated revision.
+专项：
 
-### Gate 2 — frontend build
+```bash
+python3 -m unittest \
+  tests.test_business_skill_tools \
+  tests.test_skill_provisioning \
+  tests.test_deployment_assets -v
+```
+
+### Gate 2 — Frontend
 
 ```bash
 cd frontend
 npm run build
 ```
 
-### Gate 3 — ARM64 sandbox build
+### Gate 3 — ARM64 Sandbox
 
-Build `scopex-sandbox-analysis:step7`, then verify all required imports and `/opt/scopex/toolbox.json`.
+构建 `scopex-sandbox-analysis:step7`，验证 required imports + `/opt/scopex/toolbox.json`。
 
-### Gate 4 — explicit single-image scope task
+### Gate 4 — system-health real run
 
-Use one known image and an explicit task boundary such as:
+- metrics timer 连续运行；
+- 当前/历史窗口正确；
+- Docker/GPU 字段在 Spark 真实可解析；
+- Agent 不读 Sandbox 系统信息冒充 host。
 
-```text
-只检查 <one image>。
-直接使用视觉能力判断模糊/起雾/镜头脏污特征。
-不要读取日志、JSON、其他图片或目录信息。
-如果无法确认物理原因，直接说明不确定。
-```
+### Gate 5 — nipple JSON real-data acceptance
 
-Acceptance:
+用户提供真实 JSON 后：
 
-- the specified original image is actually viewed;
-- no excluded sibling data is read;
-- no unnecessary directory-wide scan;
-- task stops in a small number of model requests rather than running to the 16-request hard limit;
-- uncertainty is allowed instead of endless exploration;
-- final Claims/Product Answer remain traceable.
+- 冻结 time/cow/nipple/final field mapping；
+- 冻结 selected/latest/max 语义；
+- 1 小时统计人工复算；
+- malformed/missing data 显式暴露；
+- >4 不提升 KPI。
 
-The exact request count is an observation metric, not a new hardcoded per-task workflow budget.
+### Gate 6 — encoder real-data acceptance
 
-### Gate 5 — real complex business task
+选已知正常 + 已知毛刺/回退/读取失败日志，验证 candidate events 与原始行一致，再用 log-context 对重要事件做小窗口解释。
 
-Run a non-synthetic business task through the actual FastAPI/UI path.
+### Gate 7 — image scope regression
 
-Acceptance includes:
+一个明确单图任务：实际查看原图、不读排除数据、不默认 exec、少量请求结束、允许不确定。
 
-- correct result;
-- understandable explanation;
-- trustworthy execution/verification presentation;
-- Evidence traceability;
-- no hidden business workflow in ScopeX;
-- acceptable progress/latency behavior.
+### Gate 8 — product integration
 
-### Gate 6 — control/reconnect UX
+FastAPI + Vue 跑至少一个真实业务任务，验证 Result-first / Evidence / refresh / Stop/Resume/Steer。
 
-Validate:
+### Gate 9 — offline smoke
 
-- Stop;
-- Resume;
-- Steering;
-- browser refresh/reconnect;
-- Evidence/result reloading.
+- Device Base Package：vLLM image + model + OpenClaw；
+- ScopeX Update Bundle；
+- ARM64 离线安装；
+- systemd 自恢复；
+- rollback。
 
-### Gate 7 — offline deployment smoke
+## 8. Non-blocking gaps
 
-On an ARM64 online build host:
+- 真实 nipple JSON schema 未冻结；
+- encoder firmware/site profile 未冻结；
+- 网络 topology 未确认；
+- current model 的真实 repo/revision 未补录；
+- generic business action provenance 尚未完全泛化；
+- frontend npm lockfile 缺失；
+- task scratch cleanup / mixed gateway-sandbox scratch 仍需后续真实验证。
 
-1. build frontend and analysis sandbox;
-2. export an offline bundle;
-3. verify bundle SHA256;
-4. install into a new empty directory without package-network access;
-5. `docker load` image;
-6. start Runtime API from the offline-installed `.venv`;
-7. health/smoke task;
-8. verify rollback to previous release directory/image.
+## 9. Merge policy
 
----
-
-## Known gaps after this merge
-
-These are tracked, not silently treated as solved:
-
-- generic business action-verification provenance is not yet generalized beyond explicit Evidence metadata;
-- frontend has no npm lockfile yet; offline deployment therefore ships prebuilt `frontend/dist`, while fully reproducible source rebuild remains a future cleanup;
-- Open3D is optional until the current ARM64 base distribution is proven to provide a usable package;
-- OpenClaw/vLLM/model are not inside the ScopeX offline update bundle;
-- task-scratch retention/cleanup is still simple;
-- mixed Gateway/Sandbox tasks sharing scratch still need a real-run check;
-- more than four simultaneously claim-grade original images are not generalized;
-- compaction remains a pressure valve, not a normal desired path.
-
----
-
-## Merge / status policy
-
-`main` is the unique current integrated baseline.
-
-A feature may be merged to `main` as **implemented** when the integrated code/documentation baseline needs to move forward, but only real test/run evidence may upgrade it to **PASS**. This avoids both extremes:
-
-- keeping validated Step 6 code frozen forever while product work accumulates elsewhere;
-- declaring new product behavior proven merely because code was merged.
-
-For future changes:
-
-- use small feature branches;
-- keep architecture boundary unchanged unless evidence requires change;
-- record real failures and control-variable fixes;
-- update handoff docs only after a meaningful stage, not every minor edit.
+`main` 只承载当前集成基线。第一批业务 Skill 应先在分支完成单测和 Spark/真实数据最小验收，再合入；不要在同一批次混入网络 topology、机器人新动作或模型性能实验。
