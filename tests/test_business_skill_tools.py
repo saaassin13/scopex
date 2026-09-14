@@ -22,59 +22,82 @@ def run_script(path: Path, *args: str):
 
 
 class BusinessSkillToolTests(unittest.TestCase):
-    def test_nipple_stats_aggregates_per_cow_and_caps_over_detection(self):
+    def test_nipple_stats_uses_final_2d_frame_and_caps_each_cow_at_four(self):
         script = ROOT / 'skills/nipple-recognition-analysis/scripts/nipple_stats.py'
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
-            rows = [
-                {'ts': '2026-09-14T07:01:00', 'cow': 'c1', 'nipples': [1, 2]},
-                {'ts': '2026-09-14T07:01:02', 'cow': 'c1', 'nipples': [1, 2, 3, 4]},
-                {'ts': '2026-09-14T07:10:00', 'cow': 'c2', 'nipples': [1, 2, 3]},
-                {'ts': '2026-09-14T07:20:00', 'cow': 'c3', 'nipples': [1, 2, 3, 4, 5]},
-            ]
-            (root / 'r.json').write_text(json.dumps(rows), encoding='utf-8')
-            proc = run_script(
-                script, str(root),
-                '--time-field', 'ts', '--cow-field', 'cow', '--nipple-field', 'nipples',
-                '--policy', 'max', '--start', '2026-09-14T07:00:00', '--end', '2026-09-14T08:00:00',
+            log = root / 'app.log'
+            log.write_text(
+                '\n'.join([
+                    # Cow 10 sees 4 earlier, but the final consumed frame has only 2.
+                    '2026-09-14 07:00:00:000 [INFO] Start left camera AI detect, ImgTimeStamp[20260914-070000000], CowOccuredCount[10], DetectingNumCurRound[1], CowDetectedNumber[1] !',
+                    '2026-09-14 07:00:00:010 [INFO] Left camera cow [10] detecting [1] finished, Score[0.95], NippleNum[4]',
+                    '2026-09-14 07:00:00:100 [INFO] Start left camera AI detect, ImgTimeStamp[20260914-070000100], CowOccuredCount[10], DetectingNumCurRound[2], CowDetectedNumber[2] !',
+                    '2026-09-14 07:00:00:110 [INFO] Left camera cow [10] detecting [2] finished, Score[0.95], NippleNum[2]',
+                    '2026-09-14 07:00:00:120 [INFO] New cow detecte finished, cow count [10], LastImgTimeStamp[20260914-070000100], LastImgHasXiNaiQi[0.00]',
+                    # Cow 11 over-detects five boxes; KPI must cap this cow at four.
+                    '2026-09-14 07:00:01:000 [INFO] Start left camera AI detect, ImgTimeStamp[20260914-070001000], CowOccuredCount[11], DetectingNumCurRound[1], CowDetectedNumber[1] !',
+                    '2026-09-14 07:00:01:010 [INFO] Left camera cow [11] detecting [1] finished, Score[0.90], NippleNum[5]',
+                    '2026-09-14 07:00:01:020 [INFO] New cow detecte finished, cow count [11], LastImgTimeStamp[20260914-070001000], LastImgHasXiNaiQi[0.00]',
+                    # Cow 12 starts in the window but has no final frame/finish.
+                    '2026-09-14 07:00:02:000 [INFO] Start left camera AI detect, ImgTimeStamp[20260914-070002000], CowOccuredCount[12], DetectingNumCurRound[1], CowDetectedNumber[1] !',
+                    '2026-09-14 07:00:02:010 [INFO] Left camera cow [12] detecting [1] finished, Score[0.90], NippleNum[4]',
+                ]) + '\n',
+                encoding='utf-8',
             )
-            self.assertEqual(proc.returncode, 0, proc.stderr)
-            data = json.loads(proc.stdout)
-            summary = data['summary']
-            self.assertEqual(summary['total_cows'], 3)
-            self.assertEqual(summary['cows_with_selected_result'], 3)
-            self.assertEqual(summary['exactly_four_cows'], 1)
-            self.assertEqual(summary['over_four_cows'], 1)
-            self.assertEqual(summary['raw_detected_nipples'], 12)
-            self.assertEqual(summary['capped_detected_nipples'], 11)
-            self.assertEqual(summary['expected_nipples'], 12)
-            self.assertAlmostEqual(summary['nipple_recognition_rate'], 11 / 12, places=6)
 
-    def test_nipple_stats_keeps_missing_final_results_in_conservative_denominator(self):
-        script = ROOT / 'skills/nipple-recognition-analysis/scripts/nipple_stats.py'
-        with tempfile.TemporaryDirectory() as td:
-            root = Path(td)
-            rows = [
-                {'ts': '2026-09-14T07:01:00', 'cow': 'c1', 'nipples': [1, 2, 3, 4], 'selected': True},
-                {'ts': '2026-09-14T07:10:00', 'cow': 'c2', 'nipples': [1, 2, 3], 'selected': False},
-                {'ts': '2026-09-14T07:20:00', 'cow': 'c3', 'selected': True},
-            ]
-            (root / 'r.json').write_text(json.dumps(rows), encoding='utf-8')
+            artifacts = root / 'artifacts'
+            artifacts.mkdir()
+            (artifacts / '20260914-070000100.json').write_text(
+                json.dumps({
+                    'ImgTimeStamp': '20260914-070000100',
+                    # Deliberately include 3D validity fields. KPI must ignore them.
+                    'DisinfectTrack': {
+                        'CowNipplePosInCamSys': {
+                            'Pt1st': {'IsValid': True},
+                            'Pt2nd': {'IsValid': True},
+                            'Pt3rd': {'IsValid': True},
+                            'Pt4th': {'IsValid': True},
+                        }
+                    },
+                    'Markers': {'Rect': [{'Text': '1'}, {'Text': '2'}]},
+                }),
+                encoding='utf-8',
+            )
+            (artifacts / '20260914-070000100.jpg').write_bytes(b'not-an-image-needed-for-this-test')
+            (artifacts / '20260914-070001000.json').write_text(
+                json.dumps({'ImgTimeStamp': '20260914-070001000', 'Markers': {'Rect': [
+                    {'Text': '1'}, {'Text': '2'}, {'Text': '3'}, {'Text': '4'}
+                ]}}),
+                encoding='utf-8',
+            )
+
             proc = run_script(
-                script, str(root),
-                '--time-field', 'ts', '--cow-field', 'cow', '--nipple-field', 'nipples',
-                '--selected-field', 'selected', '--policy', 'selected',
-                '--start', '2026-09-14T07:00:00', '--end', '2026-09-14T08:00:00',
+                script,
+                str(log),
+                '--artifact-dir', str(artifacts),
+                '--start', '2026-09-14 07:00:00:000',
+                '--end', '2026-09-14 08:00:00:000',
             )
             self.assertEqual(proc.returncode, 0, proc.stderr)
             data = json.loads(proc.stdout)
             summary = data['summary']
             self.assertEqual(summary['total_cows'], 3)
-            self.assertEqual(summary['cows_with_selected_result'], 1)
-            self.assertAlmostEqual(summary['selected_result_coverage_rate'], 1 / 3, places=6)
-            self.assertAlmostEqual(summary['nipple_recognition_rate'], 4 / 12, places=6)
-            self.assertEqual(summary['nipple_recognition_rate_selected_only'], 1.0)
-            self.assertEqual(set(data['quality']['cows_without_selected_result']), {'c2', 'c3'})
+            self.assertEqual(summary['cows_with_final_2d_result'], 2)
+            self.assertEqual(summary['complete_four_nipple_cows'], 1)
+            self.assertEqual(summary['raw_2d_detections'], 7)
+            self.assertEqual(summary['capped_2d_detections'], 6)
+            self.assertEqual(summary['expected_nipples'], 12)
+            self.assertAlmostEqual(summary['nipple_recognition_rate'], 0.5, places=6)
+            self.assertEqual(data['quality']['unfinished_cycles_in_window'], 1)
+            self.assertEqual(data['quality']['over_four_2d_detections'], 1)
+            cows = {row['cow_occured_count']: row for row in data['cows']}
+            self.assertEqual(cows[10]['selected_2d_nipple_count'], 2)
+            self.assertEqual(cows[11]['selected_2d_nipple_count'], 4)
+            self.assertIsNone(cows[12]['selected_2d_nipple_count'])
+            self.assertFalse(data['semantics']['three_d_nipple_validity_used'])
+            self.assertTrue(cows[10]['artifact_2d_count_matches_log'])
+            self.assertTrue(cows[11]['artifact_2d_count_matches_log'])
 
     def test_encoder_health_does_not_bridge_invalid_sample(self):
         script = ROOT / 'skills/encoder-health/scripts/encoder_health.py'
