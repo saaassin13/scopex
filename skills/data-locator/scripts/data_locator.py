@@ -1,0 +1,192 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import argparse
+from datetime import datetime, timedelta
+import json
+import os
+from pathlib import Path
+import re
+from typing import Any
+
+CATALOG_DEFAULT = Path('/workspace/scopex-data-catalog.json')
+TIME_FMT = '%Y-%m-%d %H:%M:%S'
+LOG_RE = re.compile(r'^CowDisinfect-(?P<date>\d{8})-(?P<time>\d{6})\.log(?:\.(?P<rotation>\d+))?$')
+MM_RE = re.compile(r'^(?P<stamp>\d{8}-\d{9})\.(?P<ext>jpg|jpeg|json|pcd)$', re.IGNORECASE)
+
+
+def parse_time(value: str) -> datetime:
+    try:
+        return datetime.strptime(value, TIME_FMT)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f'invalid time {value!r}; expected YYYY-MM-DD HH:MM:SS') from exc
+
+
+def hour_floor(value: datetime) -> datetime:
+    return value.replace(minute=0, second=0, microsecond=0)
+
+
+def hour_buckets(start: datetime, end: datetime, *, maximum: int) -> list[datetime]:
+    if end <= start:
+        raise ValueError('--end must be after --start')
+    current = hour_floor(start)
+    out = []
+    while current < end:
+        out.append(current)
+        if len(out) > maximum:
+            raise ValueError(f'time window exceeds max_hour_buckets={maximum}; narrow the request')
+        current += timedelta(hours=1)
+    return out
+
+
+def load_catalog(path: Path) -> dict[str, Any]:
+    value = json.loads(path.read_text(encoding='utf-8'))
+    if not isinstance(value, dict) or value.get('schema') != 1 or not isinstance(value.get('sources'), dict):
+        raise ValueError('invalid ScopeX data catalog')
+    return value
+
+
+def log_timestamp(name: str) -> tuple[datetime, int] | None:
+    m = LOG_RE.fullmatch(name)
+    if not m:
+        return None
+    ts = datetime.strptime(m.group('date') + m.group('time'), '%Y%m%d%H%M%S')
+    rotation = int(m.group('rotation') or 0)
+    return ts, rotation
+
+
+def multimodal_timestamp(name: str) -> datetime | None:
+    m = MM_RE.fullmatch(name)
+    if not m:
+        return None
+    try:
+        return datetime.strptime(m.group('stamp'), '%Y%m%d-%H%M%S%f')
+    except ValueError:
+        return None
+
+
+def locate_logs(root: Path, start: datetime, end: datetime, *, max_hours: int, max_files: int) -> dict[str, Any]:
+    buckets = {value.strftime('%Y%m%d%H') for value in hour_buckets(start, end, maximum=max_hours)}
+    matched: list[tuple[datetime, int, str]] = []
+    if root.is_dir():
+        with os.scandir(root) as entries:
+            for entry in entries:
+                if not entry.is_file(follow_symlinks=False):
+                    continue
+                parsed = log_timestamp(entry.name)
+                if parsed is None:
+                    continue
+                ts, rotation = parsed
+                if ts.strftime('%Y%m%d%H') not in buckets:
+                    continue
+                matched.append((ts, rotation, str(root / entry.name)))
+    matched.sort(key=lambda row: (row[0], row[1], row[2]))
+    files = [row[2] for row in matched[:max_files]]
+    return {
+        'matching_count': len(matched),
+        'files_truncated': len(matched) > max_files,
+        'files': files,
+        'hours': sorted(buckets),
+    }
+
+
+def locate_multimodal(
+    root: Path,
+    start: datetime,
+    end: datetime,
+    *,
+    kind: str,
+    max_hours: int,
+    max_files: int,
+) -> dict[str, Any]:
+    buckets = hour_buckets(start, end, maximum=max_hours)
+    matched: list[tuple[datetime, str]] = []
+    scanned_dirs: list[str] = []
+    accepted = {'jpg', 'jpeg'} if kind == 'jpg' else ({kind} if kind != 'all' else {'jpg', 'jpeg', 'json', 'pcd'})
+    counts: dict[str, int] = {'jpg': 0, 'json': 0, 'pcd': 0}
+    for bucket in buckets:
+        hour_dir = root / bucket.strftime('%Y%m%d') / bucket.strftime('%H')
+        if not hour_dir.is_dir():
+            continue
+        scanned_dirs.append(str(hour_dir))
+        with os.scandir(hour_dir) as entries:
+            for entry in entries:
+                if not entry.is_file(follow_symlinks=False):
+                    continue
+                m = MM_RE.fullmatch(entry.name)
+                if not m:
+                    continue
+                ext = m.group('ext').lower()
+                normalized = 'jpg' if ext in {'jpg', 'jpeg'} else ext
+                if normalized in counts:
+                    counts[normalized] += 1
+                if ext not in accepted and normalized not in accepted:
+                    continue
+                ts = multimodal_timestamp(entry.name)
+                if ts is None or ts < start or ts >= end:
+                    continue
+                matched.append((ts, str(hour_dir / entry.name)))
+    matched.sort(key=lambda row: (row[0], row[1]))
+    return {
+        'matching_count': len(matched),
+        'files_truncated': len(matched) > max_files,
+        'files': [row[1] for row in matched[:max_files]],
+        'scanned_hour_dirs': scanned_dirs,
+        'directory_file_counts': counts,
+    }
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description='Resolve bounded CowDisinfect files for one time window without recursive root scans.')
+    ap.add_argument('--catalog', type=Path, default=CATALOG_DEFAULT)
+    ap.add_argument('--source', required=True, choices=('cowdisinfect_logs', 'left_camera_multimodal'))
+    ap.add_argument('--start', required=True, type=parse_time)
+    ap.add_argument('--end', required=True, type=parse_time)
+    ap.add_argument('--kind', choices=('all', 'jpg', 'json', 'pcd'), default='all')
+    ap.add_argument('--max-files', type=int)
+    args = ap.parse_args()
+
+    if args.end <= args.start:
+        ap.error('--end must be after --start')
+    try:
+        catalog = load_catalog(args.catalog)
+        source = catalog['sources'][args.source]
+    except (OSError, json.JSONDecodeError, KeyError, ValueError) as exc:
+        ap.error(str(exc))
+    root = Path(str(source['agent_path']))
+    access = source.get('access') or {}
+    max_hours = int(access.get('max_hour_buckets') or 24)
+    default_max_files = int(access.get('max_files_per_operation') or 64)
+    max_files = int(args.max_files or default_max_files)
+    if max_files < 1 or max_files > default_max_files:
+        ap.error(f'--max-files must be between 1 and catalog limit {default_max_files}')
+
+    if args.source == 'cowdisinfect_logs':
+        result = locate_logs(root, args.start, args.end, max_hours=max_hours, max_files=max_files)
+    else:
+        result = locate_multimodal(
+            root,
+            args.start,
+            args.end,
+            kind=args.kind,
+            max_hours=max_hours,
+            max_files=max_files,
+        )
+    payload = {
+        'scopex_role': 'locator',
+        'schema': 1,
+        'source': args.source,
+        'root': str(root),
+        'window': {
+            'start': args.start.strftime(TIME_FMT),
+            'end': args.end.strftime(TIME_FMT),
+        },
+        'kind': args.kind,
+        **result,
+    }
+    print(json.dumps(payload, ensure_ascii=False, separators=(',', ':')))
+    return 0
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())
