@@ -1,21 +1,24 @@
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { api, ApiError } from '../api'
-import type { TaskSnapshot } from '../types'
+import type { TaskCalendarDay, TaskSnapshot } from '../types'
 
 const router = useRouter()
 const tasks = ref<TaskSnapshot[]>([])
+const calendarDays = ref<TaskCalendarDay[]>([])
 const message = ref('')
-const mode = ref<'task' | 'conversation'>('task')
 const loading = ref(false)
 const error = ref('')
+const now = new Date()
+const selectedMonth = ref(`${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`)
+const selectedDay = ref(`${selectedMonth.value}-${String(now.getDate()).padStart(2, '0')}`)
 let timer: number | undefined
 
 function fmt(value?: string | null) {
   if (!value) return '—'
   const date = new Date(value)
-  return Number.isNaN(date.getTime()) ? value : date.toLocaleString()
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
 }
 
 function duration(task: TaskSnapshot) {
@@ -25,9 +28,53 @@ function duration(task: TaskSnapshot) {
   return `${Math.floor(sec / 60)}m ${sec % 60}s`
 }
 
+const monthDate = computed(() => {
+  const [year, month] = selectedMonth.value.split('-').map(Number)
+  return new Date(year, month - 1, 1)
+})
+const monthTitle = computed(() => `${monthDate.value.getFullYear()}年${monthDate.value.getMonth() + 1}月`)
+const dayStats = computed(() => new Map(calendarDays.value.map(row => [row.date, row])))
+const calendarCells = computed(() => {
+  const base = monthDate.value
+  const year = base.getFullYear()
+  const month = base.getMonth()
+  const days = new Date(year, month + 1, 0).getDate()
+  const first = (new Date(year, month, 1).getDay() + 6) % 7
+  const cells: Array<{ day: number | null; date?: string; stats?: TaskCalendarDay }> = []
+  for (let i = 0; i < first; i += 1) cells.push({ day: null })
+  for (let day = 1; day <= days; day += 1) {
+    const date = `${selectedMonth.value}-${String(day).padStart(2, '0')}`
+    cells.push({ day, date, stats: dayStats.value.get(date) })
+  }
+  return cells
+})
+
+function shiftMonth(delta: number) {
+  const base = monthDate.value
+  const next = new Date(base.getFullYear(), base.getMonth() + delta, 1)
+  selectedMonth.value = `${next.getFullYear()}-${String(next.getMonth() + 1).padStart(2, '0')}`
+  selectedDay.value = `${selectedMonth.value}-01`
+  void refresh()
+}
+
 async function refresh() {
   try {
-    tasks.value = (await api.listTasks()).tasks
+    const [calendar, rows] = await Promise.all([
+      api.getTaskCalendar(selectedMonth.value),
+      api.listTasks({ day: selectedDay.value }),
+    ])
+    calendarDays.value = calendar.days
+    tasks.value = rows.tasks
+  } catch (exc) {
+    error.value = exc instanceof Error ? exc.message : String(exc)
+  }
+}
+
+async function selectDay(date?: string) {
+  if (!date) return
+  selectedDay.value = date
+  try {
+    tasks.value = (await api.listTasks({ day: date })).tasks
   } catch (exc) {
     error.value = exc instanceof Error ? exc.message : String(exc)
   }
@@ -39,9 +86,7 @@ async function createEntry() {
   loading.value = true
   error.value = ''
   try {
-    const task = mode.value === 'conversation'
-      ? await api.createConversation(value)
-      : await api.createTask(value)
+    const task = await api.createRun(value)
     message.value = ''
     await router.push(`/tasks/${task.id}`)
   } catch (exc) {
@@ -53,64 +98,95 @@ async function createEntry() {
 
 onMounted(() => {
   void refresh()
-  timer = window.setInterval(refresh, 2500)
+  timer = window.setInterval(refresh, 10000)
 })
 onBeforeUnmount(() => timer && window.clearInterval(timer))
 </script>
 
 <template>
-  <section class="dashboard-grid">
-    <div class="hero-panel panel">
+  <section class="dashboard-page">
+    <div class="hero-panel panel unified-agent-panel">
       <div class="eyebrow">LOCAL · BUSINESS AGENT</div>
-      <h1>{{ mode === 'task' ? '创建可审计业务任务' : '和同一个 Agent 正常对话' }}</h1>
-      <p v-if="mode === 'task'">任务走 Evidence → Claims → Result，可用于诊断、统计、图片和设备分析。</p>
-      <p v-else>对话仍走同一个 OpenClaw / Skill / Tool Runtime，但普通问答不强制必须产生 Evidence。</p>
-
-      <div class="mode-switch">
-        <button :class="{ active: mode === 'task' }" @click="mode = 'task'">任务</button>
-        <button :class="{ active: mode === 'conversation' }" @click="mode = 'conversation'">对话</button>
-      </div>
+      <h1>告诉 Agent 你要了解或处理什么</h1>
+      <p>普通问答和业务分析共用同一个 OpenClaw Runtime。ScopeX 会根据实际是否访问业务数据自动决定是否进入可审计结果链。</p>
 
       <form class="task-compose" @submit.prevent="createEntry">
         <textarea
           v-model="message"
-          rows="5"
-          :placeholder="mode === 'task'
-            ? '例如：检查过去30分钟编码器是否存在丢数、毛刺、回退或不稳定。'
-            : '例如：现在支持哪些 Skill？解释一下乳头识别率是怎么计算的。'"
+          rows="4"
+          placeholder="例如：检查3点的编码器数据是否存在异常；分析7点乳头识别率；当前支持哪些能力？"
         ></textarea>
         <div class="compose-footer">
-          <span>同一 Runtime · 单个主要执行槽位</span>
+          <span>统一入口 · 用户无需选择任务类型</span>
           <button class="primary-button" :disabled="loading || !message.trim()">
-            {{ loading ? '创建中…' : mode === 'task' ? '开始任务' : '发送' }}
+            {{ loading ? '处理中…' : '发送' }}
           </button>
         </div>
       </form>
       <p v-if="error" class="error-banner">{{ error }}</p>
     </div>
 
-    <aside class="panel task-history">
-      <div class="section-heading">
-        <div>
-          <div class="eyebrow">RUN HISTORY</div>
-          <h2>执行记录</h2>
+    <div class="history-calendar-layout">
+      <section class="panel calendar-panel">
+        <div class="section-heading">
+          <div>
+            <div class="eyebrow">RUN CALENDAR</div>
+            <h2>执行日历</h2>
+          </div>
+          <div class="calendar-nav">
+            <button class="ghost-button" @click="shiftMonth(-1)">←</button>
+            <strong>{{ monthTitle }}</strong>
+            <button class="ghost-button" @click="shiftMonth(1)">→</button>
+          </div>
         </div>
-        <button class="ghost-button" @click="refresh">刷新</button>
-      </div>
-      <div v-if="!tasks.length" class="empty-state">还没有执行记录。</div>
-      <button
-        v-for="task in tasks"
-        :key="task.id"
-        class="task-row"
-        @click="router.push(`/tasks/${task.id}`)"
-      >
-        <div class="task-row-top">
-          <span class="state-pill" :data-state="task.state">{{ task.state }}</span>
-          <span class="mode-badge">{{ task.mode === 'conversation' ? '对话' : task.trigger_type === 'schedule' ? '定时任务' : '任务' }}</span>
+        <div class="calendar-weekdays">
+          <span v-for="name in ['一','二','三','四','五','六','日']" :key="name">周{{ name }}</span>
         </div>
-        <strong>{{ task.user_request || task.id }}</strong>
-        <small>{{ fmt(task.started_at || task.created_at) }}<template v-if="duration(task)"> · {{ duration(task) }}</template></small>
-      </button>
-    </aside>
+        <div class="calendar-grid">
+          <button
+            v-for="(cell, index) in calendarCells"
+            :key="cell.date || `blank-${index}`"
+            class="calendar-day"
+            :class="{ blank: !cell.date, selected: cell.date === selectedDay, failed: (cell.stats?.failed || 0) > 0 }"
+            :disabled="!cell.date"
+            @click="selectDay(cell.date)"
+          >
+            <span class="calendar-day-number">{{ cell.day || '' }}</span>
+            <template v-if="cell.stats">
+              <strong>{{ cell.stats.count }} 次</strong>
+              <small>
+                <template v-if="cell.stats.failed">{{ cell.stats.failed }} 失败</template>
+                <template v-else-if="cell.stats.running">{{ cell.stats.running }} 运行中</template>
+                <template v-else>{{ cell.stats.completed }} 完成</template>
+              </small>
+            </template>
+          </button>
+        </div>
+      </section>
+
+      <aside class="panel day-history">
+        <div class="section-heading">
+          <div>
+            <div class="eyebrow">RUNS · {{ selectedDay }}</div>
+            <h2>当天执行记录</h2>
+          </div>
+          <button class="ghost-button" @click="refresh">刷新</button>
+        </div>
+        <div v-if="!tasks.length" class="empty-state">当天没有执行记录。</div>
+        <button
+          v-for="task in tasks"
+          :key="task.id"
+          class="task-row"
+          @click="router.push(`/tasks/${task.id}`)"
+        >
+          <div class="task-row-top">
+            <span class="state-pill" :data-state="task.state">{{ task.state }}</span>
+            <span class="mode-badge">{{ task.trigger_type === 'schedule' ? '定时' : '手动' }}</span>
+          </div>
+          <strong>{{ task.user_request || task.id }}</strong>
+          <small>{{ fmt(task.started_at || task.created_at) }}<template v-if="duration(task)"> · {{ duration(task) }}</template></small>
+        </button>
+      </aside>
+    </div>
   </section>
 </template>
