@@ -1,64 +1,99 @@
 ---
 name: image-quality-diagnosis
-description: Inspect local images for blur, haze or fogging, lens contamination, motion blur, exposure and other image-quality problems with bounded visual evidence.
+description: Inspect local images for blur, haze/fogging, lens contamination, water droplets, motion blur and defocus with bounded multi-image visual evidence.
 user-invocable: true
 ---
 
 # Image quality diagnosis
 
-Use this skill when the user asks whether one or more images are blurry, fogged, dirty, contaminated, poorly exposed, motion-blurred, defocused, or otherwise visually degraded.
+Use this skill when the user asks whether one image or a time window contains blur, fogging/haze, dirty lens/protective glass, water droplets, motion blur, defocus or other visible degradation.
 
-## Data source
-
-The normal LeftCamera source is:
+## Business source
 
 - `left_camera_multimodal` -> `/agent-data/left-camera`
 - host: `/opt/ScalingRobotics/CowDisinfect/GrabbedImages/LeftCamera`
-- directories: `YYYYMMDD/HH`
-- files: `YYYYMMDD-HHMMSSmmm.jpg|json|pcd`
+- layout: `YYYYMMDD/HH/YYYYMMDD-HHMMSSmmm.jpg|json|pcd`
 
-For a time-window request, first use `data-locator` to resolve only the requested hour/window. Do not recursively enumerate the full historical LeftCamera root.
+Use `data-locator` for time-window requests. Do not recursively enumerate historical roots.
 
-## Scope first
+## Core rule: visual judgement owns the result
 
-- Treat the user's explicit target and scope as binding.
-- If the user names one image, inspect that original directly. Do not read adjacent logs/JSON/PCD or unrelated files by default.
-- For a time window, use a bounded temporal sample across the window. Do not inspect every image by default.
-- Do not perform package/environment discovery for a direct visual task.
+**The final dirty/blur/fog/water-droplet judgement must come from direct visual inspection of original JPGs.**
 
-## Visual diagnosis discipline
+Laplacian, gradient energy, brightness, contrast and clip ratios are optional screening/reference features only. They may help divide a large image set into different-looking groups, but none of them may independently decide:
 
-Visual inspection is authoritative for visible haze/fog/contamination. Numerical sharpness metrics are supporting screening only.
+- “no fog”;
+- “no contamination”;
+- “image is normal”; or
+- the physical cause of degradation.
 
-- **Fogging / condensation features:** diffuse veil, milky/translucent layer, broad low-frequency contrast loss, washed blacks, halos/glare or a persistent hazy layer over otherwise different scenes.
-- **Lens contamination:** localized smears, spots, streaks or blobs that remain fixed in image coordinates across different scene content.
-- **Defocus:** broadly isotropic edge softness without a translucent veil.
-- **Motion blur:** directional streaking or directional duplicated edges.
-- Exposure/noise/compression can imitate poor image quality and should remain alternatives when appropriate.
+A high Laplacian can coexist with a translucent veil; a low-contrast frame can be caused by scene content rather than fog. Never turn those metrics into a product conclusion by themselves.
 
-Important negative-claim rule:
+## Single-image flow
 
-- A normal/high Laplacian variance does **not** prove “no fog”. Fog can preserve many edges while adding a veil or contrast loss.
-- Do not conclude “no fogging or contamination” from metrics alone.
-- For a time-window negative conclusion, directly inspect at least two original images with different scene content and no consistent haze/contamination pattern. If visual evidence is mixed, say uncertain rather than forcing a negative conclusion.
-- If any directly inspected original clearly shows a diffuse veil/milky haze, report **visible fogging/haze features are present**. The exact physical cause (condensation, dirty protective glass, lighting) may remain uncertain.
+If the user names one or a few images:
 
-## Claim-grade image discipline
+1. inspect the original JPG directly with `view_image`;
+2. judge the visible dimensions below;
+3. use metrics only if they materially help compare sharpness/exposure;
+4. stop when the visual question is answered.
 
-Call `view_image` with **at most 2 original images per call**. The current OpenClaw visual bridge can omit images from larger batches; an omitted image was not actually inspected and must not support a claim.
+Do not inspect adjacent JSON/log/PCD unless the user requests cross-source explanation.
 
-For a time-window task, inspect several samples in repeated <=2-image calls when needed. Final claim-grade evidence should be the smallest directly inspected original set that supports the conclusion.
+## Time-window / many-image flow
 
-## Quantitative helper
+For a large set such as one hour:
 
-For batch screening/comparison, use:
+1. **Locate only the requested window.**
+2. **Build a bounded representative screening set.** Prefer temporal coverage across beginning/middle/end. If metrics are useful, compute them only on a bounded sample.
+3. **Use metrics only to partition/reference the sample**, e.g. lower/median/higher sharpness, lower/normal contrast, or different time sections. Do not choose only the “worst Laplacian” images.
+4. **Select original images from multiple partitions/time sections** so that visual inspection covers different scenes and both normal-looking and suspicious candidates.
+5. **Directly inspect originals in repeated small `view_image` calls (<=2 images per call).**
+6. Compare across images and decide whether the visible problem is isolated or persistent.
+7. Stop after enough representative originals support a calibrated answer.
+
+The goal of screening is coverage and de-duplication, not automated diagnosis.
+
+## What to judge visually
+
+For each directly viewed representative image, distinguish:
+
+- **blur / low sharpness:** edges and fine structures are visibly soft;
+- **fogging / haze:** diffuse translucent or milky veil, washed blacks, broad contrast loss, halos/glare, persistent hazy layer;
+- **water droplets:** localized droplet-like translucent/reflective shapes, often with optical distortion;
+- **lens/protective-glass contamination:** localized smear, spot, streak or blob; stronger evidence when the pattern stays at the same image coordinate across different cows/scenes;
+- **motion blur:** directional streaking/duplicated edges;
+- **defocus:** more isotropic softness without a veil;
+- **exposure/lighting/noise/compression:** alternative explanations when visually supported.
+
+Separate **visible observation** from **physical cause**. For example, “明显雾化/veil” can be observed; “一定是冷凝水” normally requires stronger evidence.
+
+## Negative conclusion is harder than positive detection
+
+For a time window, do not conclude “no fog/no dirt” after seeing one normal frame or from metrics alone.
+
+A negative conclusion requires direct visual coverage across different times/scenes. If representative images disagree, report mixed/uncertain quality rather than forcing a global normal result.
+
+If one or more directly inspected originals clearly show a persistent diffuse veil or droplets, report that visible feature even if sharpness metrics look normal.
+
+## Claim-grade visual evidence
+
+- Use **at most 2 original images per `view_image` call**.
+- If the visual tool reports any image was omitted/truncated/not placed in context, that call is incomplete and must not support a claim; re-open the needed originals in a smaller call.
+- Scratch contact sheets/previews may help screening but cannot replace final original-image inspection.
+
+## Optional metric helper
 
 `{baseDir}/scripts/image_quality_metrics.py`
 
-It reports Laplacian variance, gradient energy, brightness, contrast and clipping ratios. These metrics help find relative changes or candidate frames; they do not diagnose fogging or dirt and must not override a clear visual haze observation.
+It is a screening helper only. Pass explicit bounded paths; never feed an entire large directory by default.
 
-Pass explicit image paths from `data-locator`; do not feed an entire directory by default.
+## Expected result structure
 
-## Stop condition
+The business result should answer:
 
-Stop once the requested images/window has enough directly inspected visual evidence for a calibrated answer. Do not expand into unrelated logs/JSON/PCD merely because they are available.
+1. whether visible blur/fog/contamination/water droplets are present in the inspected window;
+2. whether the issue appears persistent or isolated across representative originals;
+3. the key visual facts supporting that judgement;
+4. uncertain physical causes as possibilities, not facts;
+5. what additional inspection is needed only when current visual evidence is insufficient.
