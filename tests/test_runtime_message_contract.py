@@ -8,7 +8,10 @@ from scopex.runtime.stop import SafeStopGate
 
 
 class RuntimeMessageContractTests(unittest.TestCase):
-    def runtime(self, root: Path, *, exec_host="sandbox", concise=True):
+    def runtime(self, root: Path, *, exec_host="sandbox", concise=True, view_image=True):
+        tools = ["read", "exec"]
+        if view_image:
+            tools.append("view_image")
         spec = OpenClawTaskSpec(
             cli_path=root / "openclaw",
             model_id="local-model",
@@ -22,7 +25,7 @@ class RuntimeMessageContractTests(unittest.TestCase):
             agent_id="sx1",
             uid=1000,
             gid=1000,
-            tools=("read", "exec", "view_image"),
+            tools=tuple(tools),
             task_scratch_bind=f"{root}/scratch:/task-scratch:rw",
             exec_host=exec_host,
             concise_terminal_handoff=concise,
@@ -35,18 +38,44 @@ class RuntimeMessageContractTests(unittest.TestCase):
             stop_gate=SafeStopGate(),
         )
 
-    def test_sandbox_message_exposes_no_network_and_concise_terminal_contract(self):
+    def test_sandbox_message_exposes_scope_stop_toolbox_and_terminal_contract(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             (root / "workspace").mkdir()
             (root / "scratch").mkdir()
             message = self.runtime(root)._runtime_message("diagnose")
 
+        self.assertIn("explicit target, source, and scope constraints as binding", message)
+        self.assertIn("smallest sufficient evidence path", message)
+        self.assertIn("stop using tools and hand off the result", message)
         self.assertIn("sandbox runs with network access disabled", message)
         self.assertIn("Do not attempt runtime package installation", message)
+        self.assertIn("preinstalled toolbox", message)
         self.assertIn("ScopeX independently composes the user-facing product result", message)
         self.assertIn("keep the terminal assistant answer brief", message)
         self.assertIn("diagnose", message)
+
+    def test_view_image_contract_prefers_named_originals_and_avoids_unrelated_files(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "workspace").mkdir()
+            (root / "scratch").mkdir()
+            message = self.runtime(root, view_image=True)._runtime_message("inspect one image")
+
+        self.assertIn("one or a few explicitly named images", message)
+        self.assertIn("inspect those read-only originals directly with view_image", message)
+        self.assertIn("Do not inspect adjacent logs, JSON, or sibling images", message)
+        self.assertIn("direct visual evidence is insufficient", message)
+
+    def test_view_image_specific_guidance_is_absent_when_tool_is_disabled(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "workspace").mkdir()
+            (root / "scratch").mkdir()
+            message = self.runtime(root, view_image=False)._runtime_message("inspect")
+
+        self.assertNotIn("read-only originals directly with view_image", message)
+        self.assertIn("smallest sufficient evidence path", message)
 
     def test_gateway_exec_does_not_claim_network_is_disabled(self):
         with tempfile.TemporaryDirectory() as td:
@@ -56,6 +85,7 @@ class RuntimeMessageContractTests(unittest.TestCase):
             message = self.runtime(root, exec_host="gateway")._runtime_message("inspect")
 
         self.assertNotIn("sandbox runs with network access disabled", message)
+        self.assertIn("explicit target, source, and scope constraints as binding", message)
         self.assertIn("keep the terminal assistant answer brief", message)
 
     def test_terminal_handoff_can_be_disabled_for_regression_probes(self):
@@ -66,6 +96,7 @@ class RuntimeMessageContractTests(unittest.TestCase):
             message = self.runtime(root, concise=False)._runtime_message("inspect")
 
         self.assertNotIn("ScopeX independently composes the user-facing product result", message)
+        self.assertIn("smallest sufficient evidence path", message)
 
 
 if __name__ == "__main__":
