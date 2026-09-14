@@ -76,6 +76,8 @@ Catalog 中 host path 存在时默认自动只读挂载；额外/替代目录仍
 
 Catalog 是语义目录，不是启动时全量构建的文件索引。它只描述数据源、路径、命名、时间语义、访问预算和业务边界。
 
+Runtime 还会把一段**有界的 Catalog Summary**注入每次 OpenClaw turn 的 ScopeX capability context。该摘要只包含数据源名称、Sandbox 路径、布局和访问限制，不包含历史文件清单，也不属于业务 Evidence。这样 Agent 在第一轮就知道 `/agent-data/logs` 与 `/agent-data/left-camera` 的含义，无需先 `ls/find` 探索目录。
+
 ## 3. Data Locator
 
 内部支持 Skill：
@@ -188,6 +190,10 @@ Trace / 调查过程
 Working Data
   /task-scratch 临时脚本/明细/中间结果
 
+Internal Evidence
+  working_derived：从 /task-scratch 读取的有界派生材料
+  仅用于 Finalizer / 审计兼容，不进入用户事实依据
+
 Claim-grade Evidence
   /agent-data 原始日志行
   原始只读图片
@@ -195,16 +201,18 @@ Claim-grade Evidence
   scopex_role=business_facts 稳定结构化结果
 
 User Facts
-  UI 中展示的事实依据
+  UI 中展示的事实依据；明确排除 working_derived
 ```
 
 Projector 固定：
 
 - `/workspace/skills/**` read：Trace-only；
 - `/workspace/scopex-data-catalog.json` read：Trace-only；
-- `/task-scratch/**` read：Trace-only；
+- `/task-scratch/**` read：可冻结为 `evidence_role=working_derived` 的内部 Evidence，以兼容已有大数据/压缩 Finalizer，但 UI 不展示为 User Facts；
 - `scopex_role=locator`：Trace-only；
 - `scopex_role=business_facts`：整体一条结构化 Evidence，不逐行拆几百条。
+
+这样既保留 Step 6 已验证的“先在 scratch 生成有界派生结果再 Finalize”能力，又避免把 Skill、临时脚本、派生明细冒充成用户可见事实。
 
 ## 7. Scheduler 断电语义
 
@@ -242,10 +250,11 @@ PCD 若真实 workload 需要超过 512 MiB，应基于真实文件大小/降采
 ## 9. 验收
 
 1. Spark Runtime 自动挂载两个真实 host path；
-2. 查询跨自然小时窗口时 Locator 能找到前一非整点文件组；
-3. 13:00~13:30 LeftCamera 只访问 `YYYYMMDD/13`；
-4. 编码器 `.log/.log.1/...` 一次分析并跨文件连续；
-5. nipple KPI 不递归扫描整个 LeftCamera；
-6. Evidence 不再出现 Skill.md / 脚本源码；
-7. `business_facts` 一次输出只形成少量结构化 Evidence；
-8. Scheduler 重启后历史 trigger 只计 missed，不创建 Task。
+2. Catalog Summary 在每个 Runtime turn 开始即提供数据源语义，不需要先扫目录；
+3. 查询跨自然小时窗口时 Locator 能找到前一非整点文件组；
+4. 13:00~13:30 LeftCamera 只访问 `YYYYMMDD/13`；
+5. 编码器 `.log/.log.1/...` 一次分析并跨文件连续；
+6. nipple KPI 不递归扫描整个 LeftCamera；
+7. 用户事实依据不出现 Skill.md / 脚本源码 / locator / `working_derived`；
+8. `business_facts` 一次输出只形成少量结构化 Evidence；
+9. Scheduler 重启后历史 trigger 只计 missed，不创建 Task。
