@@ -30,8 +30,7 @@ class StubService:
         }
 
     def list_tasks(self, *, mode=None):
-        row = {"id": "task-1", "state": "COMPLETED", "mode": mode or "task"}
-        return [row]
+        return [{"id": "task-1", "state": "COMPLETED", "mode": mode or "task"}]
 
     def get_task(self, task_id):
         if task_id == "missing":
@@ -77,10 +76,41 @@ class StubService:
         return {"id": task_id, "state": "RUNNING"}
 
 
+class StubSchedules:
+    def __init__(self):
+        self.started = 0
+        self.stopped = 0
+        self.items = []
+
+    def start(self):
+        self.started += 1
+
+    def shutdown(self):
+        self.stopped += 1
+
+    def list(self):
+        return list(self.items)
+
+    def create(self, **kwargs):
+        row = {"id": "schedule-1", **kwargs, "next_run_at": "2026-09-14T15:00:00+08:00"}
+        self.items.append(row)
+        return row
+
+    def set_enabled(self, schedule_id, enabled):
+        return {"id": schedule_id, "enabled": enabled}
+
+    def run_now(self, schedule_id):
+        return {"schedule_id": schedule_id, "status": "TRIGGERED", "task_id": "task-1"}
+
+    def delete(self, schedule_id):
+        self.items = [row for row in self.items if row.get("id") != schedule_id]
+
+
 class FastApiRuntimeTests(unittest.TestCase):
     def setUp(self):
         self.service = StubService()
-        self.client_ctx = TestClient(create_app(self.service, shutdown_timeout_s=7.5))
+        self.schedules = StubSchedules()
+        self.client_ctx = TestClient(create_app(self.service, schedules=self.schedules, shutdown_timeout_s=7.5))
         self.client = self.client_ctx.__enter__()
 
     def tearDown(self):
@@ -130,6 +160,25 @@ class FastApiRuntimeTests(unittest.TestCase):
         self.assertEqual(response.json()["rating"], "down")
         self.assertIsNone(self.client.get("/tasks/task-1/evaluation").json()["evaluation"])
 
+    def test_schedule_routes(self):
+        self.assertEqual(self.schedules.started, 1)
+        created = self.client.post('/schedules', json={
+            'name': 'encoder',
+            'message': '检查过去30分钟编码器',
+            'kind': 'interval',
+            'interval_minutes': 30,
+        })
+        self.assertEqual(created.status_code, 201)
+        self.assertEqual(created.json()['id'], 'schedule-1')
+        self.assertEqual(len(self.client.get('/schedules').json()['schedules']), 1)
+        run = self.client.post('/schedules/schedule-1/run', json={})
+        self.assertEqual(run.status_code, 202)
+        self.assertEqual(run.json()['status'], 'TRIGGERED')
+        disabled = self.client.patch('/schedules/schedule-1/enabled', json={'enabled': False})
+        self.assertFalse(disabled.json()['enabled'])
+        deleted = self.client.delete('/schedules/schedule-1')
+        self.assertEqual(deleted.status_code, 204)
+
     def test_machine_readable_errors_and_validation(self):
         missing = self.client.get("/tasks/missing")
         self.assertEqual(missing.status_code, 404)
@@ -167,11 +216,13 @@ class FastApiRuntimeTests(unittest.TestCase):
         self.assertEqual(large.status_code, 413)
         self.assertEqual(large.json()["error"]["code"], "request_too_large")
 
-    def test_lifespan_shutdowns_service(self):
+    def test_lifespan_shutdowns_service_and_scheduler(self):
         self.assertEqual(self.service.shutdown_calls, [])
+        self.assertEqual(self.schedules.stopped, 0)
         self.client_ctx.__exit__(None, None, None)
         self.assertEqual(self.service.shutdown_calls, [7.5])
-        self.client_ctx = TestClient(create_app(self.service))
+        self.assertEqual(self.schedules.stopped, 1)
+        self.client_ctx = TestClient(create_app(self.service, schedules=self.schedules))
         self.client = self.client_ctx.__enter__()
 
 
