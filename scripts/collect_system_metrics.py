@@ -114,11 +114,13 @@ def gpu_snapshot() -> tuple[list[dict[str, Any]], str | None]:
         parts = [p.strip() for p in line.split(',')]
         if len(parts) != len(fields):
             continue
+
         def num(text: str) -> float | None:
             try:
                 return float(text)
             except ValueError:
                 return None
+
         rows.append({
             'index': parts[0], 'name': parts[1],
             'util_percent': num(parts[2]),
@@ -161,21 +163,6 @@ def top_processes(sort_key: str, limit: int = 5) -> tuple[list[dict[str, Any]], 
     return rows, None
 
 
-def trim_jsonl(path: Path, max_bytes: int) -> None:
-    if not path.exists() or path.stat().st_size <= max_bytes:
-        return
-    keep = max_bytes // 2
-    with path.open('rb') as f:
-        size = path.stat().st_size
-        f.seek(max(0, size - keep))
-        data = f.read()
-    if b'\n' in data:
-        data = data.split(b'\n', 1)[1]
-    tmp = path.with_suffix(path.suffix + '.tmp')
-    tmp.write_bytes(data)
-    tmp.replace(path)
-
-
 def collect(mounts: list[str]) -> dict[str, Any]:
     errors: dict[str, str] = {}
     gpu, gpu_err = gpu_snapshot()
@@ -199,6 +186,7 @@ def collect(mounts: list[str]) -> dict[str, Any]:
 
     return {
         'schema': 1,
+        'mode': 'current_snapshot',
         'ts': datetime.now().astimezone().isoformat(timespec='seconds'),
         'cpu': {'util_percent': cpu_percent(), **load},
         'memory': meminfo(),
@@ -212,20 +200,20 @@ def collect(mounts: list[str]) -> dict[str, Any]:
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description='Collect one host resource snapshot as JSON/JSONL facts.')
-    ap.add_argument('--output', type=Path, help='append JSON line to this file')
+    ap = argparse.ArgumentParser(description='Collect one current host resource snapshot as JSON facts.')
+    ap.add_argument('--output-json', type=Path, help='optionally write/replace one current snapshot JSON file')
     ap.add_argument('--mount', action='append', default=[], help='filesystem mount to sample; repeatable')
-    ap.add_argument('--max-file-mb', type=int, default=64, help='bound JSONL history file size')
     ap.add_argument('--pretty', action='store_true')
     args = ap.parse_args()
-    mounts = args.mount or ['/']
-    row = collect(mounts)
-    print(json.dumps(row, ensure_ascii=False, indent=2 if args.pretty else None, allow_nan=False))
-    if args.output:
-        args.output.parent.mkdir(parents=True, exist_ok=True)
-        trim_jsonl(args.output, max(1, args.max_file_mb) * 1024 * 1024)
-        with args.output.open('a', encoding='utf-8') as f:
-            f.write(json.dumps(row, ensure_ascii=False, allow_nan=False) + '\n')
+
+    row = collect(args.mount or ['/'])
+    text = json.dumps(row, ensure_ascii=False, indent=2 if args.pretty else None, allow_nan=False)
+    print(text)
+    if args.output_json:
+        args.output_json.parent.mkdir(parents=True, exist_ok=True)
+        tmp = args.output_json.with_suffix(args.output_json.suffix + '.tmp')
+        tmp.write_text(json.dumps(row, ensure_ascii=False, indent=2, allow_nan=False) + '\n', encoding='utf-8')
+        tmp.replace(args.output_json)
     return 0
 
 
