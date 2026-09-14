@@ -35,32 +35,37 @@ const evaluationOptions = [
 ] as const
 
 const factLabels: Record<string, string> = {
-  matching_encoder_lines_in_selected_logs: '所选日志中的编码器记录',
   samples_in_window: '时间窗采样数',
-  valid_samples: '有效采样数',
+  application_samples: '应用层编码器采样数',
+  raw_filtered_samples: 'raw/filtered采样数',
   invalid_samples: '无效/读取失败采样数',
   first_ts: '首个采样时间',
   last_ts: '最后采样时间',
   median_sample_dt_ms: '采样中位间隔',
-  sample_gap_threshold_ms: '采样缺口判定阈值',
-  sampling_gap_count: '采样缺口候选数',
-  negative_jump_count: 'raw 数值下降次数',
-  negative_jump_abs_median_pulses: 'raw 下降幅度中位数',
-  negative_jump_abs_p95_pulses: 'raw 下降幅度 P95',
-  negative_jump_abs_max_pulses: 'raw 最大下降幅度',
-  negative_jump_outlier_candidate_count: '显著 raw 下降候选数',
-  large_negative_jump_candidate_count: '大幅 raw 下降候选数',
-  positive_delta_outlier_candidate_count: '显著正向跳变候选数',
-  flat_raw_candidate_count: '长时间不变候选数',
-  longest_flat_raw_ms: '最长 raw 不变时长',
-  raw_filtered_abs_diff_median: 'raw 与 filtered 差值中位数',
-  raw_filtered_abs_diff_max: 'raw 与 filtered 最大差值',
+  sampling_gap_count: '采样缺口数',
+  anomaly_event_count: '显著异常事件数',
+  reverse_glitch_candidate_count: '回退-恢复毛刺数',
+  reverse_interval_candidate_count: '连续回退区间数',
+  reverse_step_candidate_count: '单步显著回退数',
+  positive_spike_candidate_count: '异常正向跳变数',
+  flat_count_candidate_count: '长时间不变候选数',
   total_cows: '统计牛数',
   complete_four_nipple_cows: '完整识别4乳头牛数',
   complete_four_nipple_rate: '完整四乳头识别率',
   nipple_recognition_rate: '乳头识别率',
   capped_2d_detections: '计入指标的2D乳头框总数',
   expected_nipples: '理论乳头总数',
+  captured_at: '采样时间',
+  cpu_util_percent: 'CPU利用率',
+  cpu_count: 'CPU逻辑核数',
+  memory_total_gb: '内存总量',
+  memory_used_gb: '已用内存',
+  memory_available_gb: '可用内存',
+  swap_used_gb: '已用Swap',
+  disk_root_used_percent: '根磁盘使用率',
+  disk_root_free_gb: '根磁盘剩余空间',
+  gpu_count: 'GPU数量',
+  gpu_util_percent_max: 'GPU最高利用率',
 }
 
 const isRunning = computed(() => task.value?.state === 'RUNNING')
@@ -75,12 +80,17 @@ const answer = computed<ProductAnswer | null>(() => {
   const value = result.value?.result?.answer
   return value && typeof value === 'object' ? value as ProductAnswer : null
 })
-const userFacts = computed(() => evidence.value.filter(item => {
-  const type = item.metadata?.evidence_type
-  if (type === 'structured_business_facts' || type === 'image') return true
-  if (item.source.startsWith('/agent-data/') || item.source.startsWith('/scopex-host/')) return true
-  return false
-}))
+const userFacts = computed(() => {
+  const preferred = evidence.value.filter(item => {
+    const type = item.metadata?.evidence_type
+    return type === 'structured_business_facts' || type === 'image'
+  })
+  if (preferred.length) return preferred.slice(0, 8)
+  return evidence.value.filter(item => {
+    if (item.metadata?.evidence_role === 'working_derived') return false
+    return item.source.startsWith('/agent-data/') || item.source.startsWith('/scopex-host/')
+  }).slice(0, 12)
+})
 
 const lastTaskFailed = computed(() => {
   for (let index = events.value.length - 1; index >= 0; index -= 1) {
@@ -138,6 +148,8 @@ function formatFactValue(key: string, raw: unknown): string {
   if (raw === null || raw === undefined) return '—'
   if (typeof raw === 'number') {
     if (key.endsWith('_rate')) return `${(raw * 100).toFixed(2)}%`
+    if (key.endsWith('_percent')) return `${raw.toFixed(2).replace(/\.00$/, '')}%`
+    if (key.endsWith('_gb')) return `${raw.toFixed(2).replace(/\.00$/, '')} GB`
     if (key.endsWith('_ms')) return `${Number.isInteger(raw) ? raw : raw.toFixed(3)} ms`
     if (key.includes('pulses') || key.includes('pulse')) return `${Number.isInteger(raw) ? raw : raw.toFixed(2)} pulse`
     return String(raw)
@@ -145,13 +157,34 @@ function formatFactValue(key: string, raw: unknown): string {
   return String(raw)
 }
 
+function selectedFactKeys(value: any): string[] | null {
+  if (value?.source === 'encoder-health') {
+    return [
+      'samples_in_window', 'invalid_samples', 'median_sample_dt_ms', 'sampling_gap_count',
+      'anomaly_event_count', 'reverse_glitch_candidate_count', 'reverse_interval_candidate_count',
+      'reverse_step_candidate_count', 'positive_spike_candidate_count',
+    ]
+  }
+  if (value?.source === 'system-health') {
+    return [
+      'captured_at', 'cpu_util_percent', 'cpu_count', 'memory_used_gb', 'memory_available_gb',
+      'memory_total_gb', 'disk_root_used_percent', 'disk_root_free_gb', 'gpu_util_percent_max',
+    ]
+  }
+  return null
+}
+
 function structuredFactText(value: any): string | null {
   if (!value || typeof value !== 'object' || value.scopex_role !== 'business_facts') return null
   const facts = value.facts ?? value.summary
   if (!facts || typeof facts !== 'object') return null
-  const rows = Object.entries(facts)
+  const keys = selectedFactKeys(value)
+  const entries = keys
+    ? keys.filter(key => Object.prototype.hasOwnProperty.call(facts, key)).map(key => [key, facts[key]] as [string, unknown])
+    : Object.entries(facts)
+  const rows = entries
     .filter(([, raw]) => ['string', 'number', 'boolean'].includes(typeof raw) || raw === null)
-    .slice(0, 14)
+    .slice(0, 12)
     .map(([key, raw]) => `${factLabels[key] || key}：${formatFactValue(key, raw)}`)
   return rows.length ? rows.join('\n') : null
 }
