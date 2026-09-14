@@ -115,13 +115,15 @@ def main() -> int:
                 if is_anchor:
                     anchors += 1
                     total_anchors += 1
-                    for prev_no, prev_text in before_buf:
-                        if prev_no not in selected and total_selected + len(selected) < args.max_lines:
-                            selected[prev_no] = row(prev_no, prev_text, anchor=False)
+                    # The anchor is the evidence target and always has priority
+                    # over optional surrounding context when max-lines is tight.
                     if line_no not in selected and total_selected + len(selected) < args.max_lines:
                         selected[line_no] = row(line_no, text, anchor=True)
                     elif line_no in selected:
                         selected[line_no]['anchor'] = True
+                    for prev_no, prev_text in reversed(before_buf):
+                        if prev_no not in selected and total_selected + len(selected) < args.max_lines:
+                            selected[prev_no] = row(prev_no, prev_text, anchor=False)
                     pending_after = max(pending_after, max(0, args.after))
                 elif pending_after > 0:
                     if line_no not in selected and total_selected + len(selected) < args.max_lines:
