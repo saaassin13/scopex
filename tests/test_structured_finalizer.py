@@ -29,6 +29,27 @@ class FakeClient:
         )
 
 
+class SequenceClient:
+    def __init__(self, responses):
+        self.responses = list(responses)
+        self.calls = []
+
+    def complete(self, **kwargs):
+        self.calls.append(kwargs)
+        if not self.responses:
+            raise AssertionError("unexpected finalizer call")
+        content, finish, done = self.responses.pop(0)
+        return FinalizerResponse(
+            content=content,
+            headers_s=0.01,
+            first_content_s=0.02,
+            elapsed_s=0.03,
+            finish_reasons=(finish,),
+            done_seen=done,
+            usage={"prompt_tokens": 10, "completion_tokens": 10, "total_tokens": 20},
+        )
+
+
 class StructuredFinalizerTests(unittest.TestCase):
     def catalog(self):
         catalog = EvidenceCatalog("t1", "s1")
@@ -80,6 +101,7 @@ class StructuredFinalizerTests(unittest.TestCase):
         self.assertEqual(len(client.calls), 1)
         self.assertEqual(client.calls[0]["temperature"], 0)
         self.assertEqual(client.calls[0]["max_tokens"], 768)
+        self.assertEqual(result.retry_count, 0)
 
     def test_facts_from_one_source_are_grouped_for_readability(self):
         catalog = EvidenceCatalog("t1", "s1")
@@ -123,7 +145,7 @@ class StructuredFinalizerTests(unittest.TestCase):
                 },
             )
 
-        _system, user = build_structured_prompts("analyze", catalog)
+        system, user = build_structured_prompts("analyze", catalog)
 
         self.assertEqual(user.count("[evidence_block type=command_line"), 1)
         self.assertEqual(user.count("command_preview="), 1)
@@ -132,6 +154,7 @@ class StructuredFinalizerTests(unittest.TestCase):
         for ref in catalog.refs:
             self.assertIn(ref + " |", user)
         self.assertLess(len(user), 12000)
+        self.assertIn("每个 evidence_refs 最多 4 个", system)
 
     def test_causal_hypothesis_kind_alias_is_safely_normalized_to_inference(self):
         content = '''{
@@ -202,15 +225,71 @@ class StructuredFinalizerTests(unittest.TestCase):
         self.assertIn("claims[0].fact_requires_evidence", result.finalization.errors)
         self.assertIsNone(result.finalization.rendered)
 
-    def test_transport_length_is_reported_as_truncation_before_json_parse(self):
-        result = StructuredFinalizer(
-            FakeClient('{"claims":[{"id":"C1"', finish="length"),
-            model="m",
-        ).run(user_request="diagnose", catalog=self.catalog())
+    def test_claim_rejects_more_than_four_evidence_refs(self):
+        catalog = EvidenceCatalog("t1", "s1")
+        for index in range(5):
+            catalog.add(source=f"source-{index}.txt", raw=f"value={index}")
+        content = '''{
+          "claims": [{
+            "id": "C1",
+            "kind": "fact",
+            "topic": "too many refs",
+            "evidence_refs": ["E1", "E2", "E3", "E4", "E5"],
+            "confidence": "high",
+            "scope": "component",
+            "relation": "observed"
+          }],
+          "summary_claim_ids": ["C1"]
+        }'''
+        result = StructuredFinalizer(FakeClient(content), model="m").run(
+            user_request="diagnose",
+            catalog=catalog,
+        )
+        self.assertFalse(result.valid)
+        self.assertIn("claims[0].evidence_refs_limit", result.finalization.errors)
+
+    def test_length_truncation_retries_once_and_can_recover(self):
+        valid = '''{
+          "claims": [{
+            "id": "C1",
+            "kind": "fact",
+            "topic": "worker exit",
+            "evidence_refs": ["E1"],
+            "confidence": "high",
+            "scope": "event",
+            "relation": "observed"
+          }],
+          "summary_claim_ids": ["C1"]
+        }'''
+        client = SequenceClient([
+            ('{"claims":[{"id":"C1"', "length", True),
+            (valid, "stop", True),
+        ])
+        result = StructuredFinalizer(client, model="m").run(
+            user_request="diagnose",
+            catalog=self.catalog(),
+        )
+
+        self.assertTrue(result.valid)
+        self.assertEqual(result.retry_count, 1)
+        self.assertEqual(len(client.calls), 2)
+        self.assertEqual(client.calls[0]["max_tokens"], 768)
+        self.assertEqual(client.calls[1]["max_tokens"], 1536)
+        self.assertIn("[长度恢复]", client.calls[1]["system_prompt"])
+
+    def test_transport_length_is_reported_as_truncation_after_one_retry(self):
+        client = FakeClient('{"claims":[{"id":"C1"', finish="length")
+        result = StructuredFinalizer(client, model="m").run(
+            user_request="diagnose",
+            catalog=self.catalog(),
+        )
         self.assertFalse(result.valid)
         self.assertEqual(result.parse_error, "structured_finalizer_truncated")
         self.assertIsNone(result.payload)
         self.assertIsNone(result.finalization)
+        self.assertEqual(result.retry_count, 1)
+        self.assertEqual(len(client.calls), 2)
+        self.assertEqual(client.calls[1]["max_tokens"], 1536)
 
     def test_incomplete_stream_is_reported_without_parse_attempt(self):
         result = StructuredFinalizer(
