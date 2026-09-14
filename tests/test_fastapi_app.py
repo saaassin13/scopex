@@ -17,14 +17,21 @@ class StubService:
     def shutdown(self, timeout_s=10.0):
         self.shutdown_calls.append(timeout_s)
 
-    def create_task(self, message):
-        self.calls.append(("create", message))
+    def create_task(self, message, **kwargs):
+        self.calls.append(("create", message, kwargs))
         if message == "busy":
             raise TaskBusyError("active task exists")
-        return {"id": "task-1", "state": "CREATED", "user_request": message}
+        return {
+            "id": "task-1",
+            "state": "CREATED",
+            "user_request": message,
+            "mode": kwargs.get("mode", "task"),
+            "trigger_type": kwargs.get("trigger_type", "manual"),
+        }
 
-    def list_tasks(self):
-        return [{"id": "task-1", "state": "COMPLETED"}]
+    def list_tasks(self, *, mode=None):
+        row = {"id": "task-1", "state": "COMPLETED", "mode": mode or "task"}
+        return [row]
 
     def get_task(self, task_id):
         if task_id == "missing":
@@ -47,6 +54,14 @@ class StubService:
         self.get_task(task_id)
         return {"task_id": task_id, "available": False}
 
+    def get_evaluation(self, task_id):
+        self.get_task(task_id)
+        return None
+
+    def set_evaluation(self, task_id, *, rating, tags=None, note=""):
+        self.get_task(task_id)
+        return {"task_id": task_id, "rating": rating, "tags": tags or [], "note": note}
+
     def stop(self, task_id, message=""):
         if task_id == "conflict":
             raise TaskConflictError("stop requires RUNNING")
@@ -65,9 +80,7 @@ class StubService:
 class FastApiRuntimeTests(unittest.TestCase):
     def setUp(self):
         self.service = StubService()
-        self.client_ctx = TestClient(
-            create_app(self.service, shutdown_timeout_s=7.5)
-        )
+        self.client_ctx = TestClient(create_app(self.service, shutdown_timeout_s=7.5))
         self.client = self.client_ctx.__enter__()
 
     def tearDown(self):
@@ -77,10 +90,7 @@ class FastApiRuntimeTests(unittest.TestCase):
         self.assertEqual(self.client.get("/health").json()["status"], "ok")
         self.assertEqual(self.client.get("/tasks").json()["tasks"][0]["id"], "task-1")
         self.assertEqual(self.client.get("/tasks/task-1").json()["state"], "RUNNING")
-        self.assertEqual(
-            self.client.get("/tasks/task-1/evidence").json()["items"][0]["ref"],
-            "E1",
-        )
+        self.assertEqual(self.client.get("/tasks/task-1/evidence").json()["items"][0]["ref"], "E1")
         self.assertFalse(self.client.get("/tasks/task-1/result").json()["available"])
 
     def test_events_cursor(self):
@@ -90,10 +100,14 @@ class FastApiRuntimeTests(unittest.TestCase):
         self.assertEqual([row["seq"] for row in payload["events"]], [3])
         self.assertEqual(payload["next_after"], 3)
 
-    def test_create_and_controls(self):
+    def test_create_task_conversation_and_controls(self):
         created = self.client.post("/tasks", json={"message": "diagnose"})
         self.assertEqual(created.status_code, 202)
-        self.assertEqual(created.json()["id"], "task-1")
+        self.assertEqual(created.json()["mode"], "task")
+
+        chat = self.client.post("/conversations", json={"message": "what skills are available"})
+        self.assertEqual(chat.status_code, 202)
+        self.assertEqual(chat.json()["mode"], "conversation")
 
         stopped = self.client.post("/tasks/task-1/stop", json={"message": "pause"})
         self.assertEqual(stopped.status_code, 202)
@@ -106,6 +120,15 @@ class FastApiRuntimeTests(unittest.TestCase):
         steered = self.client.post("/tasks/task-1/steer", json={"message": "check system"})
         self.assertEqual(steered.status_code, 202)
         self.assertEqual(steered.json()["state"], "RUNNING")
+
+    def test_evaluation(self):
+        response = self.client.post(
+            "/tasks/task-1/evaluation",
+            json={"rating": "down", "tags": ["hard_to_read"], "note": "too mechanical"},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["rating"], "down")
+        self.assertIsNone(self.client.get("/tasks/task-1/evaluation").json()["evaluation"])
 
     def test_machine_readable_errors_and_validation(self):
         missing = self.client.get("/tasks/missing")
