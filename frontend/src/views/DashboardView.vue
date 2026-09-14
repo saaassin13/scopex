@@ -9,6 +9,7 @@ const tasks = ref<TaskSnapshot[]>([])
 const calendarDays = ref<TaskCalendarDay[]>([])
 const message = ref('')
 const loading = ref(false)
+const deletingId = ref('')
 const error = ref('')
 const now = new Date()
 const selectedMonth = ref(`${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`)
@@ -26,6 +27,10 @@ function duration(task: TaskSnapshot) {
   const sec = Math.max(0, Math.round(task.duration_ms / 1000))
   if (sec < 60) return `${sec}s`
   return `${Math.floor(sec / 60)}m ${sec % 60}s`
+}
+
+function canDelete(task: TaskSnapshot) {
+  return ['COMPLETED', 'FAILED', 'CANCELLED'].includes(task.state)
 }
 
 const monthDate = computed(() => {
@@ -93,6 +98,22 @@ async function createEntry() {
     error.value = exc instanceof ApiError ? `${exc.code}: ${exc.message}` : String(exc)
   } finally {
     loading.value = false
+  }
+}
+
+async function deleteEntry(task: TaskSnapshot) {
+  if (!canDelete(task) || deletingId.value) return
+  const ok = window.confirm('删除后会移除此 Run 的结果、事实依据、技术记录、临时工作目录和已导出的复盘包。原始日志/图片/JSON/点云不会删除。继续吗？')
+  if (!ok) return
+  deletingId.value = task.id
+  error.value = ''
+  try {
+    await api.deleteTask(task.id)
+    await refresh()
+  } catch (exc) {
+    error.value = exc instanceof ApiError ? `${exc.code}: ${exc.message}` : String(exc)
+  } finally {
+    deletingId.value = ''
   }
 }
 
@@ -173,19 +194,21 @@ onBeforeUnmount(() => timer && window.clearInterval(timer))
           <button class="ghost-button" @click="refresh">刷新</button>
         </div>
         <div v-if="!tasks.length" class="empty-state">当天没有执行记录。</div>
-        <button
-          v-for="task in tasks"
-          :key="task.id"
-          class="task-row"
-          @click="router.push(`/tasks/${task.id}`)"
-        >
+        <div v-for="task in tasks" :key="task.id" class="task-row task-row-with-action" @click="router.push(`/tasks/${task.id}`)">
           <div class="task-row-top">
             <span class="state-pill" :data-state="task.state">{{ task.state }}</span>
             <span class="mode-badge">{{ task.trigger_type === 'schedule' ? '定时' : '手动' }}</span>
+            <button
+              v-if="canDelete(task)"
+              class="task-delete-button"
+              :disabled="deletingId === task.id"
+              title="删除执行记录"
+              @click.stop="deleteEntry(task)"
+            >{{ deletingId === task.id ? '…' : '删除' }}</button>
           </div>
           <strong>{{ task.user_request || task.id }}</strong>
           <small>{{ fmt(task.started_at || task.created_at) }}<template v-if="duration(task)"> · {{ duration(task) }}</template></small>
-        </button>
+        </div>
       </aside>
     </div>
   </section>
