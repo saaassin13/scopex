@@ -14,6 +14,7 @@ from scopex.evidence.collector import EvidenceCollector
 from scopex.evidence.extractor import EvidenceExtractionPipeline, EvidenceExtractor
 from scopex.evidence.projector import EvidenceProjector
 from scopex.events.progress import EventSink, EventType
+from scopex.finalizer.report import ConstrainedReportComposer
 from scopex.finalizer.service import FinalizationResult, FinalizationService
 from scopex.finalizer.structured import StructuredFinalizer, StructuredFinalizerResult
 from scopex.runtime.controller import TaskController
@@ -58,6 +59,7 @@ class InvestigationCoordinator:
         steering: PendingSteeringQueue | None = None,
         evidence_pipeline: EvidenceProjector | None = None,
         audit: RuntimeAudit | None = None,
+        report_composer: ConstrainedReportComposer | None = None,
         control_lock=None,
     ) -> None:
         self.task = task
@@ -72,6 +74,7 @@ class InvestigationCoordinator:
         self.steering = steering or PendingSteeringQueue()
         self.evidence_pipeline = evidence_pipeline
         self.audit = audit
+        self.report_composer = report_composer
         self._control_lock = control_lock or threading.RLock()
         self._turn_lock = threading.RLock()
         self._started_at: float | None = None
@@ -94,6 +97,7 @@ class InvestigationCoordinator:
         evidence_projector_factory: Callable[[EvidenceCollector], EvidenceProjector] | None = None,
         extractors: Iterable[EvidenceExtractor] = (),
         audit: RuntimeAudit | None = None,
+        report_composer: ConstrainedReportComposer | None = None,
     ) -> "InvestigationCoordinator":
         controller = TaskController(task, session, events)
         stop_gate = SafeStopGate()
@@ -148,6 +152,7 @@ class InvestigationCoordinator:
             steering=steering,
             evidence_pipeline=evidence_pipeline,
             audit=audit,
+            report_composer=report_composer,
             control_lock=control_lock,
         )
 
@@ -254,13 +259,6 @@ class InvestigationCoordinator:
         return decision
 
     def begin_runtime_limit_finalization(self, reason: str) -> tuple[str, ...]:
-        """Finalize from collected Evidence after a hard runtime budget boundary.
-
-        Runtime budgets are not convergence signals and do not decide what the
-        Agent should investigate next. They only say that this OpenClaw turn may
-        not consume more of the constrained resource.
-        """
-
         if not isinstance(reason, str) or not reason:
             raise ValueError("runtime limit reason is required")
         reasons = ("budget_reached", reason)
@@ -270,14 +268,6 @@ class InvestigationCoordinator:
         return reasons
 
     def begin_runtime_guard_finalization(self, reason: str) -> tuple[str, ...]:
-        """Finalize current facts after an OpenClaw-owned safety/convergence guard.
-
-        The guard remains part of the Agent runtime. ScopeX does not reproduce
-        its detector or decide a replacement investigation step; it only turns a
-        terminal guard boundary into a trustworthy product result when Evidence
-        already exists.
-        """
-
         if not isinstance(reason, str) or not reason:
             raise ValueError("runtime guard reason is required")
         reasons = ("runtime_guard_reached", reason)
@@ -311,6 +301,8 @@ class InvestigationCoordinator:
     def finish_fresh_finalization(
         self,
         finalizer: StructuredFinalizer,
+        *,
+        report_composer: ConstrainedReportComposer | None = None,
     ) -> StructuredFinalizerResult:
         if self.controller.state is not TaskState.FINALIZING:
             raise ValueError("task must be FINALIZING")
@@ -322,7 +314,22 @@ class InvestigationCoordinator:
             self.controller.fail("fresh_structured_finalizer_failed")
             self._snapshot()
             return result
+
         self._persist_structured_result(result, published_state=TaskState.COMPLETED)
+        composer = report_composer or self.report_composer
+        if (
+            composer is not None
+            and result.finalization is not None
+            and result.finalization.claims is not None
+            and self.audit is not None
+        ):
+            report_result = composer.run(
+                user_request=self.task.user_request,
+                claims=result.finalization.claims,
+                catalog=self.catalog,
+            )
+            self.audit.persist_report_result(report_result)
+
         self.controller.finalization_completed()
         self.controller.complete()
         self._snapshot()
@@ -333,9 +340,10 @@ class InvestigationCoordinator:
         finalizer: StructuredFinalizer,
         *,
         goal_satisfied: bool = False,
+        report_composer: ConstrainedReportComposer | None = None,
     ) -> StructuredFinalizerResult:
         self.begin_finalization(goal_satisfied=goal_satisfied)
-        return self.finish_fresh_finalization(finalizer)
+        return self.finish_fresh_finalization(finalizer, report_composer=report_composer)
 
     @property
     def metrics(self) -> InvestigationMetrics:

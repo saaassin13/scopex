@@ -10,6 +10,17 @@ def utcnow() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _duration_ms(started_at: str | None, finished_at: str | None) -> int | None:
+    if not started_at or not finished_at:
+        return None
+    try:
+        start = datetime.fromisoformat(started_at)
+        finish = datetime.fromisoformat(finished_at)
+    except ValueError:
+        return None
+    return max(0, int(round((finish - start).total_seconds() * 1000)))
+
+
 class TaskState(str, Enum):
     CREATED = "CREATED"
     RUNNING = "RUNNING"
@@ -49,6 +60,13 @@ class Task:
     updated_at: str = field(default_factory=utcnow)
     metadata: dict[str, Any] = field(default_factory=dict)
     last_reason: str | None = None
+    mode: str = "task"
+    trigger_type: str = "manual"
+    schedule_id: str | None = None
+    scheduled_for: str | None = None
+    started_at: str | None = None
+    finished_at: str | None = None
+    duration_ms: int | None = None
 
     def transition(self, target: TaskState, *, reason: str | None = None) -> None:
         if not isinstance(target, TaskState):
@@ -57,9 +75,15 @@ class Task:
             return
         if target not in _ALLOWED[self.state]:
             raise ValueError(f"invalid task transition: {self.state.value} -> {target.value}")
+        now = utcnow()
+        if target is TaskState.RUNNING and self.started_at is None:
+            self.started_at = now
         self.state = target
-        self.updated_at = utcnow()
+        self.updated_at = now
         self.last_reason = reason
+        if target in {TaskState.COMPLETED, TaskState.FAILED, TaskState.CANCELLED}:
+            self.finished_at = now
+            self.duration_ms = _duration_ms(self.started_at, self.finished_at)
 
     @property
     def terminal(self) -> bool:
@@ -75,4 +99,11 @@ class Task:
             "updated_at": self.updated_at,
             "metadata": dict(self.metadata),
             "last_reason": self.last_reason,
+            "mode": self.mode,
+            "trigger_type": self.trigger_type,
+            "schedule_id": self.schedule_id,
+            "scheduled_for": self.scheduled_for,
+            "started_at": self.started_at,
+            "finished_at": self.finished_at,
+            "duration_ms": self.duration_ms,
         }

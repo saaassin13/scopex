@@ -13,7 +13,7 @@
 #     --build-arg BASE_IMAGE=<current-sandbox-image> \
 #     -t scopex-sandbox-analysis:step7 .
 
-ARG BASE_IMAGE
+ARG BASE_IMAGE=scopex-sandbox-base:step6f
 FROM ${BASE_IMAGE}
 
 ARG TUNA_MIRROR=https://mirrors.tuna.tsinghua.edu.cn

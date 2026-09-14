@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import hashlib
+import json
 import mimetypes
 from pathlib import Path, PurePosixPath
 from typing import Protocol
@@ -13,20 +14,15 @@ from scopex.evidence.collector import EvidenceCollector
 
 _OPENCLAW_LOOP_WARNING_PREFIX = "[System note: Tool-loop warning after "
 _OPENCLAW_LOOP_RECOVERY_PREFIX = "Do not repeat this exact tool action."
+_INTERNAL_READ_PREFIXES = (
+    "/workspace/skills/",
+)
+_INTERNAL_READ_EXACT = {
+    "/workspace/scopex-data-catalog.json",
+}
 
 
 def _is_openclaw_runtime_control_line(raw_line: str) -> bool:
-    """Return True only for reserved OpenClaw loop-control annotations.
-
-    OpenClaw may append warning text to an otherwise successful tool result, or
-    replace a blocked tool result with a CRITICAL control message. Those strings
-    are runtime control-plane feedback to the model, not observations from the
-    underlying file/command and therefore must never become claim-grade Evidence.
-
-    The match is intentionally narrow and tied to OpenClaw's reserved messages;
-    ordinary tool output remains untouched.
-    """
-
     line = raw_line.strip()
     if line.startswith(_OPENCLAW_LOOP_WARNING_PREFIX):
         return True
@@ -39,6 +35,12 @@ def _is_openclaw_runtime_control_line(raw_line: str) -> bool:
             and ("runaway loop" in lowered or "global circuit breaker" in lowered)
         )
     return False
+
+
+def _is_internal_read_target(target: str) -> bool:
+    if target in _INTERNAL_READ_EXACT:
+        return True
+    return any(target.startswith(prefix) for prefix in _INTERNAL_READ_PREFIXES)
 
 
 class EvidenceProjector(Protocol):
@@ -55,11 +57,7 @@ class ResolvedBoundPath:
 
 
 class DataBindResolver:
-    """Resolve sandbox-visible paths back to configured read-only host roots.
-
-    This is provenance plumbing only. It never discovers files and never grants
-    access outside the explicit `HOST:AGENT:ro` bind set.
-    """
+    """Resolve sandbox-visible paths back to configured read-only host roots."""
 
     def __init__(self, binds: tuple[str, ...] = ()) -> None:
         roots: list[tuple[Path, PurePosixPath]] = []
@@ -98,23 +96,25 @@ class DataBindResolver:
 
 
 class OpenClawEvidenceProjector:
-    """Project claim-grade source material from OpenClaw trace into Evidence.
+    """Project claim-grade observations from the OpenClaw investigation trace.
 
-    OpenClaw remains the source of truth for the full transcript. This class
-    freezes only minimal material needed for stable citation. It contains no
-    business diagnosis logic and does not execute tools.
+    The full OpenClaw transcript remains the technical investigation record.
+    Workspace Skills and the data catalog are control/knowledge context and are
+    never promoted to claim-grade Evidence.
 
-    Image working-set rule:
-    - large multi-image ``view_image`` calls are screening/context only;
-    - a final bounded original-image set (up to ``max_claim_images``) may become
-      immutable image Evidence in one call.
+    Task-scratch reads may still be projected as derived working Evidence so
+    existing large-data/compaction tasks can finalize from bounded reductions,
+    but they are marked ``evidence_role=working_derived`` and excluded from the
+    normal User Facts UI.
 
-    This lets an Agent inspect many images in coarse batches and then narrow to a
-    small final set without forcing singleton re-open calls solely for ScopeX's
-    evidence plumbing. Every promoted original is still independently resolved,
-    hashed and re-opened by the Fresh Finalizer. Scratch-derived previews remain
-    useful for investigation but cannot become strong image Evidence because they
-    are outside the configured read-only source binds.
+    Stable ScopeX scripts can emit a compact JSON object with
+    ``scopex_role=business_facts``. That object becomes one structured Evidence
+    item instead of hundreds of line Evidence refs. ``scopex_role=locator`` is
+    routing/working-set metadata and remains Trace-only.
+
+    Visual Evidence is stricter: only a bounded call whose tool result confirms
+    a complete view may be promoted. If OpenClaw reports omitted/truncated image
+    context, no image from that call becomes claim-grade.
     """
 
     def __init__(
@@ -128,7 +128,7 @@ class OpenClawEvidenceProjector:
         max_exec_lines: int = 256,
         max_exec_line_chars: int = 4096,
         max_exec_chars: int = 12_000,
-        max_claim_images: int = 4,
+        max_claim_images: int = 2,
     ) -> None:
         if (
             max_read_lines <= 0
@@ -166,16 +166,17 @@ class OpenClawEvidenceProjector:
             elif call.name == "exec":
                 added.extend(self._project_exec(call, result))
             elif call.name == "view_image":
-                added.extend(self._project_images(call))
+                added.extend(self._project_images(call, result))
             self._processed_call_ids.add(call.id)
         return tuple(added)
 
     def _project_read(self, call: ToolCall, result: ToolResult) -> tuple[EvidenceItem, ...]:
         target = tool_target(call)
-        if not target or not result.content.strip():
+        if not target or not result.content.strip() or _is_internal_read_target(target):
             return ()
         added: list[EvidenceItem] = []
         nonempty_seen = 0
+        derived_working = target.startswith("/task-scratch/")
         for line_number, raw_line in enumerate(result.content.splitlines(), 1):
             if not raw_line.strip() or _is_openclaw_runtime_control_line(raw_line):
                 continue
@@ -184,32 +185,68 @@ class OpenClawEvidenceProjector:
                 break
             truncated = len(raw_line) > self.max_read_line_chars
             line = raw_line[: self.max_read_line_chars] if truncated else raw_line
+            metadata = {
+                "evidence_type": "file_line",
+                "tool": "read",
+                "line_number": line_number,
+                "line_truncated": truncated,
+                "original_line_chars": len(raw_line),
+            }
+            if derived_working:
+                metadata["evidence_role"] = "working_derived"
             added.append(
                 self.collector.add(
                     source=target,
                     raw=line,
                     tool_call_id=call.id,
-                    metadata={
-                        "evidence_type": "file_line",
-                        "tool": "read",
-                        "line_number": line_number,
-                        "line_truncated": truncated,
-                        "original_line_chars": len(raw_line),
-                    },
+                    metadata=metadata,
                 )
             )
         return tuple(added)
 
+    @staticmethod
+    def _structured_payload(content: str) -> dict | None:
+        text = content.strip()
+        if not text.startswith("{"):
+            return None
+        try:
+            value = json.loads(text)
+        except (TypeError, ValueError):
+            return None
+        return value if isinstance(value, dict) else None
+
+    def _compact_business_facts(self, payload: dict) -> str:
+        keep: dict = {}
+        for key in (
+            "scopex_role",
+            "schema",
+            "source",
+            "window",
+            "facts",
+            "summary",
+            "quality",
+            "candidate_events_total",
+            "top_candidates",
+            "logs",
+            "per_file_matching_samples",
+            "details_out",
+            "events_out",
+        ):
+            if key in payload:
+                keep[key] = payload[key]
+        if isinstance(keep.get("top_candidates"), list):
+            keep["top_candidates"] = keep["top_candidates"][:10]
+        text = json.dumps(keep, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
+        if len(text) <= self.max_exec_chars:
+            return text
+        for key in ("logs", "per_file_matching_samples", "top_candidates", "quality"):
+            keep.pop(key, None)
+            text = json.dumps(keep, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
+            if len(text) <= self.max_exec_chars:
+                return text
+        return text[: self.max_exec_chars]
+
     def _project_exec(self, call: ToolCall, result: ToolResult) -> tuple[EvidenceItem, ...]:
-        """Freeze command output at claim-grade line granularity.
-
-        One shell command often reports several independent facts (CPU count,
-        memory, process rows, etc.). Treating the entire stdout as one E ref makes
-        distinct facts share the same evidence identity and collide in claim
-        validation. We therefore freeze bounded non-empty lines while retaining
-        one SHA-256 for the complete tool result on every line.
-        """
-
         content = result.content
         if not content.strip():
             return ()
@@ -220,31 +257,52 @@ class OpenClawEvidenceProjector:
         call_host = call.arguments.get("host")
         actual_host = call_host if isinstance(call_host, str) and call_host else self.exec_host
 
+        structured = self._structured_payload(content)
+        if structured is not None:
+            role = structured.get("scopex_role")
+            if role == "locator":
+                return ()
+            if role == "business_facts":
+                raw = self._compact_business_facts(structured)
+                return (
+                    self.collector.add(
+                        source=f"business_facts:{structured.get('source') or call.id}",
+                        raw=raw,
+                        tool_call_id=call.id,
+                        metadata={
+                            "evidence_type": "structured_business_facts",
+                            "evidence_role": "business_facts",
+                            "tool": "exec",
+                            "exec_host": actual_host,
+                            "command": command if isinstance(command, str) else None,
+                            "title": title if isinstance(title, str) else None,
+                            "result_sha256": digest,
+                            "original_result_chars": len(content),
+                        },
+                    ),
+                )
+
         added: list[EvidenceItem] = []
         nonempty_seen = 0
         projected_chars = 0
         output_truncated = False
-
         for line_number, raw_line in enumerate(content.splitlines(), 1):
             if not raw_line.strip() or _is_openclaw_runtime_control_line(raw_line):
                 continue
             if nonempty_seen >= self.max_exec_lines or projected_chars >= self.max_exec_chars:
                 output_truncated = True
                 break
-
             nonempty_seen += 1
             remaining = self.max_exec_chars - projected_chars
             per_line_limit = min(self.max_exec_line_chars, remaining)
             if per_line_limit <= 0:
                 output_truncated = True
                 break
-
             line_truncated = len(raw_line) > per_line_limit
             line = raw_line[:per_line_limit] if line_truncated else raw_line
             projected_chars += len(line)
             if line_truncated:
                 output_truncated = True
-
             added.append(
                 self.collector.add(
                     source=f"exec:{call.id}",
@@ -265,7 +323,6 @@ class OpenClawEvidenceProjector:
                     },
                 )
             )
-
         return tuple(added)
 
     @staticmethod
@@ -279,21 +336,31 @@ class OpenClawEvidenceProjector:
             paths.extend(value for value in many if isinstance(value, str) and value)
         return tuple(dict.fromkeys(paths))
 
-    def _project_images(self, call: ToolCall) -> tuple[EvidenceItem, ...]:
-        paths = self._image_paths(call)
-        if not paths or len(paths) > self.max_claim_images:
-            # Large image sets are a visual working set, not final claim-grade
-            # Evidence. The agent may narrow them in later calls.
-            return ()
+    @staticmethod
+    def _visual_result_complete(result: ToolResult) -> bool:
+        lowered = result.content.lower()
+        incomplete_markers = (
+            "omitted from context",
+            "image omitted",
+            "images omitted",
+            "truncated image",
+            "images truncated",
+        )
+        return not any(marker in lowered for marker in incomplete_markers)
 
+    def _project_images(self, call: ToolCall, result: ToolResult) -> tuple[EvidenceItem, ...]:
+        paths = self._image_paths(call)
+        if (
+            not paths
+            or len(paths) > self.max_claim_images
+            or not self._visual_result_complete(result)
+        ):
+            return ()
         prompt = call.arguments.get("prompt")
         added: list[EvidenceItem] = []
         for path in paths:
             resolved = self.bind_resolver.resolve(path)
             if resolved is None:
-                # Strong image evidence requires immutable identity. Scratch-derived
-                # previews/contact sheets and files outside read-only source roots are
-                # useful for investigation but intentionally not promoted.
                 continue
             digest = self._sha256_file(resolved.host_path)
             media_type = mimetypes.guess_type(resolved.host_path.name)[0] or "application/octet-stream"

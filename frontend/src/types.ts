@@ -5,7 +5,30 @@ export interface TaskSnapshot {
   session_key?: string
   created_at?: string
   updated_at?: string
+  started_at?: string | null
+  finished_at?: string | null
+  duration_ms?: number | null
+  mode?: 'task' | 'conversation' | 'auto'
+  trigger_type?: 'manual' | 'schedule'
+  schedule_id?: string | null
+  scheduled_for?: string | null
   metadata?: Record<string, unknown>
+  last_reason?: string | null
+}
+
+export interface TaskCalendarDay {
+  date: string
+  count: number
+  completed: number
+  failed: number
+  running: number
+  scheduled: number
+  manual: number
+}
+
+export interface TaskCalendarResponse {
+  month: string
+  days: TaskCalendarDay[]
 }
 
 export interface ProgressEvent {
@@ -45,8 +68,26 @@ export interface ProductAnswer {
   recommendations: AnswerItem[]
 }
 
+export interface ReportItem {
+  text: string
+  claim_ids: string[]
+  evidence_refs: string[]
+}
+
+export interface ProductReport {
+  version: 1
+  conclusion: ReportItem
+  facts: ReportItem[]
+  possibilities: ReportItem[]
+  next_steps: ReportItem[]
+  limitations: ReportItem[]
+}
+
 export interface ResultPayload extends Record<string, unknown> {
+  report?: ProductReport
   answer?: ProductAnswer
+  answer_text?: string
+  mode?: string
 }
 
 export interface ResultResponse {
@@ -62,4 +103,31 @@ export interface EventsResponse {
   after: number
   next_after: number
   events: ProgressEvent[]
+}
+
+export interface ScheduleSnapshot {
+  id: string
+  name: string
+  message: string
+  kind: 'interval' | 'daily' | 'once'
+  interval_minutes?: number | null
+  daily_time?: string | null
+  run_at?: string | null
+  enabled: boolean
+  created_at: string
+  updated_at: string
+  next_run_at?: string | null
+  last_run_at?: string | null
+  last_status?: string | null
+  last_task_id?: string | null
+  missed_count?: number
+  last_missed_at?: string | null
+}
+
+export interface Evaluation {
+  task_id: string
+  rating: 'up' | 'down'
+  tags: string[]
+  note: string
+  updated_at: string
 }

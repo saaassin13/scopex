@@ -8,6 +8,7 @@ from scopex.evidence.catalog import EvidenceCatalog
 from scopex.events.progress import EventSink, EventType, ProgressEvent
 from scopex.finalizer.answer import compose_product_answer
 from scopex.finalizer.claims import claim_set_from_dict
+from scopex.finalizer.report import ReportComposerResult
 from scopex.finalizer.validator import normalize_claim_payload, validate_claim_payload
 from scopex.runtime.session import Session
 from scopex.runtime.task import Task
@@ -65,11 +66,48 @@ class RuntimeAudit:
         self.store.write_json(self.task_id, "claims.json", payload)
 
     def persist_answer(self, payload: dict[str, Any]) -> None:
+        """Persist deterministic product fallback."""
         self.store.write_json(self.task_id, "answer.json", payload)
+
+    def _patch_result(self, **updates: Any) -> None:
+        try:
+            result = self.store.read_json(self.task_id, "result.json")
+        except (FileNotFoundError, OSError, ValueError):
+            result = {}
+        if not isinstance(result, dict):
+            result = {}
+        result.update(updates)
+        self.store.write_json(self.task_id, "result.json", result)
+
+    def persist_report(self, payload: dict[str, Any]) -> None:
+        """Persist primary user-facing report and attach it to result.json."""
+        self.store.write_json(self.task_id, "report.json", payload)
+        self._patch_result(report=payload)
+
+    def persist_report_result(self, result: ReportComposerResult) -> None:
+        meta = {
+            "valid": result.valid,
+            "errors": list(result.errors),
+            "parse_error": result.parse_error,
+            "finish_reasons": list(result.transport.finish_reasons),
+            "done_seen": result.transport.done_seen,
+            "elapsed_s": result.transport.elapsed_s,
+            "usage": result.transport.usage,
+        }
+        if result.valid and result.report is not None:
+            payload = result.report.to_dict()
+            self.persist_report(payload)
+            self.store.write_json(self.task_id, "report-meta.json", meta)
+            self._patch_result(report=payload, report_meta=meta)
+            return
+        self.store.write_json(self.task_id, "report-error.json", meta)
+        self._patch_result(report_meta=meta)
 
     def persist_result(self, result: dict[str, Any], *, rendered: str | None = None) -> None:
         payload = dict(result)
         if payload.get("valid") is True:
+            # Deterministic answer remains a trusted fallback if the model-based
+            # Report Composer later fails transport/parse/reference validation.
             answer = self._build_product_answer()
             if answer is not None:
                 payload["answer"] = answer
@@ -84,12 +122,7 @@ class RuntimeAudit:
         self.persist_evidence(catalog)
 
     def _build_product_answer(self) -> dict[str, Any] | None:
-        """Re-validate persisted claims before creating the product projection.
-
-        This keeps Step 7 downstream of the existing trust boundary: answer.json
-        is derived only from claims that still validate against the frozen
-        Evidence snapshot. It never calls a model or tool.
-        """
+        """Re-validate persisted claims before creating deterministic fallback."""
 
         try:
             claim_payload = self.store.read_json(self.task_id, "claims.json")

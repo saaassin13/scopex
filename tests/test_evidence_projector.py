@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from pathlib import Path
 import tempfile
 import unittest
@@ -34,29 +35,40 @@ class EvidenceProjectorTests(unittest.TestCase):
             calls=(ToolCall("c1", "read", {"path": "/agent/app.log"}),),
             results=(ToolResult("c1", "first\n\nsecond\n"),),
         )
-
         projector.process_trace(trace)
-
         self.assertEqual([item.raw for item in catalog.items], ["first", "second"])
         self.assertEqual([item.metadata["line_number"] for item in catalog.items], [1, 3])
         self.assertTrue(all(item.metadata["evidence_type"] == "file_line" for item in catalog.items))
+
+    def test_workspace_skill_and_catalog_are_trace_only_while_scratch_is_working_derived(self):
+        catalog, _, projector = self.projector()
+        trace = AgentTrace(
+            calls=(
+                ToolCall("c-skill", "read", {"path": "/workspace/skills/encoder-health/SKILL.md"}),
+                ToolCall("c-catalog", "read", {"path": "/workspace/scopex-data-catalog.json"}),
+                ToolCall("c-scratch", "read", {"path": "/task-scratch/events.json"}),
+            ),
+            results=(
+                ToolResult("c-skill", "skill text"),
+                ToolResult("c-catalog", "catalog text"),
+                ToolResult("c-scratch", "scratch text"),
+            ),
+        )
+        projector.process_trace(trace)
+        self.assertEqual(len(catalog.items), 1)
+        item = catalog.items[0]
+        self.assertEqual(item.source, "/task-scratch/events.json")
+        self.assertEqual(item.raw, "scratch text")
+        self.assertEqual(item.metadata["evidence_role"], "working_derived")
 
     def test_exec_projects_claim_grade_lines_with_full_result_hash(self):
         catalog, _, projector = self.projector(exec_host="gateway")
         content = "20\nMem: 121Gi 56Gi 25Gi\nPID CPU MEM COMMAND\n123 88.0 2.4 vllm\n"
         trace = AgentTrace(
-            calls=(
-                ToolCall(
-                    "c2",
-                    "exec",
-                    {"command": "inspect-system", "title": "system snapshot"},
-                ),
-            ),
+            calls=(ToolCall("c2", "exec", {"command": "inspect-system", "title": "system snapshot"}),),
             results=(ToolResult("c2", content),),
         )
-
         projector.process_trace(trace)
-
         self.assertEqual(len(catalog.items), 4)
         self.assertEqual(
             [item.raw for item in catalog.items],
@@ -69,36 +81,58 @@ class EvidenceProjectorTests(unittest.TestCase):
         self.assertTrue(all(item.metadata["result_sha256"] == expected_hash for item in catalog.items))
         self.assertEqual([item.metadata["line_number"] for item in catalog.items], [1, 2, 3, 4])
 
+    def test_locator_output_is_trace_only(self):
+        catalog, _, projector = self.projector()
+        content = json.dumps({"scopex_role": "locator", "source": "cowdisinfect_logs", "files": ["a.log"]})
+        trace = AgentTrace(
+            calls=(ToolCall("c-locator", "exec", {"command": "python3 data_locator.py"}),),
+            results=(ToolResult("c-locator", content),),
+        )
+        projector.process_trace(trace)
+        self.assertEqual(catalog.items, ())
+
+    def test_business_facts_are_one_structured_evidence_item(self):
+        catalog, _, projector = self.projector()
+        content = json.dumps({
+            "scopex_role": "business_facts",
+            "schema": 2,
+            "source": "encoder-health",
+            "facts": {
+                "samples_in_window": 35244,
+                "invalid_samples": 0,
+                "negative_jump_count": 231,
+            },
+            "top_candidates": [{"type": "negative_jump_outlier_candidate", "delta_raw": -52}],
+        })
+        trace = AgentTrace(
+            calls=(ToolCall("c-facts", "exec", {"command": "python3 encoder_health.py"}),),
+            results=(ToolResult("c-facts", content),),
+        )
+        projector.process_trace(trace)
+        self.assertEqual(len(catalog.items), 1)
+        item = catalog.items[0]
+        self.assertEqual(item.metadata["evidence_type"], "structured_business_facts")
+        self.assertEqual(item.metadata["evidence_role"], "business_facts")
+        value = json.loads(item.raw)
+        self.assertEqual(value["facts"]["samples_in_window"], 35244)
+        self.assertEqual(value["facts"]["negative_jump_count"], 231)
+
     def test_exec_call_host_overrides_runtime_default_for_provenance(self):
         catalog, _, projector = self.projector(exec_host="sandbox")
         trace = AgentTrace(
-            calls=(
-                ToolCall(
-                    "c-host",
-                    "exec",
-                    {"command": "hostname", "host": "gateway"},
-                ),
-            ),
+            calls=(ToolCall("c-host", "exec", {"command": "hostname", "host": "gateway"}),),
             results=(ToolResult("c-host", "spark-host\n"),),
         )
-
         projector.process_trace(trace)
-
         self.assertEqual(catalog.items[0].metadata["exec_host"], "gateway")
 
     def test_exec_projection_is_bounded_by_lines_and_chars(self):
-        catalog, _, projector = self.projector(
-            max_exec_lines=2,
-            max_exec_line_chars=5,
-            max_exec_chars=8,
-        )
+        catalog, _, projector = self.projector(max_exec_lines=2, max_exec_line_chars=5, max_exec_chars=8)
         trace = AgentTrace(
             calls=(ToolCall("c-bounded", "exec", {"command": "x"}),),
             results=(ToolResult("c-bounded", "abcdef\n123456\nthird\n"),),
         )
-
         projector.process_trace(trace)
-
         self.assertEqual([item.raw for item in catalog.items], ["abcde", "123"])
         self.assertTrue(catalog.items[0].metadata["line_truncated"])
         self.assertTrue(catalog.items[1].metadata["line_truncated"])
@@ -113,21 +147,10 @@ class EvidenceProjectorTests(unittest.TestCase):
             bind = f"{root}:/agent-data:ro"
             catalog, _, projector = self.projector(binds=(bind,))
             trace = AgentTrace(
-                calls=(
-                    ToolCall(
-                        "c3",
-                        "view_image",
-                        {
-                            "path": "/agent-data/images/frame.jpg",
-                            "prompt": "inspect quality",
-                        },
-                    ),
-                ),
+                calls=(ToolCall("c3", "view_image", {"path": "/agent-data/images/frame.jpg", "prompt": "inspect quality"}),),
                 results=(ToolResult("c3", "Loaded 1 image into private model context"),),
             )
-
             projector.process_trace(trace)
-
             self.assertEqual(len(catalog.items), 1)
             item = catalog.items[0]
             self.assertEqual(item.source, "/agent-data/images/frame.jpg")
@@ -136,29 +159,13 @@ class EvidenceProjectorTests(unittest.TestCase):
             self.assertEqual(item.metadata["byte_size"], len(b"fake-jpeg-bytes"))
             self.assertEqual(item.metadata["media_type"], "image/jpeg")
             self.assertEqual(item.metadata["view_prompt"], "inspect quality")
-            self.assertEqual(
-                item.metadata["sha256"],
-                hashlib.sha256(b"fake-jpeg-bytes").hexdigest(),
-            )
+            self.assertEqual(item.metadata["sha256"], hashlib.sha256(b"fake-jpeg-bytes").hexdigest())
 
     def test_image_identity_includes_digest(self):
         catalog = EvidenceCatalog("task-1", "agent:sx:task-1")
-        first = catalog.add(
-            source="/agent-data/frame.jpg",
-            raw="image:frame.jpg",
-            metadata={"evidence_type": "image", "sha256": "a" * 64},
-        )
-        same = catalog.add(
-            source="/agent-data/frame.jpg",
-            raw="image:frame.jpg",
-            metadata={"evidence_type": "image", "sha256": "a" * 64},
-        )
-        changed = catalog.add(
-            source="/agent-data/frame.jpg",
-            raw="image:frame.jpg",
-            metadata={"evidence_type": "image", "sha256": "b" * 64},
-        )
-
+        first = catalog.add(source="/agent-data/frame.jpg", raw="image:frame.jpg", metadata={"evidence_type": "image", "sha256": "a" * 64})
+        same = catalog.add(source="/agent-data/frame.jpg", raw="image:frame.jpg", metadata={"evidence_type": "image", "sha256": "a" * 64})
+        changed = catalog.add(source="/agent-data/frame.jpg", raw="image:frame.jpg", metadata={"evidence_type": "image", "sha256": "b" * 64})
         self.assertEqual(first.ref, same.ref)
         self.assertNotEqual(first.ref, changed.ref)
         self.assertEqual(len(catalog.items), 2)
@@ -169,9 +176,7 @@ class EvidenceProjectorTests(unittest.TestCase):
             calls=(ToolCall("c4", "view_image", {"path": "/outside/frame.jpg"}),),
             results=(ToolResult("c4", "Loaded 1 image"),),
         )
-
         projector.process_trace(trace)
-
         self.assertEqual(catalog.items, ())
 
     def test_progress_card_is_not_evidence(self):
@@ -180,9 +185,7 @@ class EvidenceProjectorTests(unittest.TestCase):
             calls=(ToolCall("c5", "progress_card", {"action": "update"}),),
             results=(ToolResult("c5", "progress updated"),),
         )
-
         projector.process_trace(trace)
-
         self.assertEqual(catalog.items, ())
 
     def test_bind_resolver_never_escapes_configured_root(self):

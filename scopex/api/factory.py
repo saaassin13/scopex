@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
 import os
 from pathlib import Path
 
@@ -10,12 +11,17 @@ from scopex.evidence.media import EvidenceMediaLoader
 from scopex.evidence.projector import OpenClawEvidenceProjector
 from scopex.events.progress import EventSink
 from scopex.finalizer.client import StreamingFinalizerClient
+from scopex.finalizer.report import ConstrainedReportComposer
 from scopex.finalizer.structured import StructuredFinalizer
+from scopex.host_snapshot import write_current_host_snapshot
 from scopex.runtime.convergence import ConvergencePolicy
 from scopex.runtime.investigation import InvestigationCoordinator
 from scopex.runtime.session import Session
 from scopex.runtime.task import Task
 from scopex.storage.runtime_audit import RuntimeAudit
+
+
+HOST_SNAPSHOT_AGENT_DIR = "/scopex-host"
 
 
 @dataclass(frozen=True, slots=True)
@@ -28,16 +34,15 @@ class LocalRuntimeConfig:
     work_root: Path
     sandbox_image: str
     docker_host: str
-    # Per-OpenClaw-turn hard budgets. Step 6B's 48-image probe took ~439 s
-    # and 11 forwarded model requests, so the previous 180 s / 8 request POC
-    # defaults would reject a task that we have now proven useful and bounded.
     timeout_s: int = 600
     max_requests: int = 16
     max_tokens: int = 2048
     finalizer_max_tokens: int = 768
     finalizer_timeout_s: int = 180
+    report_max_tokens: int = 1024
     skills: tuple[str, ...] = ()
     data_binds: tuple[str, ...] = ()
+    data_catalog_summary: str = ""
     exec_host: str = "sandbox"
     exec_mode: str = "full"
     enable_view_image: bool = False
@@ -46,7 +51,7 @@ class LocalRuntimeConfig:
 
 
 class OpenClawRuntimeFactory:
-    """Create per-task production coordinators and fresh finalizers for the API."""
+    """Create per-task OpenClaw runtime plus no-tool product post-processors."""
 
     def __init__(self, config: LocalRuntimeConfig) -> None:
         self.config = config
@@ -66,8 +71,12 @@ class OpenClawRuntimeFactory:
             raise ValueError("max_requests must be between 2 and 30")
         if not 256 <= config.finalizer_max_tokens <= 1024:
             raise ValueError("finalizer_max_tokens must be between 256 and 1024")
+        if not 256 <= config.report_max_tokens <= 2048:
+            raise ValueError("report_max_tokens must be between 256 and 2048")
         if not 30 <= config.finalizer_timeout_s <= 600:
             raise ValueError("finalizer_timeout_s must be between 30 and 600")
+        if len(config.data_catalog_summary) > 8192:
+            raise ValueError("data_catalog_summary exceeds 8192 characters")
         config.work_root.mkdir(parents=True, exist_ok=True)
 
     def coordinator(
@@ -93,6 +102,28 @@ class OpenClawRuntimeFactory:
             raise ValueError("task scratch escaped work_root") from exc
         task_scratch_bind = f"{resolved_scratch}:{TASK_SCRATCH_PATH}:rw"
 
+        host_root = task_root / "host"
+        host_snapshot = host_root / "current.json"
+        try:
+            write_current_host_snapshot(host_snapshot)
+        except Exception as exc:
+            host_root.mkdir(parents=True, mode=0o700, exist_ok=True)
+            host_snapshot.write_text(
+                json.dumps(
+                    {
+                        "schema": 1,
+                        "source": "scopex_host_snapshot",
+                        "captured_at": None,
+                        "errors": {"collector": type(exc).__name__ + ": " + str(exc)[:400]},
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                ) + "\n",
+                encoding="utf-8",
+            )
+        host_bind = f"{host_root.resolve()}:/scopex-host:ro"
+        task_binds = tuple(self.config.data_binds) + (host_bind,)
+
         tools = ["read", "exec", "process"]
         if self.config.enable_view_image:
             tools.append("view_image")
@@ -116,8 +147,9 @@ class OpenClawRuntimeFactory:
             max_tokens=self.config.max_tokens,
             skills=self.config.skills,
             tools=tuple(tools),
-            sandbox_binds=self.config.data_binds,
+            sandbox_binds=task_binds,
             task_scratch_bind=task_scratch_bind,
+            data_catalog_summary=self.config.data_catalog_summary,
             exec_host=self.config.exec_host,
             exec_mode=self.config.exec_mode,
             compaction_enabled=self.config.enable_compaction,
@@ -127,15 +159,15 @@ class OpenClawRuntimeFactory:
             session=session,
             spec=spec,
             events=events,
-            # Hard request/time/context budgets belong to OpenClaw/ModelProxy.
-            # ScopeX convergence remains product-level only.
             convergence_policy=ConvergencePolicy(),
             evidence_projector_factory=lambda collector: OpenClawEvidenceProjector(
                 collector,
                 exec_host=self.config.exec_host,
-                sandbox_binds=self.config.data_binds,
+                sandbox_binds=task_binds,
+                max_claim_images=2,
             ),
             audit=audit,
+            report_composer=self.report_composer(),
         )
 
     def finalizer(self) -> StructuredFinalizer:
@@ -148,4 +180,15 @@ class OpenClawRuntimeFactory:
             model=self.config.model_id,
             max_tokens=self.config.finalizer_max_tokens,
             media_loader=EvidenceMediaLoader(self.config.data_binds),
+        )
+
+    def report_composer(self) -> ConstrainedReportComposer:
+        return ConstrainedReportComposer(
+            StreamingFinalizerClient(
+                self.config.base_url,
+                api_key=self.config.api_key,
+                timeout_s=self.config.finalizer_timeout_s,
+            ),
+            model=self.config.model_id,
+            max_tokens=self.config.report_max_tokens,
         )

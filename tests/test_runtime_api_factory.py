@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import json
 import tempfile
 import unittest
 
@@ -22,6 +23,7 @@ class RuntimeApiFactoryTests(unittest.TestCase):
             cli.chmod(0o755)
             workspace = root / "workspace"
             workspace.mkdir()
+            catalog_summary = "- cowdisinfect_logs: /agent-data/logs\nDo not recursively scan roots."
 
             config = LocalRuntimeConfig(
                 cli_path=cli,
@@ -35,6 +37,7 @@ class RuntimeApiFactoryTests(unittest.TestCase):
                 timeout_s=181,
                 max_requests=6,
                 data_binds=("/srv/logs:/agent-data/logs:ro",),
+                data_catalog_summary=catalog_summary,
                 exec_host="gateway",
                 exec_mode="full",
                 enable_view_image=True,
@@ -61,10 +64,16 @@ class RuntimeApiFactoryTests(unittest.TestCase):
             self.assertEqual(coordinator.agent.spec.timeout_s, 181)
             self.assertEqual(coordinator.agent.spec.max_requests, 6)
             self.assertTrue(coordinator.agent.spec.compaction_enabled)
-            self.assertEqual(
-                coordinator.agent.spec.sandbox_binds,
-                ("/srv/logs:/agent-data/logs:ro",),
-            )
+            self.assertEqual(coordinator.agent.spec.data_catalog_summary, catalog_summary)
+            binds = coordinator.agent.spec.sandbox_binds
+            self.assertEqual(binds[0], "/srv/logs:/agent-data/logs:ro")
+            self.assertEqual(len(binds), 2)
+            host_bind = binds[1]
+            self.assertTrue(host_bind.endswith(":/scopex-host:ro"))
+            host_root = Path(host_bind.rsplit(":", 2)[0])
+            self.assertEqual(host_root, (root / "work" / "task-1" / "host").resolve())
+            host_snapshot = json.loads((host_root / "current.json").read_text(encoding="utf-8"))
+            self.assertEqual(host_snapshot["source"], "scopex_host_snapshot")
             expected_scratch = (root / "work" / "task-1" / "scratch").resolve()
             self.assertTrue(expected_scratch.is_dir())
             self.assertEqual(
@@ -77,12 +86,7 @@ class RuntimeApiFactoryTests(unittest.TestCase):
                 coordinator.agent.spec.tools,
                 ("read", "exec", "process", "view_image", "progress_card"),
             )
-            self.assertIsInstance(
-                coordinator.evidence_pipeline,
-                OpenClawEvidenceProjector,
-            )
-            # Hard request/time budgets are propagated to OpenClaw/ModelProxy;
-            # ScopeX convergence no longer duplicates them.
+            self.assertIsInstance(coordinator.evidence_pipeline, OpenClawEvidenceProjector)
             self.assertEqual(coordinator.convergence_policy.max_stale_rounds, 3)
 
 

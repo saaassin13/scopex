@@ -7,6 +7,7 @@ from pathlib import Path
 
 from scopex.evidence.catalog import EvidenceCatalog
 from scopex.evidence.projector import DataBindResolver
+from scopex.model_capabilities import resolve_image_limit
 
 
 @dataclass(frozen=True, slots=True)
@@ -25,10 +26,11 @@ class EvidenceMediaLoader:
         self,
         sandbox_binds: tuple[str, ...] = (),
         *,
-        max_images: int = 4,
+        max_images: int | None = None,
         max_image_bytes: int = 10 * 1024 * 1024,
     ) -> None:
-        if max_images <= 0 or max_image_bytes <= 0:
+        max_images = resolve_image_limit(max_images)
+        if max_image_bytes <= 0:
             raise ValueError("image evidence limits must be positive")
         self.resolver = DataBindResolver(sandbox_binds)
         self.max_images = max_images

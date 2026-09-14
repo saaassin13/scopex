@@ -18,7 +18,15 @@ from scopex.agent.docker_host import resolve_local_docker_host
 from scopex.agent.skills import DEFAULT_BUILTIN_SKILLS, prepare_workspace_skills
 from scopex.api.factory import LocalRuntimeConfig, OpenClawRuntimeFactory
 from scopex.api.fastapi_app import create_app
+from scopex.api.schedules import ScheduleService
 from scopex.api.service import TaskService
+from scopex.data_catalog import (
+    catalog_binds,
+    load_data_catalog,
+    provision_locator_catalog,
+    provision_workspace_catalog,
+    render_runtime_catalog_summary,
+)
 
 
 def loopback_host(host: str) -> bool:
@@ -43,84 +51,54 @@ def parse_data_dir(value: str) -> str:
     return f"{host_dir}:{agent_dir}:ro"
 
 
+def merge_data_binds(defaults: tuple[str, ...], overrides: tuple[str, ...]) -> tuple[str, ...]:
+    ordered: list[str] = []
+    target_to_index: dict[str, int] = {}
+    for bind in defaults + overrides:
+        parts = bind.rsplit(":", 2)
+        if len(parts) != 3 or parts[2] != "ro":
+            raise ValueError(f"invalid read-only data bind: {bind}")
+        target = parts[1]
+        if target in target_to_index:
+            ordered[target_to_index[target]] = bind
+        else:
+            target_to_index[target] = len(ordered)
+            ordered.append(bind)
+    return tuple(ordered)
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--model", required=True)
     parser.add_argument("--base-url", required=True)
     parser.add_argument("--workspace", type=Path, required=True)
     parser.add_argument("--sandbox-image", required=True)
+    parser.add_argument("--openclaw-bin", type=Path, default=Path.home() / ".openclaw/bin/openclaw")
+    parser.add_argument("--data-root", type=Path, default=ROOT / ".local" / "runtime-api")
     parser.add_argument(
-        "--openclaw-bin",
+        "--data-catalog",
         type=Path,
-        default=Path.home() / ".openclaw/bin/openclaw",
+        default=ROOT / "config" / "data-catalog.json",
+        help="ScopeX semantic data catalog copied into host workspace and data-locator Skill",
     )
-    parser.add_argument(
-        "--data-root",
-        type=Path,
-        default=ROOT / ".local" / "runtime-api",
-    )
-    parser.add_argument(
-        "--data-dir",
-        action="append",
-        type=parse_data_dir,
-        default=[],
-        metavar="HOST_DIR:AGENT_DIR",
-        help="read-only host directory exposed to the OpenClaw sandbox; repeatable",
-    )
-    parser.add_argument(
-        "--exec-host",
-        choices=("sandbox", "gateway", "node"),
-        default="sandbox",
-        help="OpenClaw exec target; use gateway to inspect the current Spark host",
-    )
-    parser.add_argument(
-        "--exec-mode",
-        choices=("deny", "allowlist", "ask", "auto", "full"),
-        default="full",
-        help="OpenClaw native exec policy; POC07 uses full for permissive validation",
-    )
-    parser.add_argument(
-        "--enable-view-image",
-        action="store_true",
-        help="allow OpenClaw's native view_image tool for local image inspection",
-    )
-    parser.add_argument(
-        "--enable-progress-card",
-        action="store_true",
-        help="allow OpenClaw's native progress_card tool for multi-step task status",
-    )
-    parser.add_argument(
-        "--disable-compaction",
-        action="store_true",
-        help="disable OpenClaw session compaction for regression/debugging only",
-    )
-    parser.add_argument(
-        "--web-dist",
-        type=Path,
-        default=ROOT / "frontend" / "dist",
-        help="Vue build directory; ignored until it exists",
-    )
+    parser.add_argument("--no-catalog-binds", action="store_true")
+    parser.add_argument("--data-dir", action="append", type=parse_data_dir, default=[], metavar="HOST_DIR:AGENT_DIR")
+    parser.add_argument("--exec-host", choices=("sandbox", "gateway", "node"), default="sandbox")
+    parser.add_argument("--exec-mode", choices=("deny", "allowlist", "ask", "auto", "full"), default="full")
+    parser.add_argument("--enable-view-image", action="store_true")
+    parser.add_argument("--enable-progress-card", action="store_true")
+    parser.add_argument("--disable-compaction", action="store_true")
+    parser.add_argument("--web-dist", type=Path, default=ROOT / "frontend" / "dist")
     parser.add_argument("--api-key-env", default="SCOPEX_API_KEY")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8787)
-    # Per-turn defaults are sized from the Step 6B complex-image probe
-    # (~439 s, 11 forwarded model requests) with modest headroom.
     parser.add_argument("--timeout", type=int, default=600)
     parser.add_argument("--max-requests", type=int, default=16)
     parser.add_argument("--max-tokens", type=int, default=2048)
     parser.add_argument("--finalizer-max-tokens", type=int, default=768)
     parser.add_argument("--finalizer-timeout", type=int, default=180)
-    parser.add_argument(
-        "--skill",
-        action="append",
-        default=[],
-        help="additional OpenClaw skill name; repeatable",
-    )
-    parser.add_argument(
-        "--no-default-skills",
-        action="store_true",
-        help="do not expose ScopeX built-in product skills by default",
-    )
+    parser.add_argument("--skill", action="append", default=[])
+    parser.add_argument("--no-default-skills", action="store_true")
     args = parser.parse_args(argv)
 
     if not sys.platform.startswith("linux") or os.geteuid() == 0:
@@ -136,15 +114,18 @@ def main(argv=None) -> int:
         raise ValueError("invalid API key environment value")
 
     workspace = args.workspace.expanduser().resolve()
-    requested_skills = (
-        (() if args.no_default_skills else DEFAULT_BUILTIN_SKILLS)
-        + tuple(args.skill)
-    )
-    skills = prepare_workspace_skills(
-        workspace=workspace,
-        skill_names=requested_skills,
-        builtin_root=ROOT / "skills",
-    )
+    requested_skills = (() if args.no_default_skills else DEFAULT_BUILTIN_SKILLS) + tuple(args.skill)
+    skills = prepare_workspace_skills(workspace=workspace, skill_names=requested_skills, builtin_root=ROOT / "skills")
+
+    catalog_path = args.data_catalog.expanduser().resolve()
+    catalog = load_data_catalog(catalog_path)
+    workspace_catalog = provision_workspace_catalog(workspace=workspace, catalog_path=catalog_path)
+    locator_catalog = None
+    if "data-locator" in skills:
+        locator_catalog = provision_locator_catalog(workspace=workspace, catalog_path=catalog_path)
+    catalog_summary = render_runtime_catalog_summary(catalog)
+    catalog_defaults = () if args.no_catalog_binds else catalog_binds(catalog, existing_only=True)
+    data_binds = merge_data_binds(catalog_defaults, tuple(args.data_dir))
 
     data_root = args.data_root.expanduser().resolve()
     config = LocalRuntimeConfig(
@@ -162,7 +143,8 @@ def main(argv=None) -> int:
         finalizer_max_tokens=args.finalizer_max_tokens,
         finalizer_timeout_s=args.finalizer_timeout,
         skills=skills,
-        data_binds=tuple(args.data_dir),
+        data_binds=data_binds,
+        data_catalog_summary=catalog_summary,
         exec_host=args.exec_host,
         exec_mode=args.exec_mode,
         enable_view_image=args.enable_view_image,
@@ -175,16 +157,21 @@ def main(argv=None) -> int:
         coordinator_factory=factory.coordinator,
         finalizer_factory=factory.finalizer,
     )
+    schedules = ScheduleService(data_root / "scheduler", service)
     static_dir = args.web_dist.expanduser().resolve()
     app = create_app(
         service,
+        schedules=schedules,
         static_dir=static_dir if static_dir.is_dir() else None,
         shutdown_timeout_s=max(args.timeout, 120) + 10,
     )
 
     print(f"ScopeX FastAPI: http://{args.host}:{args.port}", flush=True)
     print(f"workspace: {config.workspace}", flush=True)
+    print(f"data catalog (host): {workspace_catalog}", flush=True)
+    print(f"data catalog (locator): {locator_catalog if locator_catalog is not None else 'not provisioned'}", flush=True)
     print(f"audit root: {data_root / 'tasks'}", flush=True)
+    print(f"schedule root: {data_root / 'scheduler'}", flush=True)
     print(f"exec: host={config.exec_host} mode={config.exec_mode}", flush=True)
     print(
         "budgets: "
@@ -201,18 +188,11 @@ def main(argv=None) -> int:
         print("data binds:", flush=True)
         for bind in config.data_binds:
             print(f"  {bind}", flush=True)
-    print(
-        f"web: {static_dir if static_dir.is_dir() else 'not built; API-only mode'}",
-        flush=True,
-    )
+    else:
+        print("data binds: none (catalog host paths are absent or auto-mount disabled)", flush=True)
+    print(f"web: {static_dir if static_dir.is_dir() else 'not built; API-only mode'}", flush=True)
 
-    uvicorn.run(
-        app,
-        host=args.host,
-        port=args.port,
-        log_level="info",
-        access_log=False,
-    )
+    uvicorn.run(app, host=args.host, port=args.port, log_level="info", access_log=False)
     return 0
 
 

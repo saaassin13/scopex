@@ -1,264 +1,119 @@
 # ScopeX
 
-ScopeX 是运行在 NVIDIA DGX Spark 上的本地、可交互、证据可追溯的工业诊断 Agent Runtime。
-
-OpenClaw 负责模型驱动的 Agent Loop、工具和 Skill；ScopeX 负责 Task/Session、Progress、Stop/Resume/Steering、权限、Evidence、预算/运行时边界、结构化 Claims、可信校验、产品结果、审计和 API/UI。
+ScopeX 是部署在 NVIDIA DGX Spark 上的端侧工业 Agent 产品。用户提出目标，OpenClaw + 本地模型负责自主调查、决策、执行、验证和停止；ScopeX 提供能力、权限、任务生命周期、证据、审计和产品界面。
 
 > **OpenClaw owns execution. ScopeX owns product control and trust.**
 
-## 当前状态
+## 当前基线：2026-09-14 阶段收口
 
-截至 **2026-09-14**：
+`main` 是唯一当前集成基线。PR #14 将 Business / Product V1 和真实失败修复统一收口；**合入不是宣告所有 Spark 业务验收通过**。
 
-| 阶段 | 能力 | 状态 |
-|---|---|---|
-| Runtime MVP Smoke | ScopeX + OpenClaw + vLLM + Evidence + Finalizer + Audit | **PASS** |
-| 6A | Context / Compaction / structured state retention | **PASS** |
-| 6B | Large Data / Multi-Image bounded working set + task scratch | **PASS** |
-| 6C | Hard Budget + trustworthy partial finalization | **PASS** |
-| 6D | OpenClaw native loop convergence + Evidence filtering | **PASS** |
-| 6E | 120k telemetry + 15k logs + 48 images + constrained recovery + post-action verification | **CAPABILITY PASS** |
-| 6F | Same complex task under product default 600 s / 16 requests | **PASS** |
-| Step 7A | Claim-bounded Product Answer over revalidated Claims/Evidence | **已实现，待本轮完整回归** |
-| Step 7B | Result-first Vue UI | **已实现，待本轮完整回归** |
-| Step 7C | Spark FastAPI + Vue real integration | **进行中** |
-| Step 7D | 真实业务产品验收 | **待完成** |
+| 层次 | 状态 |
+|---|---|
+| Step 6A–6D、6F | 冻结 PASS，保留原验证范围 |
+| Step 6E | 冻结 CAPABILITY PASS |
+| Business / Product V1 | 已实现，整合进入 main |
+| Python / Vue | 收口前全量 519 项测试与 Vue 构建已在 GitHub Actions 通过；最终提交检查见 PR / Actions |
+| Spark 多图、真实编码器、乳头 KPI、自然语言报告 | 待当前版本现场验收 |
+| 并发、网络诊断、重型点云 | 尚未实现 / 暂缓 |
 
-6E/6F 已证明本地 `qwen3.8-27b-nvfp4` + OpenClaw 可以自主完成大数据筛选、多源交叉验证、多图视觉确认、受约束动作执行和动作后的真实状态验证；6F 在不降低任务要求的情况下达到约 `371.1 s / 14 requests`，进入当前产品默认 `600 s / 16 requests` Gate。
+**新会话先读 [交接手册](docs/08-local-usage-and-handoff.md)。** 当前事实和待办在该文件维护，不从长会话中的旧启动命令反推实现。
 
-### 真实业务任务最新暴露的问题
-
-Step 7 进入真实数据后，机制 Probe 没暴露出的两个产品级问题已经出现并进入修复：
-
-1. **预算耗尽后的 Fresh Finalizer 可能因 JSON 长度截断导致整项任务 FAILED**：现在对 Claim 数量/Evidence refs 做有界约束，并只对 `finish_reason=length` 做一次无工具、同 Evidence 的长度恢复重试；
-2. **单图/明确范围任务可能过度扩张调查**：现在 Runtime 增加通用“尊重用户范围 + 最短充分证据 + 证据够即停止”的任务契约，并默认加载内置 Skill。
-
-这些修复属于当前实现基线，但在新的全量测试、镜像构建和 Spark 真实复测完成前，不标记为 PASS。
-
-## 当前文档入口
-
-- [Product Requirements](docs/01-requirements.md) — 当前需求基线；
-- [Delivery & Acceptance](docs/02-delivery-and-acceptance.md) — 已验证/已实现/待验收状态；
-- [OpenClaw / ScopeX Boundary](docs/architecture/06-openclaw-scopex-boundary.md) — 架构所有权边界；
-- [Complex Task Validation and Next Plan](docs/architecture/07-complex-task-validation-and-next-plan.md) — 当前实施路线；
-- [Local Usage & Handoff](docs/08-local-usage-and-handoff.md) — 日常启动、调试与接手；
-- [Zero-to-One Build & Offline Deployment](docs/09-zero-to-one-build-and-offline-deployment.md) — 新机器构建、清华源、离线镜像/依赖包、systemd 和回滚。
-
-## 产品技术栈
+## 统一执行链
 
 ```text
-Vue 3 + TypeScript + Vite
-        ↓ HTTP / polling
-FastAPI + Uvicorn
-        ↓
-TaskService / ScopeX Runtime
-        ↓
-OpenClaw + local vLLM
-        ↓
-read / exec / process / view_image / Skills
+统一用户输入 / 定时触发
+  -> TaskService
+  -> 同一套 OpenClaw + 模型 + Skill / Tool / Session
+  -> 调查、执行、验证
+  -> 普通问答，或业务证据 -> Fresh Finalizer -> Validated Claims
+  -> 无工具 Report Composer -> 引用/分类校验 -> 用户报告
 ```
 
-当前不引入 Redis、数据库、WebSocket、Kubernetes 或工作流引擎。前端使用原生 `fetch`；FastAPI 只做产品传输层，不重新实现 Agent Runtime。
+用户不选择“对话 / 任务”。`POST /runs` 内部使用 auto；业务调查失败不得伪装成无证据聊天成功。Schedule 只在到点时创建普通任务，不编排业务步骤。不增加 Router Model、第二套 Agent Loop 或 Workflow Engine。
 
-## 当前架构
+报告主路径由模型组织中文：**结论、事实依据、可能性分析、下一步、数据限制**。`answer.json` / deterministic renderer 仅保留为故障兼容，不继续扩充逐业务字段翻译规则。引用校验不是自然语言语义正确性的证明，仍需真实任务复核。
+
+## 业务能力
+
+| Skill | 业务边界 |
+|---|---|
+| system-health | 当前宿主机 CPU、内存、磁盘、GPU 等；无周期采集/历史分析，禁止用 Sandbox 状态冒充宿主机 |
+| image-quality-diagnosis | 直接看原图判断脏污、模糊、起雾、水珠；指标仅辅助多图筛选/分区 |
+| nipple-recognition-analysis | 从日志恢复牛周期，按最终采用帧的 2D NippleNum 统计，每牛最多 4；不使用 3D 有效点数 |
+| encoder-health | 识别具体毛刺、回退、异常跳变和采样缺口；给时间、前后值、增量、恢复情况，不把全部负增量当故障 |
+| data-locator / log-context | 时间窗定位与有界原始上下文，不独立下根因结论 |
+
+工具按请求范围工作，够证据即停止。正常资源利用率或候选事件数量本身都不能证明业务根因。
+
+## 数据目录与访问
+
+唯一语义配置：`config/data-catalog.json`。
 
 ```text
-Goal / Trigger
-    ↓
-OpenClaw + Local Model
-    ↓
-autonomous investigation / tool use / action / verification / stop
-    ↓ trace
-ScopeX Task Runtime
-    ├─ Task scope / permission boundary
-    ├─ Stop / Resume / Steering
-    ├─ hard runtime boundary / audit
-    ├─ Evidence Projection
-    └─ Fresh Finalizer / Claim Validator
-    ↓
-Validated Claims
-    ↓
-Product Answer + deterministic trust fallback
-    ↓
-FastAPI / Result-first UI
+/opt/ScalingRobotics/CowDisinfect/Log
+  -> /agent-data/logs
+  CowDisinfect-YYYYMMDD-HHMMSS.log[.N]
+
+/opt/ScalingRobotics/CowDisinfect/GrabbedImages/LeftCamera
+  -> /agent-data/left-camera
+  YYYYMMDD/HH/YYYYMMDD-HHMMSSmmm.jpg|json|pcd
 ```
 
-可信输出链：
+目录只读挂载。日志先定位相关文件组；LeftCamera 直接进入日期/小时目录，不递归扫描历史。图片/JSON 在检测或推理失败后可能不保存，不能拿文件数量充当总牛数。
+
+Runtime 启动同步内置 Skill，并将 Catalog 复制到 **`<workspace>/skills/data-locator/references/data-catalog.json`**。Locator 通过该 Skill 相对路径读取配置；宿主机 workspace 根目录的副本不保证能在 Sandbox 根目录读到。单元测试只使用临时目录，不会生成真实 workspace 文件。
+
+Catalog/Skill 是访问说明；稳定脚本执行有界定位；Sandbox 有 CPU/内存/PID/超时限制。**这些不等于已实现覆盖任意 Shell 命令的磁盘 I/O 限流。** 大目录性能仍需真实负载验证。
+
+## 证据与界面
 
 ```text
-Raw Tool Result / Original Image
-        ↓
-Evidence Snapshot (E1..En)
-        ↓
-Fresh Structured Finalizer
-        ↓
-Validated Claims
-        ↓
-Claim-bounded Product Answer
-        ├─ 结论
-        ├─ 说明
-        ├─ 执行情况
-        └─ 建议
-        ↓
-Result-first UI
-
-Deterministic Renderer = audit/trust fallback
+Trace：Skill、命令、源码、工具错误、模型请求
+Working Data：task-scratch 中间材料
+Internal Evidence：working_derived，保留 Step 6 大数据兼容
+Claim-grade Evidence：原始业务依据、可复验原图、结构化业务事实
+User Facts：报告中给用户看的中文事实说明
 ```
 
-Evidence 证明结论，不承担第二套 Agent Loop，也不是产品主界面本身。
+同一份聚合统计允许支持多个不同事实；完全重复的 Claim 仍拒绝。原始 C/E 编号和技术字段用于审计，不应成为用户主报告。
 
-## Agent 能力与 Skill
+界面包含统一输入、月历及当天执行记录、任务开始/结束/耗时、定时配置、评价、复盘包与终态任务删除。删除只处理 ScopeX 自有任务资产，绝不删除外部日志、图片、JSON 或点云。
 
-Runtime 默认内置：
+## 定时与恢复
+
+支持每 N 分钟、每天、一次执行、启停和立即执行。离线/断电期间错过的触发全部跳过，不补跑、不制造历史 Task；一次性过期任务停用。目前在线忙碌仍 `SKIPPED_BUSY`，尚无并发队列。未来并发方案不能改变离线不补跑的要求。
+
+## 模型与部署
+
+根据 2026-09-14 Spark 现机配置确认：
 
 ```text
-cow-disinfect-diagnosis
-image-quality-diagnosis
+MODEL_REPO=unsloth/Qwen3.8-27B-NVFP4
+MODEL_REVISION=f0b7c9e722f5565102fff8481c99e4d86ae099c7
+served id=qwen3.8-27b-nvfp4
+image=nvcr.io/nvidia/vllm:26.08-py3
+endpoint=http://127.0.0.1:18002/v1
+context=32768
 ```
 
-ScopeX 启动时把内置 Skill 同步到 `<workspace>/skills` 后交给 OpenClaw allowlist。Skill 提供业务语义、证据纪律、停止原则和稳定脚本入口；模型仍自主决定具体工具与调查顺序。
+现机最后一次确认的图片容量为 4；12 张配置已提供，**未收到实际重启及探针成功回执**。`SCOPEX_MAX_IMAGES_PER_PROMPT` 必须与 vLLM 对齐，默认 4。每次看 2 张不会清空历史图片，累计附件仍占整份请求额度。
 
-通用运行原则：
+Device Base Package（Docker/NVIDIA/OpenClaw/vLLM/权重）与 ScopeX Update Bundle（固定源码、前端 dist、wheelhouse、Sandbox、Skill）分开交付。构建源使用清华 TUNA，运行时不安装包。完整命令、持久化目录和回滚见部署文档。
 
-- 用户明确指定的 target/source/scope 是任务约束；
-- 只走完成问题所需的最短充分证据路径；
-- 不因为目录里“还有别的数据”就自动扩张调查；
-- 证据已足够回答时停止工具调用；
-- 需要扩张范围时必须是为了回答用户原问题，而不是为了“把所有可能性都查一遍”。
+## 文档与检查
 
-## Analysis Sandbox
-
-当前推荐镜像：
-
-```text
-scopex-sandbox-analysis:step7
-```
-
-运行期网络仍是 `none`。镜像 build 阶段预装常用离线分析工具：
-
-```text
-numpy / scipy / pandas / cv2 / Pillow / scikit-image
-matplotlib / openpyxl / PyYAML / psutil / scikit-learn
-Open3D（当前 ARM64 基础发行版存在 apt 包时）
-```
-
-实际工具箱写入：
-
-```text
-/opt/scopex/toolbox.json
-```
-
-Dockerfile 会把 Ubuntu/Debian build-time APT 源切换到清华 TUNA；Ubuntu ARM64 使用 `ubuntu-ports`。这不修改 Spark 宿主机系统源。
-
-## 离线部署
-
-端侧网络不作为 ScopeX 正常运行前提。当前提供：
-
-```text
-scripts/export_offline_bundle.sh
-scripts/install_offline_bundle.sh
-deploy/systemd/scopex-runtime.service
-deploy/systemd/runtime.env.example
-```
-
-离线 bundle 包含：
-
-```text
-固定 commit 的 ScopeX source
-预构建 frontend/dist
-ARM64/Python 对应 wheelhouse
-scopex-sandbox-analysis Docker image
-manifest + SHA256SUMS
-```
-
-OpenClaw、vLLM 和模型权重当前作为设备基础环境独立管理，不跟 ScopeX 小版本更新包绑定。完整流程见 `docs/09-zero-to-one-build-and-offline-deployment.md`。
-
-## 正式代码结构
-
-```text
-scopex/
-├── api/                    # FastAPI transport + TaskService + production factory
-├── runtime/                # Task/Session/Control/Convergence/Steering
-├── agent/                  # OpenClaw/proxy/sandbox/skill provisioning/runtime contract
-├── events/                 # observable Progress events
-├── evidence/               # trace -> claim-grade Evidence projection
-├── finalizer/              # Claims/validator/renderer/Product Answer
-└── storage/                # filesystem audit
-
-frontend/                   # Vue 3 + TypeScript + Vite
-docker/                     # offline analysis sandbox layer
-skills/                     # built-in product Skills + stable scripts
-deploy/                     # systemd deployment templates
-scripts/                    # product entry + validation/profiling/offline packaging
-```
-
-正式 `scopex/` 代码不得依赖 `scripts/poc*.py`，也不得把完整业务调查流程写死到 Handler。
-
-## 开发 / 回归
+- [需求](docs/01-requirements.md) / [验收状态](docs/02-delivery-and-acceptance.md)
+- [架构边界](docs/architecture/06-openclaw-scopex-boundary.md) / [下一阶段](docs/architecture/07-complex-task-validation-and-next-plan.md)
+- [Report Composer](docs/architecture/08-trusted-report-composer.md)
+- [业务口径](docs/business/01-business-capabilities-v1.md) / [数据访问](docs/business/02-data-catalog-and-bounded-access.md)
+- [交接手册](docs/08-local-usage-and-handoff.md) / [从 0 到 1 与离线部署](docs/09-zero-to-one-build-and-offline-deployment.md)
+- [任务与调度](docs/10-chat-tasks-scheduling-and-feedback.md)
+- [两次真实失败复盘](docs/reviews/2026-09-14-runtime-failure-replay.md)
 
 ```bash
-cd /home/yanlan/workspaces/code/scopex
-git checkout main
-git pull --ff-only
 python3 -m unittest discover -s tests -v
+cd frontend && npm run build
 ```
 
-前端：
-
-```bash
-cd frontend
-npm install
-npm run build
-```
-
-产品入口：
-
-```text
-scripts/runtime_api.py
-```
-
-默认监听：
-
-```text
-http://127.0.0.1:8787
-```
-
-主要接口：
-
-```text
-POST /tasks
-GET  /tasks
-GET  /tasks/{id}
-POST /tasks/{id}/stop
-POST /tasks/{id}/resume
-POST /tasks/{id}/steer
-GET  /tasks/{id}/events?after=<seq>
-GET  /tasks/{id}/evidence
-GET  /tasks/{id}/result
-```
-
-## v0.1 产品边界
-
-- 单用户；同一时间一个主要任务；
-- PAUSED 任务保留同一 OpenClaw session；
-- 原始外部数据默认只读，任务中间产物写 `/task-scratch`；
-- 模型可以自主调查、选择工具和决定调查深度，但必须尊重用户明确范围；
-- 高风险设备/机器人/配置动作必须通过明确 capability / permission boundary；
-- `exit code 0` 不是恢复成功，必须独立验证真实业务状态；
-- 不做多 Agent、多任务编排、工作流编辑器和重型基础设施；
-- 不在 ScopeX 重做 OpenClaw 已拥有的 Agent Loop、Tool Loop、Skill/File/Image 能力。
-
-## 下一步 Gate
-
-Step 6 已冻结。当前不再扩展机制 Probe，剩余主线是把 Step 7 做成真实产品验收：
-
-1. 当前 Python 全量单测通过；
-2. Vue `npm run build` 通过；
-3. `scopex-sandbox-analysis:step7` 在 Spark ARM64 构建并验证 toolbox；
-4. FastAPI + Vue 真实联调；
-5. 单图明确范围任务在少量请求内完成，且不访问用户明确排除的数据；
-6. 一个真实业务复杂任务完成 Result-first 产品闭环；
-7. Stop / Resume / Steering、刷新/重连和 Evidence 展开可用；
-8. 生成一次真实 ARM64 offline bundle 并在离线目录完成安装 smoke。
-
-在这些 Gate 有实施证据前，文档保持“已实现/待验收”，不因为代码已经合入就自动写成 PASS。
+`.github/workflows/verify.yml` 持续执行仓库测试和前端构建，不部署现场、不调用真实模型。`docs/poc/` 保留为历史验证材料，不覆盖当前需求与交接基线。

@@ -1,240 +1,129 @@
 # ScopeX 产品需求基线
 
-状态：**2026-09-14 当前有效基线**。旧 POC 需求已收口为当前产品要求；后续需求变化应在本文件和架构/路线文档中同步更新。
+状态：2026-09-14 阶段收口。当前实现/验收状态见 `02-delivery-and-acceptance.md`，接手状态见 `08-local-usage-and-handoff.md`。
 
-## 1. 项目目标
+## 1. 定位与架构
 
-在 NVIDIA DGX Spark 上交付一个本地、可交互、证据可追溯的工业诊断 Agent Runtime。
+交付运行在 NVIDIA DGX Spark 的本地、可交互、可执行、可审计工业 Agent。用户给目标，模型自主观察、推理、选择工具、执行业务动作并验证结果，不是只展示数据的看板。
 
-当前固定实现基线：
+**OpenClaw owns execution. ScopeX owns product control and trust.** OpenClaw + 模型负责调查、决策、执行、验证和停止。ScopeX 提供业务能力、权限、Run/Session、范围、预算、Evidence、审计、报告和 FastAPI/Vue。禁止第二套 Agent Loop / Workflow Engine、Router Model、Schedule Agent。
 
-- Agent Runtime：OpenClaw；
-- 本地模型：`qwen3.8-27b-nvfp4`；
-- 推理服务：vLLM OpenAI-compatible `/v1`；
-- 产品层：ScopeX Runtime + FastAPI + Vue；
-- 默认本地运行，业务数据、日志、图片、审计记录不依赖公网服务。
+当前实机模型标识与部署参数见 `09-zero-to-one-build-and-offline-deployment.md`；模型名称、下载仓库、revision、served id 必须分开记录，不能凭名称替换已验证模型。
 
-核心边界：
+## 2. 通用需求（R01–R15）
 
-> **OpenClaw owns execution. ScopeX owns product control and trust.**
+| ID | 要求 |
+|---|---|
+| R01 | 本地 OpenClaw / vLLM / 文件与工具 / 审计链；Sandbox 默认 network=none |
+| R02 | 模型自主调查，用户不需逐步教工具，不把完整业务流程写死在 Handler |
+| R03 | 原始大数据不全量塞 Context；先定位时间窗，再计算/抽样，有界输出 |
+| R04 | 多图最后结论依赖实际看过的原图，累计模型图片额度和每次工具额度分别管理 |
+| R05 | 有副作用的动作受能力/权限控制；当前只读诊断不能隐含授权重启或机器人动作 |
+| R06 | 动作后验证业务状态；命令 exit code=0 不是业务成功证明 |
+| R07 | 复用 OpenClaw 原生 compaction；不自建第二个上下文调度器 |
+| R08 | Stop/Resume/Steering，安全模型请求边界接管，保留审计 |
+| R09 | 请求/时间/Sandbox CPU、内存、PID、exec timeout 有界；预算不是根因判据 |
+| R10 | 正式结论可追溯至业务依据/可复验原图；不把工作过程当事实 |
+| R11 | 所有主结论、事实说明、建议用人话；模型负责表达，代码负责约束，禁止逐字段翻译成为主路线 |
+| R12 | 任务/事件/证据/Claims/报告/评价可复盘，区分运行失败和业务结果错误 |
+| R13 | 用户显式 target/source/scope 有约束力；最短充分路径，够证据即停 |
+| R14 | Skill 提供领域语义、稳定脚本和停止原则，不代替 Agent 的自主执行 |
+| R15 | Device Base 与 ScopeX Update 分层离线部署、校验、版本切换/回滚 |
 
-OpenClaw + 模型负责自主调查、工具选择、执行、动作后验证和停止；ScopeX 负责能力/数据挂载、任务范围、权限边界、Task 生命周期、Stop/Resume/Steer、预算护栏、Evidence、可信 Finalizer、审计和产品 API/UI。
+600 秒、16 次请求是冻结的调查 turn 配置，不应把额外 Finalizer / Report 调用隐藏成“端到端一定 600 秒”。业务新增后的性能需重新计量。
 
-**不得在 ScopeX 中重新实现第二套 Agent Loop / Workflow Engine / Decision Engine / Action Engine。**
+## 3. 统一入口与生命周期（R16–R17）
 
-## 2. 必须具备的能力
+用户只有一个输入入口，`POST /runs` 创建 auto Run，底层所有任务共用 TaskService / OpenClaw / 模型 / Session / 工具 / 审计。
 
-| ID | 需求 | 当前验收口径 |
-|---|---|---|
-| R01 | 本地任务链 | OpenClaw、vLLM、文件/Shell/图片、Evidence、Finalizer 均在 Spark 本地完成；运行期 Sandbox 默认无网络 |
-| R02 | 自主调查 | 用户给目标后，模型自主决定调查顺序与工具，不要求用户逐步教操作 |
-| R03 | 大数据工作集 | 大日志/CSV 不直接灌入 Context；Agent 用 Shell/Python 等做筛选、计算和有界摘要 |
-| R04 | 多图分析 | 大图片集可先筛选，最终依赖的只读原图必须实际 `view_image`；最终 claim-grade 原图集合保持有界 |
-| R05 | 可执行动作 | 业务动作只能通过明确 capability / permission boundary；动作前验证前置条件 |
-| R06 | 动作后验证 | 命令 exit code 0 不等于业务成功；必须再次查询真实业务状态 |
-| R07 | 上下文持续 | 长任务使用 OpenClaw 原生 compaction；Context 是工作记忆，不是原始数据存储 |
-| R08 | 任务可接管 | 支持 Stop / Resume / Steering，并保留同一 OpenClaw Session 的有效上下文 |
-| R09 | 防失控 | Hard request/time budget 单一来源；OpenClaw 原生 loopDetection 防止重复工具循环 |
-| R10 | 可信输出 | 用户可见事实必须来自 claim-grade Evidence / 原图重新验证，不允许“模型自己说过的话”反向成为事实依据 |
-| R11 | 结果优先 | 产品主界面优先展示结论、说明、执行情况和建议；Evidence 是可展开的支撑材料 |
-| R12 | 可审计/可复测 | 每次关键验证保留 Task/Trace/Evidence/Claims/Result/Probe 指标，升级后可重复回归 |
-| R13 | 范围与停止 | 用户明确指定 target/source/scope 时必须视为任务边界；只走最短充分证据路径，证据足够后停止，不因目录中存在其他数据而自动扩张调查 |
-| R14 | Skill / 稳定脚本 | 业务知识、证据纪律、常用分析方法通过 Skill/稳定脚本提供；Skill 引导模型但不替代 OpenClaw Agent Loop |
-| R15 | 离线部署 | ScopeX source、Web dist、host wheelhouse、analysis sandbox image 可预构建并离线导入；离线包必须记录 commit/架构/镜像 ID 并带 SHA256 |
+未触及业务数据、正常回答可作为 conversation 完成，不强制 Evidence。已经尝试业务调查却无依据，必须报告失败/不可用，不得降级成聊天成功。定时触发始终是正式 task。兼容 API 不是用户必须选择的模式。
 
-## 3. 数据、文件与 Sandbox 规则
+Run 保存开始、结束、耗时、trigger_type、schedule_id、scheduled_for 和状态。运行失败也要给可读原因；内部错误码放技术详情。
 
-- 外部业务数据以只读 bind 暴露，例如 `/agent-data`；
-- 每个 Task 自动获得 host-backed、task-local、可写 `/task-scratch`；
-- `/task-scratch` 用于临时脚本、筛选结果、缩略图/接触表、JSON/CSV 中间产物；
-- Scratch 派生图片不能自动升级为原始 claim-grade Image Evidence；
-- Runtime Sandbox 默认 `network=none`；通用依赖应在镜像 build 阶段准备，而不是任务中在线安装；
-- 当前 analysis sandbox 预装 `numpy/scipy/pandas/cv2/Pillow/scikit-image/matplotlib/openpyxl/PyYAML/psutil/scikit-learn`；Open3D 仅在基础发行版提供 ARM64 apt 包时安装；
-- 实际可用工具箱由 `/opt/scopex/toolbox.json` 记录；模型不应为了探测常用包是否存在而反复消耗工具回合；
-- 镜像 build 阶段可使用清华 TUNA APT 镜像；这不应修改 Spark 宿主机安全更新策略。
+## 4. 定时触发（R18）
 
-## 4. Task 范围与停止规则
+配置只需要名称、普通任务内容、时间/周期、启用状态。支持每 N 分钟、每天 HH:MM、一次执行、立即执行。
 
-ScopeX 不决定业务调查流程，但必须把产品任务边界明确交给 OpenClaw：
+到点只创建普通 task，绝不编排业务步骤。例如当前磁盘、过去 30 分钟编码器、过去 30 分钟图片。相对窗口使用 planned/scheduled_for 为基准，不能在排队/重启后悄悄改变统计时间。
 
-1. 用户明确指定的一张图、一个日志、一个时间窗、一个设备或“只用视觉/不要查日志”等要求属于**范围约束**；
-2. 模型应优先选择回答问题所需的最短充分证据路径；
-3. 只有当当前范围不足以回答原问题时，才允许扩张调查，并应保持扩张最小；
-4. 不允许因为 `/agent-data` 中存在更多文件就默认扫描其他数据；
-5. 一旦当前证据已经足够回答，停止工具调用并交付结果；
-6. 如果无法确认具体物理原因，允许明确输出 `unknown/待验证`，不能以“继续调查所有可能性”代替不确定性。
+设备离线/断电期间错过的触发全部跳过，不补跑，也不为每个错过时间生成失败 Run。interval 保持原周期相位；daily 推进到未来日期；once 过期则停用并标记 MISSED_OFFLINE。立即执行不改变 recurring 周期。
 
-这是一条通用 Agent 合约，不是图片/日志专用 Workflow。
+当前单执行槽位在线 busy 记 SKIPPED_BUSY。并发/在线队列是后续设计，不改变“离线历史不补跑”。
 
-## 5. Skill 与脚本规则
+## 5. 记录、删除、评价与复盘（R19–R22）
 
-当前内置 Skill：
+首页：月份日历显示每天数量/状态，点日期显示当天所有 Run，再进详情。统计只读取 ScopeX 元数据，不扫描业务目录。
+
+终态 Run 可删除 ScopeX audit/work/scratch/快照/报告/评价/导出包，不得删除 `/agent-data` 外部日志、图片、JSON、PCD。非终态先安全停止，不直接删除；暂停与真正终止要区分。
+
+任务评价：正确/有问题、问题标签、备注；不能根据用户评价自动改变模型/Skill。复盘导出包含存在的任务/报告/依据/技术错误和版本信息，默认不含整份外部数据或密钥。目标是定位 Model / Skill / Tool / Runtime / Evidence / Finalizer / Report / UI 的问题，不静默重做诊断。
+
+## 6. 数据目录（R23–R24）
+
+唯一源为 `config/data-catalog.json`：
 
 ```text
-cow-disinfect-diagnosis
-image-quality-diagnosis
+/opt/ScalingRobotics/CowDisinfect/Log -> /agent-data/logs
+  CowDisinfect-YYYYMMDD-HHMMSS.log[.N]
+
+/opt/ScalingRobotics/CowDisinfect/GrabbedImages/LeftCamera -> /agent-data/left-camera
+  YYYYMMDD/HH/YYYYMMDD-HHMMSSmmm.jpg|json|pcd
 ```
 
-Runtime 启动时把仓库内置 Skill 同步到 `<workspace>/skills`，再交给 OpenClaw allowlist。
+Runtime 将语义摘要注入模型，不注入全盘文件清单；存在的 host path 自动只读挂载。机器 Catalog 随 data-locator Skill provision 到 `skills/data-locator/references/data-catalog.json`。不能假定 workspace 根文件一定映射到 Sandbox `/workspace`。
 
-Skill 可包含：
+日志组文件名时间可能非整点，Locator 用组区间重叠定位；LeftCamera 直接进目标日期/小时；超预算图片分散时间抽样，不只取前半小时。日志不抽样冒充完整统计。PCD 先定位，再加载/降采样。
 
-- 业务术语；
-- 证据边界；
-- 推荐分析方法；
-- 何时停止；
-- 稳定脚本入口。
+禁止普通任务递归扫描数据根。Catalog/Skill 说明与稳定脚本预算不能被宣传为任意 Shell 的全局 I/O 硬限制；尚未实现的 guard/索引明确记录。
 
-稳定脚本必须：
+## 7. 首批业务（R25–R29）
 
-- 只做确定性计算/读取/变换，不替模型直接给业务结论；
-- 输入范围明确；
-- 输出紧凑、可审计；
-- 不默认扫描整个数据目录；
-- 不自行联网安装依赖。
+### R25 当前设备资源
 
-例如图片质量 Skill 提供的指标脚本只计算 Laplacian variance、gradient、亮度/对比度等客观指标，不直接判断“起雾/镜头脏污一定成立”。
+只分析当前宿主机快照 `/scopex-host/current.json`。不部署历史资源 timer，不做历史 CPU/内存/GPU 分析。源不可用必须说明不可用，不允许 Sandbox fallback。一次 snapshot 的高负载不足以证明业务故障。
 
-## 6. Evidence / Final Result 要求
+### R26 图片质量
 
-可信链固定为：
+单图直接看原图；多图先有界定位，再按时间/场景及可选指标分区抽样，多批视觉判断脏污、模糊、起雾、水珠、运动模糊、失焦。Laplacian/亮度/对比度/clip ratio 只供筛选和参考，不能决定“没有起雾”。
+
+每次 view_image 最多 2 张，完整请求按 `SCOPEX_MAX_IMAGES_PER_PROMPT` 计累计附件。缺失/省略的图片不是已查看依据。负结论限定实际覆盖；看到雾化特征不等于证明冷凝水物理原因。
+
+### R27 乳头 2D 识别率
+
+从日志建立命名牛周期，最终 `LastImgTimeStamp` 对应帧的 `NippleNum` 为识别数。每头最多 4，超过 4 保留原值/过检标记并封顶。3D 坐标/IsValid 不参与，不取多帧 max、不多帧累加。
+
+图片和 JSON 在失败路径可能没有，不作为总牛数分母。完整四乳头率=完整四框牛数/总牛数；总体乳头率=最终封顶框数之和/(总牛数×4)。缺最终结果保留于分母且单列，不能称为观察到 0；需要说明这是含缺失的保守统计。日志无命名周期的物理漏牛需要独立真值。
+
+### R28 编码器事件
+
+Locator -> 显式相关轮转文件 -> 一次稳定分析 -> 具体异常事件 -> 必要时小范围上下文。优先应用层累计值；raw/filtered 作为对照，无应用流需声明改用 raw。
+
+检查毛刺/快速恢复、连续回退、单步回退、异常正跳、采样缺口。恒值可能是正常停止，小幅负值不自动判故障。增量要结合实际 dt 和局部正常变化；无效数据、复位、时间异常必须谨慎处理，不能删除断点再连算。结果列时间、前后值、增量和恢复，不以数千次负增量代替异常定位。候选不是硬件根因。
+
+### R29 日志上下文
+
+显式日志+时间/关键词，返回有界 source/line/time/raw。用于回答具体原因或补足证据，不能无锚点无限扩大或无请求扫描其他系统。
+
+## 8. 结果与证据
 
 ```text
-Raw Tool Result / Original Image
-        ↓
-Evidence Snapshot
-        ↓
-Fresh Structured Finalizer
-        ↓
-Validated Claims
-        ↓
-Claim-bounded Product Answer
-        ↓
-Result-first UI
+Trace / Working Data / Internal working_derived
+  -> 供调查审计，不直接展示成用户事实
 
-Deterministic Renderer = audit/trust fallback
+业务依据 / 原图 / structured business_facts
+  -> Evidence -> Fresh Finalizer -> Validated Claims
+  -> 无工具 Report Composer -> 引用/分类校验
+  -> 结论 / 人话事实依据 / 可能性 / 下一步 / 限制
 ```
 
-关键规则：
+Skill、源码和 Locator 是工作过程；scratch 有界派生读取可作为 working_derived 内部 Evidence 保留 Step 6 兼容，不能直接当作用户事实。结构化统计整体是一份 Evidence，可以支持不同命题，不能因共用 E 就误判重复。
 
-1. Evidence 是 OpenClaw Trace 的最小 claim-grade 投影，不是第二份 Transcript；
-2. `read` / `exec` 的真实输出可以成为 Evidence，OpenClaw runtime-control warning/guard 文本不能成为业务 Evidence；
-3. 图片 Evidence 记录原图身份和 SHA；Fresh Finalizer 必须重新解析并校验原图；
-4. Finalizer 只能基于已有 Evidence 形成 Claims；
-5. Product Answer 只能基于重新校验通过的 Claims/Evidence 组织结果，不能新增未经支持的事实或因果；
-6. deterministic renderer 始终保留为 audit/trust fallback；
-7. Finalizer 输出必须有界；仅当 transport 因 `finish_reason=length` 被截断时，允许对同一 Evidence 做一次无工具长度恢复重试，这不是新的调查回合。
+Composer 只组织已支持内容，无工具、不增加证据、不重新诊断；未知必须保留，因果假设不能改成事实。校验只保证当前实现的结构、引用和分类，不能宣称自动证明一切语义/数值。故障保留安全 fallback 并明确降级，不把 JSON 当正常报告。
 
-## 7. 产品运行边界
+## 9. 部署和未做范围
 
-v0.1 当前范围：
+业务数据只读，task scratch 独立可写，Sandbox 无网络，包在构建期预装。默认资源为 512 MiB memory/memory+swap 上限、1 CPU、256 PID、exec 30s；这些不是完整 I/O 预算。重型点云按实测再设计独立资源配置。
 
-- 单用户；
-- 同一时间一个主要 Task；
-- PAUSED Task 仍占用任务槽位并保留 Session；
-- Runtime API 只绑定 loopback；
-- 原始数据默认只读；
-- 不做多 Agent 编排、任务队列、Kubernetes、工作流编辑器、独立重型监控平台；
-- Memory Search 暂不启用，只有出现真实跨任务长期召回需求时再引入；
-- 高风险机器人/设备/配置动作必须另有明确 capability 和权限策略。
+离线包区分 Device Base / ScopeX Update；镜像架构、模型 revision、文件 SHA256、版本目录均可核对。可变任务数据不能放在升级会替换的 release 内。保留旧版本，不自动修改/删除现机其他服务。
 
-## 8. 离线部署要求
-
-端侧现场网络不能作为 ScopeX 正常运行前提。
-
-### ScopeX 更新包
-
-至少包含：
-
-```text
-固定 git commit 的 source archive
-预构建 frontend/dist
-与目标 ARM64/Python 匹配的 wheelhouse
-scopex-sandbox-analysis Docker image
-manifest + SHA256SUMS
-```
-
-要求：
-
-- 离线包在与目标一致的 CPU 架构上构建；
-- 安装前校验架构和 SHA256；
-- host Python 使用 `pip --no-index --find-links` 离线安装；
-- 现场不执行 `npm install`；
-- Docker image 使用 `docker save/load`；
-- 旧版本代码目录和镜像 tag 保留，允许快速回滚。
-
-### 独立设备基础环境
-
-当前不跟 ScopeX 小版本 bundle 绑定：
-
-- Docker Engine；
-- OpenClaw；
-- vLLM；
-- 模型权重。
-
-这些大组件更新节奏和体积不同，应由设备基础镜像/独立离线包管理。
-
-## 9. 当前性能与复杂任务 Gate
-
-复杂任务产品默认预算：
-
-```text
-OpenClaw turn timeout = 600 s
-model requests / turn = 16
-```
-
-Step 6F 已用同一综合任务真实通过：
-
-- 120,000 行 telemetry；
-- 15,000+ 行日志；
-- 48 张原始图片；
-- constrained recovery；
-- recovery 后独立状态验证；
-- `371.1 s / 14 requests`；
-- `within_product_default_budget = true`。
-
-这证明当前本地 OpenClaw + Qwen 27B 路径已具备复杂任务能力，并能进入当前定义的产品默认预算；不代表所有未知业务任务都自动满足相同 SLA。
-
-真实业务任务已证明：预算语义正确不等于产品收口一定成功。Finalizer 自身的输出边界、Task 范围和 Skill/toolbox 也必须单独验证。
-
-## 10. 完成定义
-
-一个诊断/执行任务只有同时满足以下条件才算正确完成：
-
-- 找到并使用了任务所需的真实数据；
-- 没有无理由越过用户明确指定的 target/source/scope；
-- 结论区分观察事实、推断和未证实项；
-- 需要动作时，前置条件经过证据验证；
-- 动作只执行允许的次数和范围；
-- 动作后有独立真实状态验证；
-- 最终结果通过 Fresh Finalizer / Claim Validator；
-- 产品 Answer 未增加 Claims 不支持的事实；
-- 任务没有依赖未记录的云端调用或隐藏业务 Handler；
-- 原始只读输入未被修改；
-- 证据已足够时 Agent 能停止，而不是持续扩张调查直到预算耗尽。
-
-## 11. 当前主需求
-
-Step 6 已冻结。Step 7 当前实现已经覆盖：
-
-- Claim-bounded Product Answer；
-- Result-first UI；
-- Finalizer length recovery；
-- 通用任务范围/停止契约；
-- 内置 Skill provisioning；
-- 图片质量 Skill + 稳定指标脚本；
-- 常用离线分析 Sandbox；
-- 从 0 到 1/离线部署脚本和文档。
-
-当前剩余 Gate：
-
-1. Python 全量单测；
-2. Vue build；
-3. Spark ARM64 构建/验证 `scopex-sandbox-analysis:step7`；
-4. FastAPI + Vue 真联调；
-5. 单图明确范围任务验证“不越界 + 少量请求结束”；
-6. 一个真实复杂业务任务完成 Result-first 产品验收；
-7. Stop / Resume / Steering / refresh-reconnect 产品面验收；
-8. 真实导出并导入一次 ARM64 offline bundle。
-
-详细架构边界见 `docs/architecture/06-openclaw-scopex-boundary.md`；实施与剩余工作见 `docs/architecture/07-complex-task-validation-and-next-plan.md`；部署见 `docs/09-zero-to-one-build-and-offline-deployment.md`。
+并发、网络 topology、独立漏牛真值、完整历史清理策略和业务动作锁仍为后续范围。判断已完成必须依据测试或真实执行证据，不能以文档/代码存在替代验收。
