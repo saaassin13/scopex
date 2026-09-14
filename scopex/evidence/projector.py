@@ -16,7 +16,6 @@ _OPENCLAW_LOOP_WARNING_PREFIX = "[System note: Tool-loop warning after "
 _OPENCLAW_LOOP_RECOVERY_PREFIX = "Do not repeat this exact tool action."
 _INTERNAL_READ_PREFIXES = (
     "/workspace/skills/",
-    "/task-scratch/",
 )
 _INTERNAL_READ_EXACT = {
     "/workspace/scopex-data-catalog.json",
@@ -97,11 +96,16 @@ class DataBindResolver:
 
 
 class OpenClawEvidenceProjector:
-    """Project claim-grade business observations from OpenClaw trace.
+    """Project claim-grade observations from the OpenClaw investigation trace.
 
-    The full OpenClaw transcript remains the investigation record. Workspace
-    Skills, data-catalog text and task-scratch intermediates are operational
-    context and are intentionally not promoted to claim-grade Evidence.
+    The full OpenClaw transcript remains the technical investigation record.
+    Workspace Skills and the data catalog are control/knowledge context and are
+    never promoted to claim-grade Evidence.
+
+    Task-scratch reads may still be projected as *derived working Evidence* so
+    existing large-data/compaction tasks can finalize from bounded reductions,
+    but they are marked ``evidence_role=working_derived`` and are intentionally
+    excluded from the normal User Facts UI.
 
     Stable ScopeX scripts can emit a compact JSON object with
     ``scopex_role=business_facts``. That object becomes one structured Evidence
@@ -168,6 +172,7 @@ class OpenClawEvidenceProjector:
             return ()
         added: list[EvidenceItem] = []
         nonempty_seen = 0
+        derived_working = target.startswith("/task-scratch/")
         for line_number, raw_line in enumerate(result.content.splitlines(), 1):
             if not raw_line.strip() or _is_openclaw_runtime_control_line(raw_line):
                 continue
@@ -176,18 +181,21 @@ class OpenClawEvidenceProjector:
                 break
             truncated = len(raw_line) > self.max_read_line_chars
             line = raw_line[: self.max_read_line_chars] if truncated else raw_line
+            metadata = {
+                "evidence_type": "file_line",
+                "tool": "read",
+                "line_number": line_number,
+                "line_truncated": truncated,
+                "original_line_chars": len(raw_line),
+            }
+            if derived_working:
+                metadata["evidence_role"] = "working_derived"
             added.append(
                 self.collector.add(
                     source=target,
                     raw=line,
                     tool_call_id=call.id,
-                    metadata={
-                        "evidence_type": "file_line",
-                        "tool": "read",
-                        "line_number": line_number,
-                        "line_truncated": truncated,
-                        "original_line_chars": len(raw_line),
-                    },
+                    metadata=metadata,
                 )
             )
         return tuple(added)
@@ -227,8 +235,6 @@ class OpenClawEvidenceProjector:
         text = json.dumps(keep, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
         if len(text) <= self.max_exec_chars:
             return text
-        # Prefer facts/KPI over verbose provenance when the structured helper
-        # unexpectedly exceeds the projector bound.
         for key in ("logs", "per_file_matching_samples", "top_candidates", "quality"):
             keep.pop(key, None)
             text = json.dumps(keep, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
