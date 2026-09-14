@@ -10,49 +10,73 @@ Use this skill when the user asks whether encoder data is missing, unstable, spi
 
 ## Primary source
 
-The encoder raw sample stream is primary evidence. For the current CowDisinfect logs, `{baseDir}/scripts/encoder_health.py` recognizes:
+Use the global data source `cowdisinfect_logs`:
+
+- sandbox path: `/agent-data/logs`
+- host path: `/opt/ScalingRobotics/CowDisinfect/Log`
+- files: `CowDisinfect-YYYYMMDD-HHMMSS.log[.N]`
+- files are produced per hour and an hour may contain `.1/.2/...` rotation files.
+
+Do **not** inspect `/agent-data/left-camera` for an encoder-only question. Do not recursively enumerate `/agent-data`.
+
+The stable tool recognizes:
 
 `Get EncoderVal, raw[...], filtered[...]`
 
-The tool deliberately reports **candidate events and measurements**, not business root causes.
+and analyzes the whole requested time window across all relevant rotated logs in one call.
+
+## Preferred invocation
+
+For a time-window request, directly run the existing script. Do not `cd ... && python`, do not use heredoc/inline Python, and do not inspect the script source first.
+
+```bash
+python3 {baseDir}/scripts/encoder_health.py \
+  --log-dir /agent-data/logs \
+  --start "2026-09-14 03:00:00:000" \
+  --end   "2026-09-14 04:00:00:000" \
+  --events-out /task-scratch/encoder-events.json
+```
+
+The stdout is intentionally compact `scopex_role=business_facts`. Full candidate details, when needed, go to `/task-scratch/encoder-events.json` and should only be read for specific follow-up investigation.
 
 ## First-version checks
 
 - invalid/read-failure samples under the configured raw-value rule;
-- timestamp/sample gaps;
-- observed negative raw jumps;
-- large negative jump candidates;
-- statistically unusual positive delta candidates;
+- timestamp/sample gaps, including across rotated-file boundaries;
+- count/distribution of observed negative raw changes;
+- statistically unusual negative-jump candidates;
+- configured large negative-jump candidates;
+- statistically unusual positive-delta candidates;
 - long unchanged raw periods;
 - raw-vs-filtered divergence summary.
 
-Do not automatically label a large negative jump as reset, a negative jump as encoder damage, or a flat period as stall.
+Do not automatically label a raw decrease as encoder damage or a flat period as stall.
+
+Small negative changes are summarized statistically rather than emitted one-by-one. A high `negative_jump_count` alone is not enough to call the encoder abnormal; inspect magnitude distribution and significant candidates.
 
 ## Threshold discipline
 
-Historical scripts contain different assumptions and thresholds. Treat the current CLI defaults as an explicit analysis profile, not universal hardware truth.
+Historical scripts contain different assumptions and thresholds. Treat current CLI defaults as an explicit analysis profile, not universal hardware truth.
 
-In particular:
-
-- `invalid_min` must ultimately come from the real protocol/firmware semantics;
-- `large_negative_pulses` is only a candidate separator;
-- data-driven MAD outliers identify unusual deltas, not physical impossibility;
-- no speed or distance conversion is performed in V1, so `pulses_per_mm` and physical speed limits are not silently assumed.
-
-When a site/firmware-specific encoder profile is confirmed, pass those values explicitly and document them.
+- `invalid_min` must ultimately come from real protocol/firmware semantics;
+- `large_negative_pulses` is only a configured candidate separator;
+- MAD outliers identify unusual deltas, not physical impossibility;
+- no speed/distance conversion is performed in V1, so physical motion limits are not silently assumed.
 
 ## Log context
 
-For each important candidate, use `log-context` over a small window around the event only when explanation is needed. Relevant context may include task stop, encoder reset, Modbus/read errors, restart, actual reverse motion or other lifecycle events.
+Only after the encoder summary identifies an important candidate, use `log-context` over a small window around that event when explanation is needed. Relevant context may include task stop, encoder reset, Modbus/read errors, restart or actual reverse motion.
 
-Example reasoning boundary:
+Example boundary:
 
 - raw decreases at 07:21:13 = observed fact;
-- `ResetEncoderValOnSerialPort` at the same window = observed context;
-- “this backstep was caused by reset” is a causal conclusion and should only be stated when the event ordering/semantics support it.
+- reset-related log event in the same small window = observed context;
+- “this backstep was caused by reset” remains a causal conclusion and needs ordering/semantics support.
 
 ## Scope and stop
 
-- If the user asks only whether data has gaps/backsteps, run the encoder tool and stop once answered.
+- If the user asks only whether data has gaps/backsteps, run the encoder tool once for the requested window and answer from the compact facts.
 - Do not automatically analyze cow perception, images or system load.
-- Expand to logs or other capabilities only for requested/necessary explanation.
+- Do not recursively scan mounted roots.
+- Expand to small log context only for requested/necessary explanation.
+- Stop when the requested encoder-health question is supported.
