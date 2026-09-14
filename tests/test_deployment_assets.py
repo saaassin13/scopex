@@ -69,10 +69,13 @@ class DeploymentAssetTests(unittest.TestCase):
         for token in (
             "Device Base Package", "nvcr.io/nvidia/vllm:26.08-py3", "MODEL_REPO",
             "MODEL_REVISION", "f0b7c9e722f5565102fff8481c99e4d86ae099c7",
-            "--served-model-name", "/v1/models", "hf download", "不部署系统资源 timer",
+            "--served-model-name", "/v1/models", "不部署系统资源 timer",
             "/scopex-host/current.json", "SCOPEX_MAX_IMAGES_PER_PROMPT", "--data-root",
         ):
             self.assertIn(token, text)
+        # The documented venv executable is quoted; require the actual subcommand,
+        # not one spelling that would reject a safe absolute executable path.
+        self.assertRegex(text, r"\bhf[\"']?\s+download\b")
 
 
 if __name__ == "__main__":
