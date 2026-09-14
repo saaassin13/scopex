@@ -43,11 +43,30 @@ class DeploymentAssetTests(unittest.TestCase):
         self.assertIn("--find-links", text)
         self.assertIn("target directory is not empty", text)
 
-    def test_systemd_service_restarts_on_failure(self):
+    def test_systemd_service_restarts_on_failure_and_mounts_metrics(self):
         text = (ROOT / "deploy" / "systemd" / "scopex-runtime.service").read_text(encoding="utf-8")
         self.assertIn("Restart=on-failure", text)
         self.assertIn("NoNewPrivileges=true", text)
         self.assertIn("runtime.env", text)
+        self.assertIn("--system-metrics-dir", text)
+
+    def test_system_metrics_timer_is_lightweight_and_bounded(self):
+        service = (ROOT / "deploy" / "systemd" / "scopex-system-metrics.service").read_text(encoding="utf-8")
+        timer = (ROOT / "deploy" / "systemd" / "scopex-system-metrics.timer").read_text(encoding="utf-8")
+        self.assertIn("collect_system_metrics.py", service)
+        self.assertIn("--max-file-mb 64", service)
+        self.assertIn("OnUnitActiveSec=30s", timer)
+        self.assertIn("Persistent=true", timer)
+
+    def test_deployment_doc_covers_device_base_vllm_and_model_revision(self):
+        text = (ROOT / "docs" / "09-zero-to-one-build-and-offline-deployment.md").read_text(encoding="utf-8")
+        self.assertIn("Device Base Package", text)
+        self.assertIn("vllm/vllm-openai", text)
+        self.assertIn("MODEL_REPO", text)
+        self.assertIn("MODEL_REVISION", text)
+        self.assertIn("--served-model-name", text)
+        self.assertIn("/v1/models", text)
+        self.assertIn("hf download", text)
 
 
 if __name__ == "__main__":
