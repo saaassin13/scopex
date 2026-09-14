@@ -41,6 +41,10 @@ export const api = {
     request<TaskSnapshot>('/tasks', { method: 'POST', body: JSON.stringify({ message }) }),
   createConversation: (message: string) =>
     request<TaskSnapshot>('/conversations', { method: 'POST', body: JSON.stringify({ message }) }),
+  continueConversation: (id: string, message: string) =>
+    request<TaskSnapshot>(`/conversations/${encodeURIComponent(id)}/messages`, {
+      method: 'POST', body: JSON.stringify({ message }),
+    }),
   getTask: (id: string) => request<TaskSnapshot>(`/tasks/${encodeURIComponent(id)}`),
   getEvents: (id: string, after = 0) =>
     request<EventsResponse>(`/tasks/${encodeURIComponent(id)}/events?after=${after}`),
