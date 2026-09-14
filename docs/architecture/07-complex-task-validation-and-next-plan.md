@@ -1,19 +1,20 @@
 # Complex Task Validation and Next Plan
 
-This document is the current checkpoint after Step 6A–6F. It records what has
-actually been demonstrated on Spark, what is still only planned, and the order
-of the next work. Capability, trust and usability are tracked separately.
+状态：**2026-09-14 当前有效**。
+
+This document records what has actually been demonstrated on Spark, what is now implemented in the product, what real-business failures exposed, and the remaining acceptance order. Capability, trust, usability and deployment are tracked separately.
 
 ## Frozen architecture boundary
 
 > **OpenClaw owns execution. ScopeX owns product control and trust.**
 
-OpenClaw + the local model own investigation order, tool choice, execution,
-verification and stopping. ScopeX provides data/capabilities, permissions,
-product lifecycle, Evidence projection, hard runtime boundaries, audit and the
-Fresh Finalizer. Do not add a second workflow/decision/action engine in ScopeX.
+OpenClaw + the local model own investigation order, tool choice, execution, verification and stopping. ScopeX provides data/capabilities, task scope, permissions, product lifecycle, Evidence projection, hard runtime boundaries, audit and trusted result composition.
 
-## Step 6 validation status
+Do not add a second workflow/decision/action engine in ScopeX.
+
+---
+
+## Step 6 validation status — frozen
 
 | Step | Question | Result |
 |---|---|---|
@@ -26,9 +27,7 @@ Fresh Finalizer. Do not add a second workflow/decision/action engine in ScopeX.
 
 ### 6A — Context / compaction
 
-Validated native OpenClaw compaction and structured state retention in one
-persistent session. Memory Search remains disabled; compaction is for the current
-long task, not durable memory.
+Validated native OpenClaw compaction and structured state retention in one persistent session. Memory Search remains disabled; compaction is current-task working memory, not durable memory.
 
 ### 6B — Working set
 
@@ -36,16 +35,14 @@ Validated:
 
 - 120k-row CSV processing without putting the raw dataset into model context;
 - task-local writable `/task-scratch` while external data remains read-only;
-- 48-image investigation with deterministic preprocessing plus bounded
-  `view_image` confirmation;
+- 48-image investigation with deterministic preprocessing plus bounded `view_image` confirmation;
 - final claim-grade image set limited to 1–4 read-only originals;
 - Fresh Finalizer re-opens/hash-validates original image Evidence;
-- grouped finalizer Evidence representation avoids repeated metadata expansion.
+- grouped finalizer Evidence avoids repeated metadata expansion.
 
 ### 6C — Hard budget semantics
 
-Hard `max_requests` / turn timeout are enforced by ModelProxy/OpenClaw/Runner,
-not duplicated inside ScopeX Convergence.
+Hard `max_requests` / turn timeout are enforced by ModelProxy/OpenClaw/Runner, not duplicated inside ScopeX Convergence.
 
 - budget reached + existing Evidence -> Fresh Finalizer from observed facts;
 - budget reached + no Evidence -> explicit failure;
@@ -53,17 +50,11 @@ not duplicated inside ScopeX Convergence.
 
 ### 6D — Native loop convergence
 
-OpenClaw native `tools.loopDetection` is enabled. ScopeX does not maintain a
-second result-fingerprint/stale-loop detector.
+OpenClaw native `tools.loopDetection` is enabled. ScopeX does not maintain a second result-fingerprint/stale-loop detector.
 
-Validated warning -> critical block -> model recovery/stop, plus the second
-terminal shape where repeated recovery is stopped by OpenClaw. ScopeX only maps
-that framework terminal into product finalization semantics.
+Runtime-control messages remain in Trace/Progress but are filtered out of claim-grade Evidence.
 
-OpenClaw runtime-control messages are retained in Trace/Progress but filtered
-out of claim-grade Evidence.
-
-### 6E — Integrated complex task capability
+### 6E / 6F — Integrated complex task and product-default budget
 
 Real Spark task combined:
 
@@ -72,197 +63,327 @@ Real Spark task combined:
 - 48 original images;
 - a read-only recovery capability and task-local mutable device state.
 
-The Agent correctly correlated the current `PUMP_OVERLOAD`, telemetry overload
-window, safety stop and relevant images; executed recovery exactly once; then
-performed an independent status query and observed `RUNNING / NONE /
-generation=1`. Fresh Finalizer published a valid result. Original `/agent-data`
-remained unchanged.
+The Agent correlated the current overload condition, telemetry window, safety stop and relevant images; executed recovery exactly once; then independently queried status and observed the real post-action state.
 
-The initial capability run completed in about **1008.5 s / 23 requests**. That
-proved the task was possible but not yet inside the product default budget.
+Initial capability run: about `1008.5 s / 23 requests`.
 
-### 6F — Complex-task usability
-
-The same task requirements were rerun with the product default hard budget:
+Product-default rerun:
 
 ```text
 timeout = 600 s
 max_requests = 16
-```
-
-Result:
-
-```text
-PASS_STEP6E_COMPLEX_TASK_CAPABILITY
+wall time ≈ 371.1 s
+forwarded requests = 14
 within_product_default_budget = true
 ```
 
-Observed metrics:
+Correctness Gate stayed unchanged: large data remained bounded, source data stayed read-only, recovery executed once, post-action state was independently verified, and Fresh Finalizer remained valid.
 
-- wall time: **371.1 s**;
-- forwarded requests: **14**;
-- prompt tokens: **126,412**;
-- completion tokens: **2,055**;
-- largest prompt: **12,292 tokens**;
-- `compaction_count = 0`;
-- `runtime_limit = null`;
-- `runtime_guard = null`.
+**Conclusion:** Step 6 capability and product-default budget Gate are proven and frozen.
 
-Compared with the initial 6E capability run:
+---
 
-- wall time reduced by about **63%**;
-- model requests reduced by about **39%**;
-- prompt-token processing reduced by about **51%**;
-- completion tokens reduced by about **69%**.
+## Step 7 current implementation status
 
-The trust/correctness Gate stayed unchanged:
+Step 7 is no longer only a plan. Product-answer/UI code and several real-task hardening changes now exist, but the current combined revision still needs full Spark regression before any new PASS label.
 
-- logs, telemetry and original images were all used;
-- working set remained bounded;
-- recovery executed exactly once;
-- post-recovery status was queried independently;
-- actual final state was `RUNNING / NONE / generation=1`;
-- source `/agent-data` remained unchanged;
-- Fresh Finalizer remained valid.
+| Step | Goal | Current status |
+|---|---|---|
+| 7A | Constrained Product Answer over Validated Claims | **IMPLEMENTED / ACCEPTANCE PENDING** |
+| 7B | Result-first UI | **IMPLEMENTED / ACCEPTANCE PENDING** |
+| 7C | Real Spark FastAPI + Vue integration | **IN PROGRESS** |
+| 7D | Real business product acceptance | **PENDING** |
+| 7E | Offline/edge deployment baseline | **IMPLEMENTED / SMOKE PENDING** |
 
-The generic fixes that produced this improvement were:
+### 7A — Claim-bounded Product Answer
 
-1. add a lightweight analysis sandbox layer with Pillow available at runtime;
-2. keep runtime sandbox networking disabled and tell the Agent not to waste
-   turns attempting package installation;
-3. keep the Investigation Agent's terminal handoff concise because the Fresh
-   Finalizer is the trusted product-output layer;
-4. use profiling evidence to target actual decode/output and generic-toolbox
-   waste instead of increasing budgets or writing business workflows.
-
-**Conclusion:** complex-task capability and the current product-default usability
-Gate are both proven. Step 6 is frozen.
-
-## Current main phase — Step 7 Product Answer + Result-first UI
-
-Step 7 should now improve the product surface without weakening the trust model.
-The user cares first about the conclusion and what happened; Evidence supports
-that result and should not dominate the interface.
-
-### 7A — Constrained Answer Composer
-
-Target flow:
+Current flow:
 
 ```text
 Evidence
-  -> Fresh Finalizer
+  -> Fresh Structured Finalizer
   -> Validated Claims
-  -> deterministic trust rendering
-  -> constrained Answer Composer
+  -> deterministic trust renderer
+  -> revalidation from persisted claims.json + evidence.json
+  -> Product Answer
 ```
 
-Rules:
-
-- Validated Claims remain authoritative;
-- the Composer may reorganize, summarize and improve wording;
-- it must not add uncited factual or causal claims;
-- deterministic rendering remains available as audit/trust fallback;
-- no second diagnosis/planning model loop is introduced.
-
-Primary output structure:
+Product Answer currently exposes:
 
 ```text
-诊断结果
-
-结论
-<用户最需要知道的结果>
-
-说明
-- <关键原因/观察>
-- <关键原因/观察>
-
-执行情况
-<是否执行动作，以及真实验证结果>
-
-建议
-<下一步>
-
-相关证据 >
+conclusion
+explanation
+execution
+recommendations
 ```
+
+Every Answer item retains `claim_ids`. Runtime audit writes `answer.json` and includes the structured answer in `result.json`; `final.txt` remains the deterministic trust fallback.
+
+Important current limitation:
+
+- the `execution` section only includes claims backed by explicit `evidence_role=action_verification` provenance;
+- generic `command_line` Evidence is deliberately not interpreted as “business action succeeded”.
+
+This is safer than guessing execution semantics from shell command text, but generic action provenance remains a known follow-up.
 
 ### 7B — Result-first UI
 
-The primary task page should emphasize:
+The Vue task page now prioritizes:
 
 1. conclusion;
-2. concise explanation;
-3. action/execution result;
-4. recommendation/next action;
-5. expandable Evidence / Findings.
+2. explanation;
+3. execution state;
+4. recommendation;
+5. expandable Progress / Evidence / deterministic fallback.
 
-Evidence/Finding is supporting material. Do not spend disproportionate product
-space on an Evidence viewer when the user primarily needs the result.
+This reflects the product principle that users care first about the result. Evidence remains available for audit but no longer dominates the main page.
 
-### 7C — Real Spark product integration
+### 7C — Real Spark integration: findings so far
 
-Validate the actual product path, not only probe scripts:
+Real API/business-data runs have already produced useful failures. These failures are retained as product evidence rather than dismissed as model randomness.
 
-- FastAPI task create/status/control/events/evidence/result;
-- Vue result page and task controls;
-- live Progress readability during a multi-minute task;
-- Stop / Resume / Steering through the product surface;
-- final result + Evidence expansion;
-- refresh/reconnect behavior.
+#### Finding A — budget finalization could still fail inside the Finalizer
 
-Keep polling initially if it is adequate. Introduce SSE only when measured UX or
-network behavior justifies it.
+Observed real path:
 
-### 7D — Real business acceptance task
+```text
+Agent reaches 16-request hard boundary
+    ↓
+existing Evidence available
+    ↓
+Fresh Finalizer starts
+    ↓
+structured JSON output hits finish_reason=length
+    ↓
+structured_finalizer_truncated
+    ↓
+Task FAILED
+```
 
-After the product surface is integrated, run at least one real diagnostic task
-from the intended business environment through the API/UI path. Do not use the
-synthetic 6E fixture as the only product-acceptance evidence.
+This showed that “6C hard budget semantics PASS” did not automatically prove that Finalizer serialization was robust on large real Evidence sets.
 
-Acceptance should include:
+Current fix:
 
-- correct final conclusion;
+- Finalizer prompt requires a small Claim set;
+- each Claim has a bounded number of Evidence refs;
+- only `finish_reason=length` triggers one bounded no-tool retry over the **same Evidence**;
+- retry asks for a shorter JSON shape and may use a larger finalizer token budget;
+- `result.json` records `finalizer_retry_count`.
+
+This is transport/serialization recovery, not a second investigation turn.
+
+#### Finding B — single-image task could over-expand scope
+
+Observed real behavior:
+
+- user explicitly asked to inspect one image / use direct visual ability;
+- Agent still inspected other data files and continued making model requests;
+- the behavior was not a literal repeated-tool loop, so native loopDetection was not the right control.
+
+Root cause is not proven to be one component only. The product lacked three supporting layers:
+
+1. a generic scope/stop contract;
+2. a properly provisioned built-in Skill path in the production workspace;
+3. a complete common analysis toolbox, so the model did not repeatedly probe for missing packages.
+
+Current fix keeps model autonomy but adds product constraints:
+
+```text
+explicit user target/source/scope = task boundary
+        ↓
+minimal sufficient evidence path
+        ↓
+expand only when needed to answer the original question
+        ↓
+stop when evidence is sufficient
+```
+
+This rule is generic to images/logs/CSV/point cloud tasks and is not a business Workflow Engine.
+
+### Built-in Skill provisioning
+
+Runtime API now provisions built-in repository Skills into `<workspace>/skills` before OpenClaw starts and allowlists them.
+
+Default built-ins:
+
+```text
+cow-disinfect-diagnosis
+image-quality-diagnosis
+```
+
+`image-quality-diagnosis` explicitly distinguishes direct visual inspection from optional quantitative metrics. A single explicit image task should normally inspect the specified original and stop when the visual evidence is sufficient; it should not scan sibling logs/JSON/images unless the user asks for correlation or the original scope is genuinely insufficient.
+
+### Stable image-quality script
+
+The image Skill includes a small deterministic metric script for explicit image paths. It does not scan directories and does not output a business root cause; it only provides objective measurements such as blur/gradient/brightness/contrast indicators.
+
+---
+
+## Analysis Sandbox baseline
+
+The Step 6F image only added Pillow. Real business runs showed repeated dependency probes are a concrete usability cost, so the Step 7 image now targets a reusable offline analysis baseline:
+
+```text
+numpy
+scipy
+pandas
+cv2
+Pillow
+scikit-image
+matplotlib
+openpyxl
+PyYAML
+psutil
+scikit-learn
+Open3D when available from the current ARM64 apt distribution
+```
+
+The image writes `/opt/scopex/toolbox.json` so actual availability is inspectable.
+
+Build-time Ubuntu/Debian APT sources are rewritten to Tsinghua TUNA. Runtime networking remains disabled.
+
+This is capability provisioning, not Agent-loop logic.
+
+---
+
+## Step 7E — edge/offline deployment baseline
+
+Added deployment assets:
+
+```text
+docs/09-zero-to-one-build-and-offline-deployment.md
+scripts/export_offline_bundle.sh
+scripts/install_offline_bundle.sh
+deploy/systemd/scopex-runtime.service
+deploy/systemd/runtime.env.example
+```
+
+Offline bundle design:
+
+```text
+fixed-commit source archive
+prebuilt frontend/dist
+ARM64/Python-compatible wheelhouse
+scopex-sandbox-analysis Docker image
+manifest + SHA256SUMS
+```
+
+OpenClaw, vLLM and model weights are currently treated as device-base assets instead of being bundled into every ScopeX update.
+
+Systemd is preferred for the host Runtime API because ScopeX itself launches Docker sandboxes through the host daemon; Docker-in-Docker is intentionally avoided.
+
+---
+
+## Remaining acceptance order
+
+Do not branch into unrelated architecture work before these Gates are complete.
+
+### Gate 1 — Python regression
+
+```bash
+python3 -m unittest discover -s tests -v
+```
+
+Expected: all tests pass on the current integrated revision.
+
+### Gate 2 — frontend build
+
+```bash
+cd frontend
+npm run build
+```
+
+### Gate 3 — ARM64 sandbox build
+
+Build `scopex-sandbox-analysis:step7`, then verify all required imports and `/opt/scopex/toolbox.json`.
+
+### Gate 4 — explicit single-image scope task
+
+Use one known image and an explicit task boundary such as:
+
+```text
+只检查 <one image>。
+直接使用视觉能力判断模糊/起雾/镜头脏污特征。
+不要读取日志、JSON、其他图片或目录信息。
+如果无法确认物理原因，直接说明不确定。
+```
+
+Acceptance:
+
+- the specified original image is actually viewed;
+- no excluded sibling data is read;
+- no unnecessary directory-wide scan;
+- task stops in a small number of model requests rather than running to the 16-request hard limit;
+- uncertainty is allowed instead of endless exploration;
+- final Claims/Product Answer remain traceable.
+
+The exact request count is an observation metric, not a new hardcoded per-task workflow budget.
+
+### Gate 5 — real complex business task
+
+Run a non-synthetic business task through the actual FastAPI/UI path.
+
+Acceptance includes:
+
+- correct result;
 - understandable explanation;
-- trustworthy action/verification presentation;
+- trustworthy execution/verification presentation;
 - Evidence traceability;
 - no hidden business workflow in ScopeX;
-- acceptable user-visible latency/progress behavior.
+- acceptable progress/latency behavior.
 
-## Optional performance track — not blocking Step 7
+### Gate 6 — control/reconnect UX
 
-The original profile showed local decode/output cost is still substantial. vLLM
-throughput work is now optional rather than the next mandatory phase because the
-600 s / 16-request Gate passed.
+Validate:
 
-Only reopen this track if real product tasks expose a concrete SLA issue. Then
-use controlled experiments:
+- Stop;
+- Resume;
+- Steering;
+- browser refresh/reconnect;
+- Evidence/result reloading.
 
-- decode tokens/s and TTFT;
-- vLLM launch parameters and resource utilization;
-- supported speculative decoding / draft-model options for this exact Qwen
-  configuration;
-- prefix-cache per-run deltas;
-- correctness and memory-pressure comparison under an unchanged task.
+### Gate 7 — offline deployment smoke
 
-Do not improve a benchmark by weakening diagnosis/action/verification semantics.
+On an ARM64 online build host:
 
-## Known non-blocking gaps
+1. build frontend and analysis sandbox;
+2. export an offline bundle;
+3. verify bundle SHA256;
+4. install into a new empty directory without package-network access;
+5. `docker load` image;
+6. start Runtime API from the offline-installed `.venv`;
+7. health/smoke task;
+8. verify rollback to previous release directory/image.
 
-Track these, but do not pre-emptively overbuild them:
+---
 
-- mixed Gateway/Sandbox tasks sharing `/task-scratch` need a real-run check;
-- task-scratch retention/cleanup policy is still simple host retention;
-- tasks requiring more than 4 simultaneous final claim-grade originals are not
-  generalized yet;
-- sandbox CPU/memory limits may need tuning if future real tasks require heavier
-  local processing;
-- compaction itself is relatively expensive and should remain a pressure valve,
-  not the normal path;
-- Memory Search remains out of scope until a real cross-task recall requirement
-  appears.
+## Known gaps after this merge
 
-## Merge policy
+These are tracked, not silently treated as solved:
 
-`main` contains validated runtime/product behavior. Step 6A–6F are frozen as the
-current baseline. Step 7 work should proceed in small branches with explicit
-product acceptance criteria; do not mix unrelated UI experiments or speculative
-performance work into the trusted runtime baseline.
+- generic business action-verification provenance is not yet generalized beyond explicit Evidence metadata;
+- frontend has no npm lockfile yet; offline deployment therefore ships prebuilt `frontend/dist`, while fully reproducible source rebuild remains a future cleanup;
+- Open3D is optional until the current ARM64 base distribution is proven to provide a usable package;
+- OpenClaw/vLLM/model are not inside the ScopeX offline update bundle;
+- task-scratch retention/cleanup is still simple;
+- mixed Gateway/Sandbox tasks sharing scratch still need a real-run check;
+- more than four simultaneously claim-grade original images are not generalized;
+- compaction remains a pressure valve, not a normal desired path.
+
+---
+
+## Merge / status policy
+
+`main` is the unique current integrated baseline.
+
+A feature may be merged to `main` as **implemented** when the integrated code/documentation baseline needs to move forward, but only real test/run evidence may upgrade it to **PASS**. This avoids both extremes:
+
+- keeping validated Step 6 code frozen forever while product work accumulates elsewhere;
+- declaring new product behavior proven merely because code was merged.
+
+For future changes:
+
+- use small feature branches;
+- keep architecture boundary unchanged unless evidence requires change;
+- record real failures and control-variable fixes;
+- update handoff docs only after a meaningful stage, not every minor edit.

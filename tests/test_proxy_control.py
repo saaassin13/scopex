@@ -26,14 +26,28 @@ class ProxyControlTests(unittest.TestCase):
     def test_request_policy_accepts_validated_wire(self):
         OpenClawRequestPolicy("qwen-local", 2048).validate(payload())
 
-    def test_request_policy_rejects_thinking_or_tool_drift(self):
+    def test_request_policy_rejects_thinking_or_capability_expansion(self):
         bad = payload()
         bad["chat_template_kwargs"] = {"enable_thinking": True}
         with self.assertRaises(RequestRejected):
             OpenClawRequestPolicy("qwen-local", 2048).validate(bad)
 
+        # OpenClaw utility requests (for example compaction) may reduce or omit
+        # the normal tool surface. Capability reduction is allowed.
+        reduced = payload()
+        reduced["tools"] = reduced["tools"][:-1]
+        OpenClawRequestPolicy("qwen-local", 2048).validate(reduced)
+
+        omitted = payload()
+        omitted.pop("tools")
+        OpenClawRequestPolicy("qwen-local", 2048).validate(omitted)
+
+        # Capability expansion outside the configured allowlist is still a hard
+        # policy violation.
         bad = payload()
-        bad["tools"] = bad["tools"][:-1]
+        bad["tools"].append(
+            {"type": "function", "function": {"name": "write", "parameters": {}}}
+        )
         with self.assertRaises(RequestRejected):
             OpenClawRequestPolicy("qwen-local", 2048).validate(bad)
 

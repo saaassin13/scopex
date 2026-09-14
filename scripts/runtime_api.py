@@ -15,6 +15,7 @@ if str(ROOT) not in sys.path:
 import uvicorn
 
 from scopex.agent.docker_host import resolve_local_docker_host
+from scopex.agent.skills import DEFAULT_BUILTIN_SKILLS, prepare_workspace_skills
 from scopex.api.factory import LocalRuntimeConfig, OpenClawRuntimeFactory
 from scopex.api.fastapi_app import create_app
 from scopex.api.service import TaskService
@@ -109,7 +110,17 @@ def main(argv=None) -> int:
     parser.add_argument("--max-tokens", type=int, default=2048)
     parser.add_argument("--finalizer-max-tokens", type=int, default=768)
     parser.add_argument("--finalizer-timeout", type=int, default=180)
-    parser.add_argument("--skill", action="append", default=[])
+    parser.add_argument(
+        "--skill",
+        action="append",
+        default=[],
+        help="additional OpenClaw skill name; repeatable",
+    )
+    parser.add_argument(
+        "--no-default-skills",
+        action="store_true",
+        help="do not expose ScopeX built-in product skills by default",
+    )
     args = parser.parse_args(argv)
 
     if not sys.platform.startswith("linux") or os.geteuid() == 0:
@@ -124,13 +135,24 @@ def main(argv=None) -> int:
     if "\n" in api_key or "\r" in api_key:
         raise ValueError("invalid API key environment value")
 
+    workspace = args.workspace.expanduser().resolve()
+    requested_skills = (
+        (() if args.no_default_skills else DEFAULT_BUILTIN_SKILLS)
+        + tuple(args.skill)
+    )
+    skills = prepare_workspace_skills(
+        workspace=workspace,
+        skill_names=requested_skills,
+        builtin_root=ROOT / "skills",
+    )
+
     data_root = args.data_root.expanduser().resolve()
     config = LocalRuntimeConfig(
         cli_path=args.openclaw_bin.expanduser().resolve(),
         model_id=args.model,
         base_url=args.base_url,
         api_key=api_key,
-        workspace=args.workspace.expanduser().resolve(),
+        workspace=workspace,
         work_root=data_root / "work",
         sandbox_image=args.sandbox_image,
         docker_host=resolve_local_docker_host(),
@@ -139,7 +161,7 @@ def main(argv=None) -> int:
         max_tokens=args.max_tokens,
         finalizer_max_tokens=args.finalizer_max_tokens,
         finalizer_timeout_s=args.finalizer_timeout,
-        skills=tuple(args.skill),
+        skills=skills,
         data_binds=tuple(args.data_dir),
         exec_host=args.exec_host,
         exec_mode=args.exec_mode,
@@ -174,6 +196,7 @@ def main(argv=None) -> int:
     print(f"view_image: {'enabled' if config.enable_view_image else 'disabled'}", flush=True)
     print(f"progress_card: {'enabled' if config.enable_progress_card else 'disabled'}", flush=True)
     print(f"compaction: {'enabled' if config.enable_compaction else 'disabled'}", flush=True)
+    print(f"skills: {', '.join(config.skills) if config.skills else 'none'}", flush=True)
     if config.data_binds:
         print("data binds:", flush=True)
         for bind in config.data_binds:

@@ -229,8 +229,17 @@ class OpenClawTaskRuntime:
             thread.join(timeout=3)
 
     def _runtime_message(self, message: str) -> str:
-        """Attach capability context without prescribing an investigation workflow."""
+        """Attach product capability and scope context without owning the Agent loop."""
         notes: list[str] = []
+        notes.append(
+            "Treat the user's explicit target, source, and scope constraints as binding. "
+            "Use the smallest sufficient evidence path for the requested outcome; do not inspect "
+            "sibling files, unrelated datasets, or other subsystems merely because they are "
+            "available. Expand beyond an explicitly named target only when it is necessary to "
+            "answer the request or verify an allowed action, and keep that expansion minimal. "
+            "Once the requested question is supported at the requested confidence, stop using "
+            "tools and hand off the result instead of continuing exploratory investigation."
+        )
         if self.spec.task_scratch_bind is not None and self.spec.exec_host == "sandbox":
             notes.append(
                 f"{TASK_SCRATCH_PATH} is writable, task-local scratch space for intermediate "
@@ -247,13 +256,17 @@ class OpenClawTaskRuntime:
             )
         if "view_image" in self.spec.tools:
             notes.append(
-                "For large image sets, keep the visual working set bounded: metadata, "
-                "multi-image view_image calls, or scratch-derived previews may be used for "
-                "screening. When the final conclusion depends on images, narrow to the "
-                "smallest useful read-only original set and inspect that final set in a "
-                "bounded view_image call of at most 4 originals. ScopeX can independently "
-                "SHA-verify those originals again in the Fresh Finalizer; singleton re-open "
-                "calls are not required solely for evidence bookkeeping."
+                "For one or a few explicitly named images, inspect those read-only originals "
+                "directly with view_image before broad directory exploration or derived metrics. "
+                "Do not inspect adjacent logs, JSON, or sibling images unless the request needs "
+                "cross-source correlation or the direct visual evidence is insufficient. For "
+                "large image sets, keep the visual working set bounded: metadata, multi-image "
+                "view_image calls, or scratch-derived previews may be used for screening. When "
+                "the final conclusion depends on images, narrow to the smallest useful read-only "
+                "original set and inspect that final set in a bounded view_image call of at most "
+                "4 originals. ScopeX can independently SHA-verify those originals again in the "
+                "Fresh Finalizer; singleton re-open calls are not required solely for evidence "
+                "bookkeeping."
             )
         if self.spec.concise_terminal_handoff:
             notes.append(

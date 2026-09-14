@@ -1,5 +1,6 @@
 .local/
 runs/
+dist/
 *.local.json
 .env
 .env.*

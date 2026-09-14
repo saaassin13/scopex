@@ -141,8 +141,11 @@ class OpenClawTaskRuntimeTests(unittest.TestCase):
         second = runtime.run_turn("second", turn_name="turn-2")
         self.assertTrue(first.cli_outcome.completed)
         self.assertTrue(second.cli_outcome.completed)
-        self.assertEqual(first.cli_outcome.answer, "model says: first")
-        self.assertEqual(second.cli_outcome.answer, "model says: second")
+        # Runtime capability context is intentionally prepended before the user
+        # message. This test is about session reuse/state continuity, not the
+        # exact capability boilerplate (covered by runtime-message contract tests).
+        self.assertTrue(first.cli_outcome.answer.endswith("\n\nfirst"))
+        self.assertTrue(second.cli_outcome.answer.endswith("\n\nsecond"))
         keys = (self.root / "runtime" / "session-keys.txt").read_text().splitlines()
         self.assertEqual(keys, ["agent:sx1:task-1", "agent:sx1:task-1"])
         self.assertEqual(len(ModelHandler.bodies), 2)

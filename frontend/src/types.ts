@@ -31,11 +31,29 @@ export interface EvidenceSnapshot {
   items: EvidenceItem[]
 }
 
+export interface AnswerItem {
+  text: string
+  claim_ids: string[]
+  kind: string
+}
+
+export interface ProductAnswer {
+  version: number
+  conclusion: AnswerItem[]
+  explanation: AnswerItem[]
+  execution: AnswerItem[]
+  recommendations: AnswerItem[]
+}
+
+export interface ResultPayload extends Record<string, unknown> {
+  answer?: ProductAnswer
+}
+
 export interface ResultResponse {
   task_id: string
   state: string
   available: boolean
-  result?: Record<string, unknown>
+  result?: ResultPayload
   rendered?: string | null
 }
 
