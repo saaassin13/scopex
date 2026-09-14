@@ -86,13 +86,31 @@ A physical cow completely invisible to the perception system and never creating 
 ## KPIs
 
 - `total_cows`;
+- final count distribution: 4 / 3 / 2 / 1 / 0 / missing;
 - `complete_four_nipple_cows`;
 - `complete_four_nipple_rate`;
 - `capped_2d_detections = Σ min(final_2d_count, 4)`;
 - `expected_nipples = total_cows × 4`;
 - `nipple_recognition_rate = capped_2d_detections / expected_nipples`;
-- final 2D count distribution;
 - unfinished/missing-result/over-detection quality counters.
+
+## Interpretation and report boundary
+
+The stable script computes KPI facts. It should **not** manufacture a natural-language diagnosis or speculate about why recognition is low.
+
+The final user report is produced downstream from validated Claims. It should normally answer in this order:
+
+1. this window's total cow count;
+2. 4/3/2/1/0/missing final 2D distribution;
+3. complete-four rate and overall nipple recognition rate;
+4. important data-quality issues such as unfinished/missing/over-detection;
+5. only if the user asks why, bounded follow-up around the concrete abnormal interval/cow.
+
+For example, prefer a human result such as:
+
+> 7:00–8:00 共统计 438 头牛，其中 400 头最终识别到 4 个乳头、38 头识别到 3 个乳头。完整四乳头率为 91.32%，总体乳头识别率为 97.83%。
+
+Do not expose field names/JSON to the user as the main report.
 
 ## Log context and stop
 
