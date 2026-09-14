@@ -10,26 +10,10 @@ from scopex.finalizer.claims import claim_set_from_dict
 class ProductAnswerReadabilityTests(unittest.TestCase):
     def test_nipple_business_scalars_are_rendered_for_people(self):
         catalog = EvidenceCatalog('task-1', 'session-1')
-        catalog.add(
-            source='exec:stats',
-            raw='"nipple_recognition_rate": 0.978311,',
-            metadata={'evidence_type': 'command_line'},
-        )
-        catalog.add(
-            source='exec:stats',
-            raw='"total_cows": 438,',
-            metadata={'evidence_type': 'command_line'},
-        )
-        catalog.add(
-            source='exec:stats',
-            raw='"complete_four_nipple_cows": 400,',
-            metadata={'evidence_type': 'command_line'},
-        )
-        catalog.add(
-            source='exec:stats',
-            raw='"3": 38,',
-            metadata={'evidence_type': 'command_line'},
-        )
+        catalog.add(source='exec:stats', raw='"nipple_recognition_rate": 0.978311,', metadata={'evidence_type': 'command_line'})
+        catalog.add(source='exec:stats', raw='"total_cows": 438,', metadata={'evidence_type': 'command_line'})
+        catalog.add(source='exec:stats', raw='"complete_four_nipple_cows": 400,', metadata={'evidence_type': 'command_line'})
+        catalog.add(source='exec:stats', raw='"3": 38,', metadata={'evidence_type': 'command_line'})
         claims = claim_set_from_dict({
             'claims': [
                 {'id': 'C1', 'kind': 'fact', 'topic': 'ignored', 'evidence_refs': ['E1'], 'confidence': 'high', 'scope': 'time_window', 'relation': 'observed'},
