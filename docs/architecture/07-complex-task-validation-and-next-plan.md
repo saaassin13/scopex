@@ -2,15 +2,11 @@
 
 状态：**2026-09-14 当前有效**。
 
-本文件记录已经在 Spark 证明的能力、当前产品实现、第一批业务能力以及剩余验收顺序。
-
 ## 1. Frozen architecture boundary
 
 > **OpenClaw owns execution. ScopeX owns product control and trust.**
 
-OpenClaw + 本地模型负责调查顺序、工具选择、执行、验证和停止。ScopeX 提供任务范围、能力、权限、生命周期、Evidence、预算、审计和可信产品结果。
-
-不增加第二套 Workflow / Decision / Action Engine。
+OpenClaw + 本地模型负责调查、工具选择、执行、验证和停止；ScopeX 提供任务范围、能力、权限、生命周期、Evidence、预算、审计、时间触发和可信产品结果。不增加第二套 Workflow / Decision / Action Engine。
 
 ## 2. Step 6 — frozen
 
@@ -23,68 +19,66 @@ OpenClaw + 本地模型负责调查顺序、工具选择、执行、验证和停
 | 6E Complex Task Capability | **CAPABILITY PASS** |
 | 6F 600s / 16-request Product Gate | **PASS** |
 
-6F 综合任务：120k telemetry + 15k+ logs + 48 images + constrained recovery + post-action verification，约 `371.1 s / 14 requests`。
+6F 既定综合任务约 `371.1 s / 14 requests`。这些结论只证明冻结基线，不自动覆盖新业务代码。
 
-该结论只证明当前基线和任务，不自动证明新模型、新业务 Skill 或任何未知任务满足同样 Gate。
-
-## 3. Step 7 产品层
-
-当前：
-
-| 能力 | 状态 |
-|---|---|
-| Claim-bounded Product Answer | **IMPLEMENTED / ACCEPTANCE PENDING** |
-| Result-first UI | **IMPLEMENTED / ACCEPTANCE PENDING** |
-| Spark FastAPI + Vue | **IN PROGRESS** |
-| Real business acceptance | **IN PROGRESS** |
-| Edge/offline deployment | **IMPLEMENTED / SMOKE PENDING** |
-
-### 已解决的真实产品问题
-
-#### Finalizer length truncation
-
-真实任务到达 request budget 后已有 Evidence，但 Fresh Finalizer JSON 可能被 `finish_reason=length` 截断。当前实现：
-
-- 少量重要 Claims；
-- 每 Claim bounded Evidence refs；
-- 仅 length 时同 Evidence 一次无工具短 JSON 恢复；
-- `result.json` 记录 retry count。
-
-这不是第二次调查。
-
-#### Explicit-scope task over-expansion
-
-真实单图任务证明“native loop detection”不等于“业务范围控制”。当前 Runtime 通用契约：
+## 3. Step 7 / Product V1 当前实现
 
 ```text
-explicit target/source/scope = binding
+Conversation / Manual Task / Scheduled Trigger
         ↓
-minimal sufficient evidence
+TaskService
         ↓
-expand only if required by original question
+OpenClaw + local model
         ↓
-stop when supported
+Skills / tools
+        ↓
+Progress / Audit
+        ↓
+Conversation result
+或
+Evidence -> Finalizer -> Claims -> Product Answer
 ```
 
-## 4. 当前主阶段 — Business V1
+当前代码已实现、尚待回归：
 
-产品能力不再以“日志分析器”为中心，也不直接把历史脚本包装成 Skill。
+- Claim-bounded Product Answer；
+- deterministic business readability；
+- Result-first UI；
+- Conversation 与 Task 共用 Runtime；
+- Conversation 正常结束时允许无 Evidence；
+- started/finished/duration/trigger metadata；
+- interval/daily/once 简单 Schedule；
+- busy 时 `SKIPPED_BUSY`；
+- run-now 不改变 recurring cadence；
+- Task 评价；
+- review ZIP export；
+- FastAPI/Vue 对应页面/API。
 
-当前设计：
+Scheduler 仅是时间 Trigger，不决定 Skill 或业务步骤。
 
-```text
-业务问题
-   ↓
-独立业务 Skill 的主数据源
-   ↓
-确定性事实/候选
-   ↓ 仅在需要解释时
-bounded log-context
-   ↓
-Agent 综合判断
-```
+## 4. 真实产品问题与对应修复
 
-默认 Built-in Skills：
+### 4.1 Finalizer length truncation
+
+已有 Evidence 时结构化输出可能 `finish_reason=length`。当前：Claims 数量/Evidence refs 有界；仅 length 时同 Evidence 一次无工具恢复。
+
+### 4.2 Explicit scope over-expansion
+
+用户明确 target/source/scope 是约束。走最短充分路径，只有原范围不足时才最小扩展，证据够即停止。
+
+### 4.3 普通问答被诊断流程误判失败
+
+旧行为：无 Evidence → `investigation_completed_without_evidence`。
+
+当前：Conversation 与 Task 仍共用 TaskService/OpenClaw，但 Conversation 的正常 final answer 可直接发布；正式 Task 仍要求 Evidence。
+
+### 4.4 Product Answer 太机械
+
+当前增加受 Claims 约束的确定性字段格式化：百分比、单位、常见业务字段翻译。原始 Evidence/技术错误下沉详情；不调用第二次诊断模型。
+
+## 5. Business V1
+
+默认 Skills：
 
 ```text
 system-health
@@ -94,206 +88,152 @@ encoder-health
 log-context
 ```
 
-旧 `cow-disinfect-diagnosis` 留作历史/专项回归，不再默认加载。
+### system-health
 
-完整业务口径见 `docs/business/01-business-capabilities-v1.md`。
-
-### 4.1 system-health
-
-业务对象：DGX Spark host，而不是 Agent Sandbox。
-
-实现：
+只做**当前 host state**：
 
 ```text
-user systemd timer / 30s
-   ↓
-scripts/collect_system_metrics.py
-   ↓
-~/.local/share/scopex/system-metrics/system_metrics.jsonl
-   ↓ read-only bind
-system-health Skill
+Task create
+ -> host snapshot
+ -> <task-work>/host/current.json
+ -> read-only /scopex-host/current.json
+ -> Agent
 ```
 
-事实包括 CPU/load、memory、disk、GPU、Docker、top processes、collector errors。
+已取消：30 秒 timer、`system_metrics.jsonl`、历史 CPU/memory/disk/GPU 分析。
 
-设计目标：回答当前/历史负载，又不把 Agent `exec_host` 切到 gateway。
+Agent 不获得 host shell；Snapshot 不可用时必须 unknown，禁止 Sandbox fallback。
 
-### 4.2 image-quality-diagnosis
+### image-quality
 
-主数据源是原图。单图优先 direct view；需要量化才调用稳定 metrics。脏污/起雾原因不足时允许 unknown。
+原图优先，必要时稳定 metrics；严格范围、证据够停止。
 
-### 4.3 nipple-recognition-analysis
+### nipple-recognition-analysis
 
-真实数据已经纠正最初“以 inference JSON 为主”的方案。
-
-原因：检测/推理失败时 JPG/JSON 可能不会保存，所以 JSON/JPG 数量不能作为牛数或识别率分母。
-
-正式产品口径：
+正式口径：
 
 ```text
-CowDisinfect rotated logs
-  -> named cow detection cycles
-  -> frame: ImgTimeStamp + CowOccuredCount + DetectingNumCurRound
-  -> per-frame 2D NippleNum
-  -> New cow detecte finished / LastImgTimeStamp
-  -> final consumed 2D NippleNum per cow
-  -> hourly KPI
+rotated CowDisinfect logs
+ -> named cow cycles
+ -> per-frame 2D NippleNum
+ -> New cow detecte finished / LastImgTimeStamp
+ -> final consumed 2D NippleNum
+ -> KPI
 ```
 
-固定规则：
+- 一头牛固定 4 个乳头；
+- 只统计 2D boxes，不使用 3D valid；
+- 不取 max，不求和；
+- JPG/JSON 失败路径可能不存在，因此不做 denominator；
+- `>4` 单列过检、KPI cap=4；
+- unfinished cycle 保留在保守分母。
 
-- 一头牛最多 4 个乳头；
-- KPI 统计 2D detection boxes，绝不使用 3D valid count；
-- 最终帧由 `LastImgTimeStamp` 指定，不用 `max(NippleNum)`；
-- `NippleNum > 4` 单列 over-detection，KPI cap=4；
-- 已开始但未完成/缺 final 结果的周期不从保守分母中删除；
-- JPG/JSON 只作辅助结果核对，例如 JSON marker labels `1..4`。
+### encoder-health
 
-当前工具：
+V1 只分析 invalid/read failure、sample gap、negative jump、large negative candidate、positive delta outlier candidate、flat raw、raw/filtered diff。旧业务阈值不直接继承。
 
-```text
-skills/nipple-recognition-analysis/scripts/nipple_stats.py
-```
+### log-context
 
-真实边界：系统完全漏掉且从未创建命名检测周期的物理奶牛，仍需 RFID/视频/其他 ground truth 才能进入“实际经过牛数”。
-
-### 4.4 encoder-health
-
-V1 只做编码器数据健康：
-
-- invalid/read failure；
-- sampling gap；
-- negative jump；
-- large negative candidate；
-- positive delta statistical outlier；
-- flat raw candidate；
-- raw/filtered diff。
-
-不在 V1 做漏牛/牛位推断，也不直接继承历史 `200mm/s`、`1.5×pitch` 等经验规则。
-
-### 4.5 log-context
-
-公共辅助能力。按明确日志 + 时间/关键词返回 bounded raw evidence；不独立诊断根因，无 anchor 时不无限扩大窗口。
-
-## 5. Analysis Sandbox
-
-当前目标：
-
-```text
-numpy scipy pandas cv2 Pillow scikit-image matplotlib
-openpyxl PyYAML psutil scikit-learn
-Open3D when ARM64 apt provides it
-```
-
-`/opt/scopex/toolbox.json` 记录实际可用能力。Runtime 网络保持 `none`。
-
-复杂 interpreter 使用原则：优先已有 Skill script；必须临时写复杂 Python 时先写 `/task-scratch/*.py`，再直接 `python3 file.py`，避免被 OpenClaw complex-interpreter preflight 拦截。
+公共 bounded raw log window，不独立判根因。
 
 ## 6. Deployment baseline
 
-部署拆两层：
+部署分层：
 
 ```text
 Device Base Package
-  DGX OS / Docker / NVIDIA Runtime / OpenClaw / vLLM image / model weights
+  DGX OS / Docker / NVIDIA Runtime / OpenClaw / vLLM / model
 
 ScopeX Update Bundle
-  source / frontend / wheelhouse / analysis sandbox / Skills / checksum
+  source / frontend dist / wheelhouse / analysis sandbox / Skills / checksum
 ```
 
-`docs/09-zero-to-one-build-and-offline-deployment.md` 已补 Docker、vLLM、模型选择/下载/离线搬运。
-
-当前生产 served id：`qwen3.8-27b-nvfp4`。
-
-必须补录真实：
-
-```text
-MODEL_REPO
-MODEL_REVISION
-vLLM image tag/digest
-OpenClaw version
-```
-
-新模型必须重新跑 Agent/tool/image/business Gate。候选模型不能自动替换现有基线。
+当前 served id：`qwen3.8-27b-nvfp4`；仍需补录真实 `MODEL_REPO + MODEL_REVISION`。完整流程见 `docs/09-zero-to-one-build-and-offline-deployment.md`。
 
 ## 7. Remaining acceptance order
 
-### Gate 1 — Backend regression
+### Gate 1 — Focused backend
+
+```bash
+python3 -m unittest \
+  tests.test_product_answer \
+  tests.test_product_answer_readability \
+  tests.test_business_skill_tools \
+  tests.test_schedules \
+  tests.test_task_run_metadata \
+  tests.test_fastapi_app \
+  tests.test_skill_provisioning \
+  tests.test_deployment_assets -v
+```
+
+### Gate 2 — Full backend
 
 ```bash
 python3 -m unittest discover -s tests -v
 ```
 
-专项：
-
-```bash
-python3 -m unittest \
-  tests.test_business_skill_tools \
-  tests.test_skill_provisioning \
-  tests.test_deployment_assets -v
-```
-
-### Gate 2 — Frontend
+### Gate 3 — Frontend
 
 ```bash
 cd frontend
 npm run build
 ```
 
-### Gate 3 — ARM64 Sandbox
+### Gate 4 — ARM64 Sandbox
 
-构建 `scopex-sandbox-analysis:step7`，验证 required imports + `/opt/scopex/toolbox.json`。
+构建 `scopex-sandbox-analysis:step7`，验证 toolbox imports + manifest。
 
-### Gate 4 — system-health real run
+### Gate 5 — Conversation
 
-- metrics timer 连续运行；
-- 当前/历史窗口正确；
-- Docker/GPU 字段在 Spark 真实可解析；
-- Agent 不读 Sandbox 系统信息冒充 host。
+输入“当前可用的 Skill 有哪些”，应正常完成；可以没有 Evidence；不得进入 `investigation_completed_without_evidence`。
 
-### Gate 5 — nipple 2D KPI real-data acceptance
+### Gate 6 — Current system-health
 
-使用完整一小时 CowDisinfect 轮转日志：
+- `/scopex-host/current.json` 存在且采样时间接近 Task；
+- 当前磁盘/内存/CPU/GPU 能正确读取；
+- 某字段 collector 失败时显示 unavailable；
+- Trace 不用 Sandbox `/proc/free/df/nvidia-smi` 代替 host。
 
-- 人工抽样确认命名牛周期数量；
-- 确认 `LastImgTimeStamp` 正确回挂到最终帧；
-- 确认最终 2D `NippleNum`；
-- 人工复算 `Σ min(N,4) / (total_cows×4)`；
-- 早期帧 4、最终帧 2/3 的牛必须按最终帧；
-- unfinished/missing final result 不从分母消失；
-- 有完整 artifact 目录时核对最终 JPG/JSON 与 2D markers；
-- 明确完全漏检牛仍需要独立 ground truth。
+### Gate 7 — nipple 2D KPI
 
-### Gate 6 — encoder real-data acceptance
+用完整一小时轮转日志人工核对：牛周期、`LastImgTimeStamp`、最终 `NippleNum`、分布、`Σmin(N,4)/(total×4)`；有完整 artifact 时只做辅助核对。
 
-选已知正常 + 已知毛刺/回退/读取失败日志，验证 candidate events 与原始行一致，再用 log-context 对重要事件做小窗口解释。
+### Gate 8 — encoder
 
-### Gate 7 — image scope regression
+用正常 + 已知毛刺/回退/读取失败样本核对 candidate events，再小窗口 log-context 解释。
 
-一个明确单图任务：实际查看原图、不读排除数据、不默认 exec、少量请求结束、允许不确定。
+### Gate 9 — image scope
 
-### Gate 8 — product integration
+明确单图：实际查看原图、不读排除数据、不默认 exec、少量请求结束。
 
-FastAPI + Vue 跑至少一个真实业务任务，验证 Result-first / Evidence / refresh / Stop/Resume/Steer。
+### Gate 10 — Schedule / timing / feedback / export
 
-### Gate 9 — offline smoke
+- interval/daily/once；
+- busy → `SKIPPED_BUSY`；
+- run-now 不改 next_run；
+- started/finished/duration；
+- 评价保存/修改；
+- review ZIP 可供大模型复盘。
 
-- Device Base Package：vLLM image + model + OpenClaw；
-- ScopeX Update Bundle；
-- ARM64 离线安装；
-- systemd 自恢复；
-- rollback。
+### Gate 11 — Product integration
+
+FastAPI + Vue 跑 Conversation、手动 Task、Scheduled Task 至少各一个；检查 Result/Evidence/refresh/Stop/Resume/Steer。
+
+### Gate 12 — Offline
+
+Device Base + ScopeX Update 双层 ARM64 离线安装、自恢复、rollback。
 
 ## 8. Non-blocking gaps
 
-- 完全漏检且无命名牛周期的物理牛 ground truth 未接入；
+- 完全漏检且无命名牛周期的物理牛仍缺 ground truth；
 - encoder firmware/site profile 未冻结；
 - 网络 topology 未确认；
-- current model 的真实 repo/revision 未补录；
-- generic business action provenance 尚未完全泛化；
+- current model repo/revision 未补录；
+- generic high-risk business action provenance 仍需后续扩展；
 - frontend npm lockfile 缺失；
-- task scratch cleanup / mixed gateway-sandbox scratch 仍需后续真实验证。
+- task scratch retention/cleanup 仍需真实验证；
+- review bundle 环境版本清单可继续增强。
 
 ## 9. Merge policy
 
-`main` 只承载当前集成基线。第一批业务 Skill 应先在分支完成单测和 Spark/真实数据最小验收，再合入；不要在同一批次混入网络 topology、机器人新动作或模型性能实验。
+PR #14 保持 Draft。完成 focused/full Python、Vue build 和最小 Spark 真实验收前不合入 main；不要在这一批再混入网络 topology、机器人新动作或模型性能实验。handoff 文档在本大阶段验收完成后再更新。
