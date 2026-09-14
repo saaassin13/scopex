@@ -54,6 +54,17 @@ class DeploymentAssetTests(unittest.TestCase):
         self.assertFalse((ROOT / "deploy" / "systemd" / "scopex-system-metrics.timer").exists())
         self.assertFalse((ROOT / "deploy" / "systemd" / "scopex-system-metrics.service").exists())
 
+    def test_runtime_uses_per_task_current_host_snapshot(self):
+        factory = (ROOT / "scopex" / "api" / "factory.py").read_text(encoding="utf-8")
+        skill = (ROOT / "skills" / "system-health" / "SKILL.md").read_text(encoding="utf-8")
+        collector = (ROOT / "scripts" / "collect_system_metrics.py").read_text(encoding="utf-8")
+        self.assertIn("write_current_host_snapshot", factory)
+        self.assertIn(":/scopex-host:ro", factory)
+        self.assertIn("/scopex-host/current.json", skill)
+        self.assertIn("Do not fall back to sandbox-local measurements", skill)
+        self.assertNotIn("--output", collector)
+        self.assertNotIn("system_metrics.jsonl", collector)
+
     def test_deployment_doc_covers_device_base_vllm_and_model_revision(self):
         text = (ROOT / "docs" / "09-zero-to-one-build-and-offline-deployment.md").read_text(encoding="utf-8")
         self.assertIn("Device Base Package", text)
@@ -63,6 +74,8 @@ class DeploymentAssetTests(unittest.TestCase):
         self.assertIn("--served-model-name", text)
         self.assertIn("/v1/models", text)
         self.assertIn("hf download", text)
+        self.assertIn("不部署系统资源 timer", text)
+        self.assertIn("/scopex-host/current.json", text)
 
 
 if __name__ == "__main__":
