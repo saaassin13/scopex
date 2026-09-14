@@ -102,15 +102,19 @@ class OpenClawEvidenceProjector:
     Workspace Skills and the data catalog are control/knowledge context and are
     never promoted to claim-grade Evidence.
 
-    Task-scratch reads may still be projected as *derived working Evidence* so
+    Task-scratch reads may still be projected as derived working Evidence so
     existing large-data/compaction tasks can finalize from bounded reductions,
-    but they are marked ``evidence_role=working_derived`` and are intentionally
-    excluded from the normal User Facts UI.
+    but they are marked ``evidence_role=working_derived`` and excluded from the
+    normal User Facts UI.
 
     Stable ScopeX scripts can emit a compact JSON object with
     ``scopex_role=business_facts``. That object becomes one structured Evidence
     item instead of hundreds of line Evidence refs. ``scopex_role=locator`` is
     routing/working-set metadata and remains Trace-only.
+
+    Visual Evidence is stricter: only a bounded call whose tool result confirms
+    a complete view may be promoted. If OpenClaw reports omitted/truncated image
+    context, no image from that call becomes claim-grade.
     """
 
     def __init__(
@@ -124,7 +128,7 @@ class OpenClawEvidenceProjector:
         max_exec_lines: int = 256,
         max_exec_line_chars: int = 4096,
         max_exec_chars: int = 12_000,
-        max_claim_images: int = 4,
+        max_claim_images: int = 2,
     ) -> None:
         if (
             max_read_lines <= 0
@@ -162,7 +166,7 @@ class OpenClawEvidenceProjector:
             elif call.name == "exec":
                 added.extend(self._project_exec(call, result))
             elif call.name == "view_image":
-                added.extend(self._project_images(call))
+                added.extend(self._project_images(call, result))
             self._processed_call_ids.add(call.id)
         return tuple(added)
 
@@ -332,9 +336,25 @@ class OpenClawEvidenceProjector:
             paths.extend(value for value in many if isinstance(value, str) and value)
         return tuple(dict.fromkeys(paths))
 
-    def _project_images(self, call: ToolCall) -> tuple[EvidenceItem, ...]:
+    @staticmethod
+    def _visual_result_complete(result: ToolResult) -> bool:
+        lowered = result.content.lower()
+        incomplete_markers = (
+            "omitted from context",
+            "image omitted",
+            "images omitted",
+            "truncated image",
+            "images truncated",
+        )
+        return not any(marker in lowered for marker in incomplete_markers)
+
+    def _project_images(self, call: ToolCall, result: ToolResult) -> tuple[EvidenceItem, ...]:
         paths = self._image_paths(call)
-        if not paths or len(paths) > self.max_claim_images:
+        if (
+            not paths
+            or len(paths) > self.max_claim_images
+            or not self._visual_result_complete(result)
+        ):
             return ()
         prompt = call.arguments.get("prompt")
         added: list[EvidenceItem] = []
