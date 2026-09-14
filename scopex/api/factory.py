@@ -119,7 +119,7 @@ class OpenClawRuntimeFactory:
                 ) + "\n",
                 encoding="utf-8",
             )
-        host_bind = f"{host_root.resolve()}:{HOST_SNAPSHOT_AGENT_DIR}:ro"
+        host_bind = f"{host_root.resolve()}:/scopex-host:ro"
         task_binds = tuple(self.config.data_binds) + (host_bind,)
 
         tools = ["read", "exec", "process"]
