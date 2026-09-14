@@ -7,6 +7,7 @@ from typing import Any
 
 
 WORKSPACE_CATALOG_NAME = "scopex-data-catalog.json"
+LOCATOR_CATALOG_RELATIVE = Path("skills/data-locator/references/data-catalog.json")
 
 
 def load_data_catalog(path: Path) -> dict[str, Any]:
@@ -32,12 +33,38 @@ def load_data_catalog(path: Path) -> dict[str, Any]:
 
 
 def provision_workspace_catalog(*, workspace: Path, catalog_path: Path) -> Path:
+    """Keep a host-side workspace copy for audit/operator visibility."""
     workspace = Path(workspace)
     if not workspace.is_dir() or workspace.is_symlink():
         raise ValueError("workspace must be an existing non-symlink directory")
     target = workspace / WORKSPACE_CATALOG_NAME
     if target.exists() and target.is_symlink():
         raise ValueError("workspace data catalog target may not be a symlink")
+    shutil.copyfile(catalog_path, target)
+    return target
+
+
+def provision_locator_catalog(*, workspace: Path, catalog_path: Path) -> Path:
+    """Copy the machine-readable catalog into the data-locator Skill.
+
+    OpenClaw guarantees the selected Skill directory is available inside the
+    sandbox as ``/workspace/skills/...``. It does not guarantee arbitrary files
+    placed at the workspace root are visible there, so the locator must not
+    depend on ``/workspace/scopex-data-catalog.json``.
+    """
+    workspace = Path(workspace)
+    if not workspace.is_dir() or workspace.is_symlink():
+        raise ValueError("workspace must be an existing non-symlink directory")
+    skill_root = workspace / "skills" / "data-locator"
+    if not skill_root.is_dir() or skill_root.is_symlink():
+        raise ValueError("data-locator skill must be provisioned before its catalog")
+    references = skill_root / "references"
+    references.mkdir(parents=True, exist_ok=True)
+    if references.is_symlink():
+        raise ValueError("data-locator references directory may not be a symlink")
+    target = workspace / LOCATOR_CATALOG_RELATIVE
+    if target.exists() and target.is_symlink():
+        raise ValueError("data-locator catalog target may not be a symlink")
     shutil.copyfile(catalog_path, target)
     return target
 
