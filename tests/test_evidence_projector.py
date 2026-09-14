@@ -40,7 +40,7 @@ class EvidenceProjectorTests(unittest.TestCase):
         self.assertEqual([item.metadata["line_number"] for item in catalog.items], [1, 3])
         self.assertTrue(all(item.metadata["evidence_type"] == "file_line" for item in catalog.items))
 
-    def test_workspace_skill_catalog_and_scratch_reads_are_trace_only(self):
+    def test_workspace_skill_and_catalog_are_trace_only_while_scratch_is_working_derived(self):
         catalog, _, projector = self.projector()
         trace = AgentTrace(
             calls=(
@@ -55,7 +55,11 @@ class EvidenceProjectorTests(unittest.TestCase):
             ),
         )
         projector.process_trace(trace)
-        self.assertEqual(catalog.items, ())
+        self.assertEqual(len(catalog.items), 1)
+        item = catalog.items[0]
+        self.assertEqual(item.source, "/task-scratch/events.json")
+        self.assertEqual(item.raw, "scratch text")
+        self.assertEqual(item.metadata["evidence_role"], "working_derived")
 
     def test_exec_projects_claim_grade_lines_with_full_result_hash(self):
         catalog, _, projector = self.projector(exec_host="gateway")
