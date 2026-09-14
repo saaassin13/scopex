@@ -14,7 +14,7 @@
 |---|---|---|---|
 | `system-health` | Spark 宿主机资源历史 | 必要时解释某资源异常时系统在做什么 | CPU/Load、内存、磁盘、GPU、Docker、关键进程事实 |
 | `image-quality-diagnosis` | 原始图片 | 必要时找拍照/相机上下文 | 模糊、起雾、脏污及不确定性 |
-| `nipple-recognition-analysis` | 推理 JSON | 解释缺失/下降时间窗 | 牛数、结果覆盖率、乳头数分布、完整四乳头率、乳头识别率 |
+| `nipple-recognition-analysis` | CowDisinfect 日志中的牛周期 + 最终 2D `NippleNum` | 主统计来源；JSON/JPG 仅辅助核对 | 牛数、最终 2D 乳头数分布、四乳头率、乳头识别率 |
 | `encoder-health` | 编码器原始采样日志 | 解释 reset/stop/通信/生命周期上下文 | 丢数、gap、回退、跳变、长时间不变等候选事件 |
 | `log-context` | 业务日志 | 公共上下文能力 | 小范围原始日志窗口，不独立给根因 |
 
@@ -42,8 +42,8 @@ Evidence -> Fresh Finalizer -> Validated Claims -> Product Answer
 
 1. **主数据源先回答核心问题**。不要因为日志/图片/JSON 都可见就全部扫描。
 2. **脚本计算事实，不写根因**。例如 `raw` 回退是事实，“编码器损坏”不是。
-3. **日志是上下文，不是万能入口**。先有异常时间/业务对象，再捞附近日志。
-4. **用户范围优先**。问乳头识别率就不自动跑 CPU、编码器、图片。
+3. **用户范围优先**。问乳头识别率就不自动跑 CPU、编码器、图片质量。
+4. **日志按业务锚点使用**。需要解释异常时再取小范围上下文。
 5. **证据够即停止**。额外工具调用不等于更高质量。
 
 ## 3. system-health
@@ -57,9 +57,9 @@ Evidence -> Fresh Finalizer -> Validated Claims -> Product Answer
 - 哪些进程/容器在占用资源；
 - 某业务异常与资源压力是否存在时间重合。
 
-### 为什么不能直接在 Agent Sandbox 里采集
+### 数据边界
 
-Agent 默认 `exec_host=sandbox`。Sandbox 内 `/proc`、磁盘和进程不是 DGX Spark 宿主机状态。
+Agent 默认 `exec_host=sandbox`，因此不能把 Sandbox 内 `/proc`、磁盘和进程当成 DGX Spark 宿主机状态。
 
 V1 使用宿主机独立轻量采集器：
 
@@ -75,27 +75,13 @@ scripts/collect_system_metrics.py
 system-health Skill
 ```
 
-这样不需要给业务 Agent 宿主机 Shell 权限。
+采集 CPU/load、memory、disk、GPU、Docker stats、top process 和采集错误。不引入 Prometheus/Grafana/数据库。
 
-### 采集事实
-
-- CPU utilization、load1/5/15；
-- memory total / used / available / swap used；
-- 指定 filesystem total / used / free；
-- `nvidia-smi` 可用时的 GPU utilization / memory / temperature / power；
-- Docker `stats` 快照；
-- CPU / RSS top processes；
-- 采集器自身错误。
-
-历史 JSONL 默认按文件大小限制，不引入 Prometheus/Grafana/数据库。
-
-### 判断边界
-
-高 CPU/GPU 本身不能证明识别失败。若用户问“7:20 的识别异常是否因为负载”，必须先对齐同一时间窗后再表述为观察事实、时间关联或待验证因果。
+高 CPU/GPU 只是一条观察事实；若用户问“识别异常是否因为负载”，必须先对齐同一时间窗，不能把时间重合直接升级为因果。
 
 ## 4. image-quality-diagnosis
 
-该能力沿用现有实现：
+沿用当前实现：
 
 ```text
 指定原图 -> view_image -> 必要时客观 metrics -> 结果
@@ -105,20 +91,33 @@ V1 重点：
 
 - 单图优先直接视觉，不默认 `exec`；
 - 模糊是可观察现象，具体物理原因可未知；
-- 起雾/脏污需要跨不同场景仍稳定存在时证据更强；
+- 起雾/脏污跨不同场景仍固定存在时证据更强；
 - 大图片集先筛选，最终结论依赖的原图集合保持有界。
 
 ## 5. nipple-recognition-analysis
 
-### 业务目的
+### 5.1 业务定义
 
-例如回答：
+用户要的是 **2D 乳头检测识别率**，不是 3D 乳头坐标有效率。
 
-> 2026-09-14 07:00–08:00 有多少头牛？每头最终识别到几个乳头？完整四乳头率和乳头识别率是多少？
+固定口径：
 
-### 主数据源
+- 一头牛限定 **4 个乳头**；
+- 识别数量 = 2D 检测框数量 `NippleNum[N]`；
+- `N > 4` 属于过检，统计时最多按 4 个计；
+- 3D 坐标、`IsValid`、3D 转换成功数、3D valid count **全部不参与乳头识别率**。
 
-推理 JSON。V1 不再从日志里的 `NippleNum` 直接计算产品 KPI。
+### 5.2 为什么日志成为主数据源
+
+真实现场数据确认：检测/推理失败时图片和 JSON 可能不会保存。因此：
+
+```text
+JSON/JPG 数量 != 总牛数
+```
+
+不能再以 JSON 文件数作为乳头识别率分母。
+
+V1 由日志建立牛周期和最终采用帧；保存的 JSON/JPG 仅作为成功结果的辅助证据。
 
 工具：
 
@@ -126,53 +125,77 @@ V1 重点：
 skills/nipple-recognition-analysis/scripts/nipple_stats.py
 ```
 
-真实 JSON schema 尚未冻结，因此 V1 使用显式字段映射：
+### 5.3 一头牛到底取哪个 NippleNum
 
-- `--time-field`；
-- 一个或多个 `--cow-field`；
-- `--nipple-field`，可以是数字或乳头数组；
-- 可选 `--selected-field`；
-- 强制显式 `--policy selected|latest|max`。
-
-### 为什么必须先按牛聚合
-
-一头牛可能产生多帧：
+一头牛有多轮图片，例如：
 
 ```text
-2 -> 3 -> 4 -> 4
+0 -> 2 -> 4 -> 4 -> 3
 ```
 
-不能把这些帧的乳头数直接相加。必须根据真实业务语义先选出该牛的一条最终业务记录。
+不能求和，也不能简单取 `max=4`。
 
-推荐优先级：
+日志中存在确定的最终采用帧关系：
 
-1. JSON 有可靠 final/selected 标记 -> `selected`；
-2. 最新记录就是业务采用结果 -> `latest`；
-3. 明确业务定义为“该牛周期最好一次结果” -> `max`。
+```text
+Start left camera AI detect
+  ImgTimeStamp[T]
+  CowOccuredCount[C]
+  DetectingNumCurRound[R]
+        ↓
+Left camera cow [C] detecting [R] finished ... NippleNum[N]
+        ↓
+New cow detecte finished ... LastImgTimeStamp[T]
+```
 
-若只能临时用 `max` 做诊断，结果必须明确 `selection_policy=max`，不能伪装成已经确认的产品口径。
+因此：
 
-### 先看结果覆盖率，再看识别率
+> **该牛最终 2D 识别数 = `LastImgTimeStamp[T]` 对应那一帧的 `NippleNum[N]`。**
 
-不能把“有可用最终结果的牛”直接当成全部牛，否则缺结果的牛会自动从分母消失，指标虚高。
+这比“取最大乳头数”更符合真实业务执行链，也避免把早期好帧误当最终结果。
 
-V1 区分：
+### 5.4 总牛数
 
-- `total_cows`：时间窗内 JSON 中存在有效时间戳 + cow key 的唯一牛数；
-- `cows_with_selected_result`：按 configured policy 确实选出可用乳头结果的牛数；
-- `selected_result_coverage_rate = cows_with_selected_result / total_cows`；
-- `cows_without_selected_result`：JSON 已经证明这头牛存在，但没有形成可用最终结果。
+V1 的 `total_cows` 定义为：
 
-### V1 指标
+> 请求时间窗口内开始了命名检测轮 `DetectingNumCurRound` 的唯一牛周期数。
 
-- `exactly_four_cows`：最终结果恰好 4 个乳头；
-- `complete_four_nipple_rate = exactly_four_cows / total_cows`，缺最终结果的牛按“不完整”计；
-- `nipple_recognition_rate = Σ min(selected nipple_count, 4) / (total_cows × 4)`，缺最终结果在这个保守主指标中贡献 0；
-- 同时输出 `*_selected_only` 版本，便于区分“识别差”与“结果覆盖差”，但 selected-only 指标必须和 coverage 一起看；
-- `>4` 单独计 `over_four_cows`，不允许把识别率推到 100% 以上；
-- 输出最终乳头数分布和逐牛有效结果。
+窗口按 `first_detect_ts` 归属。脚本会跨多个轮转日志文件连续恢复周期，并通过 `CowOccuredCount` 降值切 epoch。
 
-这个 `total_cows` 仍只是“JSON 中观察到的牛”。**完全没有生成任何 JSON 的真实牛无法靠 JSON 自身发现。** 后续如果日志/RFID/其他独立来源能提供实际经过牛数，应增加跨源 `actual_cows vs json_observed_cows` coverage，而不是假装 JSON 已经看到漏掉的牛。
+边界：如果一头真实奶牛被系统**完全漏掉**，从未进入命名检测周期，则当前日志本身也不能证明它存在。要统计这种“物理真实经过牛数”，未来需要 RFID、视频或其他独立 ground truth；不能由 Agent 猜测。
+
+### 5.5 KPI
+
+每头牛最多贡献 4 个：
+
+```text
+expected_nipples = total_cows × 4
+capped_2d_detections = Σ min(final_2d_count, 4)
+nipple_recognition_rate = capped_2d_detections / expected_nipples
+```
+
+同时输出：
+
+- `complete_four_nipple_cows`；
+- `complete_four_nipple_rate`；
+- 最终 2D 数量分布；
+- unfinished cycle；
+- final 2D result missing；
+- `>4` over-detection；
+- 逐牛 `LastImgTimeStamp / final NippleNum / line` 证据。
+
+如果一个牛周期已经开始但没有最终结果，主识别率按保守口径贡献 0，同时单独报告该质量问题，避免把失败牛从分母中删除。
+
+### 5.6 JSON/JPG 的角色
+
+如果传入完整 `--artifact-dir`，脚本可做辅助核对：
+
+- `LastImgTimeStamp` 是否存在对应 JPG/JSON；
+- JSON `Markers.Rect` 中乳头标签 `1..4` 数量是否与最终日志 `NippleNum` 一致。
+
+JSON 中的 3D 字段不参与 KPI。
+
+仅凭文件缺失不能自动判定失败，除非明确知道传入目录覆盖完整时间窗。
 
 ## 6. encoder-health
 
@@ -195,21 +218,17 @@ V1 不做牛位漏检推断，不做物理速度/距离 KPI。
 skills/encoder-health/scripts/encoder_health.py
 ```
 
-### 输出事件语义
+输出：
 
-- `sampling_gap`：时间戳间隔异常；
-- `negative_jump`：观察到 raw 减小；
-- `large_negative_jump_candidate`：大幅 raw 减小，可能是 reset / 真实反转 / 故障，尚未定因；
-- `positive_delta_outlier_candidate`：相对当前数据分布异常的正向 delta；
-- `flat_raw_candidate`：raw 在配置时长内保持不变。
+- `sampling_gap`；
+- `negative_jump`；
+- `large_negative_jump_candidate`；
+- `positive_delta_outlier_candidate`；
+- `flat_raw_candidate`。
 
-### 阈值原则
+历史脚本里的 `15.717 pulse/mm`、`200 mm/s`、不同 READ_FAIL 阈值等先视为现场经验，不直接升级成产品协议事实。后续确认固件/设备定义后形成 site/firmware profile。
 
-历史脚本存在不一致的无效值和经验阈值，因此 V1 不把旧脚本阈值当硬件真理。
-
-当前 CLI 默认值都写入输出 `config`，是**显式分析 profile**。后续确认具体固件/编码器协议后应形成 site/firmware profile，再覆盖默认参数。
-
-V1 特意不使用 `15.717 pulse/mm`、`200 mm/s` 等物理业务阈值，避免未经确认就把历史经验升级成产品规则。
+无效采样必须打断相邻样本关系，不能跨无效值制造假的回退或跳变。
 
 ## 7. log-context
 
@@ -228,11 +247,11 @@ skills/log-context/scripts/log_context.py
 - anchor 标记；
 - 少量 before/after 上下文。
 
-实现要求：单遍流式扫描、有界 before buffer、有界输出；不能为了取上下文把整份大型日志先读进内存。`max-lines` 很小时 anchor 优先于 before/after 上下文。
+实现采用单遍流式扫描、有界 before buffer 和有界输出。`max-lines` 很小时 anchor 优先于上下文。
 
-它不做根因诊断。
+它本身不做根因诊断。
 
-正确使用方式：
+典型方式：
 
 ```text
 encoder-health
@@ -240,47 +259,46 @@ encoder-health
 log-context(07:21:13 ± 5s)
   ↓ 看到 ResetEncoderValOnSerialPort
 Agent
-  ↓ 区分“观察到同时/先后出现”与“已经证明因果”
+  ↓ 区分“时间上相邻”与“已经证明因果”
 ```
 
 ## 8. 历史脚本如何处理
 
 用户提供的历史工具继续作为业务理解/回归样本，不直接变成正式产品 API：
 
-- `remote_disk_free.py`：保留“采集事实、不做阈值判定”的职责思想；远端 SSH 能力等网络 topology 明确后再设计；
-- `cow_perception.py`：用于理解牛号/帧/NippleNum 等日志语义，但 V1 KPI 改以 JSON 为主；
-- `encoder_speed_from_pulses.py` / `segment_encoder_distance.py`：算法和现场经验可作为参考，但阈值不直接继承；
+- `remote_disk_free.py`：保留“采集事实、不做阈值判定”的思想；远端 SSH 等网络 topology 明确后再设计；
+- `cow_perception.py`：帮助确认 `CowOccuredCount / DetectingNumCurRound / NippleNum` 日志语义，新的 KPI 直接以最终采用帧的 2D `NippleNum` 为准；
+- `encoder_speed_from_pulses.py` / `segment_encoder_distance.py`：算法和现场经验供参考，阈值不直接继承；
 - `suspect_stall_position.py`：实验研究工具，不进入 V1 production Skill；
-- `segment_photo_to_exec.py`：包含大量宝贵日志业务知识，但 parser/归属/故障分类耦合较深，V1 不把它当黑盒产品工具。
+- `segment_photo_to_exec.py`：其中 `LastImgTimeStamp` 归属思想被复用，但整个复杂分段/故障分类不作为乳头 KPI 的前置黑盒。
 
 ## 9. 第一批验收
 
 ### system-health
 
-- systemd timer 能连续写 JSONL；
+- systemd timer 连续写 JSONL；
 - Runtime 只读挂载 metrics；
-- “当前负载”和“历史 7 点负载”能区分；
-- Agent 不把 Sandbox 自身资源当宿主机资源。
+- 当前负载和历史负载可区分；
+- Agent 不把 Sandbox 自身资源冒充宿主机。
 
 ### nipple-recognition-analysis
 
-需要一批真实 JSON 后确认：
-
-- schema mapping；
-- cow key；
-- selected/latest/max 的真实业务语义；
-- `total_cows / selected_result_coverage / KPI` 可人工复算；
-- 缺最终结果的牛不会被悄悄从分母删除；
-- `>4` 不抬高识别率；
-- 缺字段/坏 JSON 不静默吞掉。
+- 用真实轮转日志恢复每头牛；
+- `LastImgTimeStamp` 能稳定映射到对应 `NippleNum`；
+- 不使用 3D valid count；
+- 一头牛最多计 4 个；
+- 早期 4 乳头但最终 2/3 乳头时必须以最终帧为准；
+- 图片/JSON 缺失不会把牛从分母中删除；
+- KPI 可人工抽样复算；
+- 完全漏检牛的 ground truth 边界必须明确。
 
 ### encoder-health
 
-- 人工构造/真实样本可定位 sample gap、negative jump、large negative candidate、flat；
-- invalid sample 必须打断连续区间，不能跨失败值制造假 delta；
-- 事件保留行号和时间；
+- 人工构造/真实样本可定位 gap、negative jump、large negative candidate、flat；
+- invalid sample 不跨段制造假 delta；
+- 事件保留行号/时间；
 - 需要解释时才调用 log-context；
-- 不无证据把 candidate 升级成 reset/损坏。
+- candidate 不无证据升级成 reset/损坏。
 
 ### image-quality
 
@@ -288,10 +306,10 @@ Agent
 
 ## 10. 下一步
 
-第一批业务能力稳定后，再按真实需求决定：
+第一批能力稳定后，再按真实需求决定：
 
-1. JSON schema/profile 固化；
-2. 编码器 site/firmware profile；
-3. 跨源“实际经过牛数 vs JSON 观察牛数”；
-4. 资源异常与识别率/编码器事件的跨能力相关分析；
+1. 乳头 KPI 在完整 1 小时真实数据上的人工对账；
+2. “物理真实经过牛数”的独立 ground truth 来源；
+3. 编码器 site/firmware profile；
+4. 资源异常与乳头识别率/编码器事件的跨能力相关分析；
 5. 网络 topology 确认后的网络能力。
