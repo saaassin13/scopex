@@ -10,7 +10,11 @@ This is a support capability for other business Skills. It tells the Agent where
 
 ## Global data sources
 
-Catalog: `/workspace/scopex-data-catalog.json`.
+ScopeX keeps one source catalog in the repository and provisions the machine-readable sandbox copy at:
+
+`/workspace/skills/data-locator/references/data-catalog.json`
+
+A separate host-workspace copy may exist for operator/audit visibility, but the locator does not depend on arbitrary workspace-root files being mounted into the sandbox.
 
 Stable sandbox paths:
 
