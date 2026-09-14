@@ -20,6 +20,7 @@ from scopex.api.factory import LocalRuntimeConfig, OpenClawRuntimeFactory
 from scopex.api.fastapi_app import create_app
 from scopex.api.schedules import ScheduleService
 from scopex.api.service import TaskService
+from scopex.data_catalog import catalog_binds, load_data_catalog, provision_workspace_catalog
 
 
 def loopback_host(host: str) -> bool:
@@ -44,6 +45,23 @@ def parse_data_dir(value: str) -> str:
     return f"{host_dir}:{agent_dir}:ro"
 
 
+def merge_data_binds(defaults: tuple[str, ...], overrides: tuple[str, ...]) -> tuple[str, ...]:
+    """Merge read-only binds by agent target; explicit --data-dir wins."""
+    ordered: list[str] = []
+    target_to_index: dict[str, int] = {}
+    for bind in defaults + overrides:
+        parts = bind.rsplit(":", 2)
+        if len(parts) != 3 or parts[2] != "ro":
+            raise ValueError(f"invalid read-only data bind: {bind}")
+        target = parts[1]
+        if target in target_to_index:
+            ordered[target_to_index[target]] = bind
+        else:
+            target_to_index[target] = len(ordered)
+            ordered.append(bind)
+    return tuple(ordered)
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--model", required=True)
@@ -61,12 +79,23 @@ def main(argv=None) -> int:
         default=ROOT / ".local" / "runtime-api",
     )
     parser.add_argument(
+        "--data-catalog",
+        type=Path,
+        default=ROOT / "config" / "data-catalog.json",
+        help="ScopeX semantic data catalog copied into the OpenClaw workspace",
+    )
+    parser.add_argument(
+        "--no-catalog-binds",
+        action="store_true",
+        help="do not auto-mount existing host paths declared by the data catalog",
+    )
+    parser.add_argument(
         "--data-dir",
         action="append",
         type=parse_data_dir,
         default=[],
         metavar="HOST_DIR:AGENT_DIR",
-        help="read-only host directory exposed to the OpenClaw sandbox; repeatable",
+        help="extra/override read-only host directory exposed to the OpenClaw sandbox; repeatable",
     )
     parser.add_argument(
         "--exec-host",
@@ -121,6 +150,15 @@ def main(argv=None) -> int:
         builtin_root=ROOT / "skills",
     )
 
+    catalog_path = args.data_catalog.expanduser().resolve()
+    catalog = load_data_catalog(catalog_path)
+    workspace_catalog = provision_workspace_catalog(
+        workspace=workspace,
+        catalog_path=catalog_path,
+    )
+    catalog_defaults = () if args.no_catalog_binds else catalog_binds(catalog, existing_only=True)
+    data_binds = merge_data_binds(catalog_defaults, tuple(args.data_dir))
+
     data_root = args.data_root.expanduser().resolve()
     config = LocalRuntimeConfig(
         cli_path=args.openclaw_bin.expanduser().resolve(),
@@ -137,7 +175,7 @@ def main(argv=None) -> int:
         finalizer_max_tokens=args.finalizer_max_tokens,
         finalizer_timeout_s=args.finalizer_timeout,
         skills=skills,
-        data_binds=tuple(args.data_dir),
+        data_binds=data_binds,
         exec_host=args.exec_host,
         exec_mode=args.exec_mode,
         enable_view_image=args.enable_view_image,
@@ -161,6 +199,7 @@ def main(argv=None) -> int:
 
     print(f"ScopeX FastAPI: http://{args.host}:{args.port}", flush=True)
     print(f"workspace: {config.workspace}", flush=True)
+    print(f"data catalog: {workspace_catalog}", flush=True)
     print(f"audit root: {data_root / 'tasks'}", flush=True)
     print(f"schedule root: {data_root / 'scheduler'}", flush=True)
     print(f"exec: host={config.exec_host} mode={config.exec_mode}", flush=True)
@@ -179,6 +218,8 @@ def main(argv=None) -> int:
         print("data binds:", flush=True)
         for bind in config.data_binds:
             print(f"  {bind}", flush=True)
+    else:
+        print("data binds: none (catalog host paths are absent or auto-mount disabled)", flush=True)
     print(f"web: {static_dir if static_dir.is_dir() else 'not built; API-only mode'}", flush=True)
 
     uvicorn.run(
