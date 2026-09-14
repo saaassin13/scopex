@@ -167,6 +167,7 @@ class OpenClawRuntimeFactory:
                 max_claim_images=2,
             ),
             audit=audit,
+            report_composer=self.report_composer(),
         )
 
     def finalizer(self) -> StructuredFinalizer:
