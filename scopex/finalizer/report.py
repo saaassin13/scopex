@@ -4,7 +4,7 @@ from dataclasses import dataclass
 import json
 from typing import Any
 
-from scopex.evidence.catalog import EvidenceCatalog
+from scopex.evidence.catalog import EvidenceCatalog, EvidenceItem
 from scopex.finalizer.claims import Claim, ClaimKind, ClaimRelation, ClaimSet
 from scopex.finalizer.client import FinalizerResponse, StreamingFinalizerClient
 
@@ -78,6 +78,36 @@ def _bounded_raw(raw: str, *, limit: int = 1400) -> str:
     return text if len(text) <= limit else text[:limit] + "…"
 
 
+def _structured_business_content(item: EvidenceItem) -> str | None:
+    if item.metadata.get("evidence_type") != "structured_business_facts":
+        return None
+    try:
+        payload = json.loads(item.raw)
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(payload, dict) or payload.get("scopex_role") != "business_facts":
+        return None
+
+    keep: dict[str, Any] = {}
+    for key in ("scopex_role", "schema", "source", "window", "facts", "summary", "quality", "candidate_events_total"):
+        if key in payload:
+            keep[key] = payload[key]
+    candidates = payload.get("top_candidates")
+    if isinstance(candidates, list):
+        # Concrete timestamps/counts around the strongest bounded candidates are
+        # exactly what the user report needs. Keep a small set instead of a raw
+        # prefix that might truncate them away after the large facts object.
+        keep["top_candidates"] = candidates[:6]
+    return json.dumps(keep, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
+
+
+def _composer_evidence_content(item: EvidenceItem) -> str:
+    structured = _structured_business_content(item)
+    if structured is not None:
+        return structured if len(structured) <= 6000 else structured[:6000] + "…"
+    return _bounded_raw(item.raw)
+
+
 def _composer_input(user_request: str, claims: ClaimSet, catalog: EvidenceCatalog) -> str:
     by_ref = {item.ref: item for item in catalog.items}
     evidence_refs: list[str] = []
@@ -108,7 +138,7 @@ def _composer_input(user_request: str, claims: ClaimSet, catalog: EvidenceCatalo
             "type": item.metadata.get("evidence_type"),
             "role": item.metadata.get("evidence_role"),
             "source": item.source,
-            "content": _bounded_raw(item.raw),
+            "content": _composer_evidence_content(item),
         })
 
     payload = {
@@ -136,7 +166,8 @@ _SYSTEM_PROMPT = """你是 ScopeX 的业务结果编辑器，不是诊断 Agent�
 9. 每个条目必须引用真实 claim_ids；evidence_refs 只能从这些 Claim 已有的 evidence_refs 中选择。
 10. next_steps 只能围绕已有 inference/unknown/causal_hypothesis 的验证方向，不得凭空增加故障结论或执行动作。
 11. 如果证据不足，直接说明限制，不要补常识答案。
-12. 只输出一个 JSON 对象，不输出 Markdown 或额外解释。
+12. 对结构化 business_facts，优先把最重要的统计和 top_candidates 写成人话；不要复述字段名。
+13. 只输出一个 JSON 对象，不输出 Markdown 或额外解释。
 
 固定 schema：
 {
