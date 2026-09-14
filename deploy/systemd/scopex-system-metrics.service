@@ -1,0 +1,9 @@
+[Unit]
+Description=Collect one ScopeX host system metrics snapshot
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/scopex-releases/current
+ExecStart=/usr/bin/python3 %h/scopex-releases/current/scripts/collect_system_metrics.py --output %h/.local/share/scopex/system-metrics/system_metrics.jsonl --mount / --max-file-mb 64
+UMask=0077
+NoNewPrivileges=true
