@@ -1,83 +1,88 @@
 ---
 name: nipple-recognition-analysis
-description: Compute cow-level nipple recognition coverage for a requested time window from inference JSON, then use logs only when needed for missing/abnormal context.
+description: Compute cow-level 2D nipple recognition KPIs from CowDisinfect logs, with saved JSON/JPG only as supporting result evidence.
 user-invocable: true
 ---
 
 # Nipple recognition analysis
 
-Use this skill for questions such as “7 点这个小时有多少头牛、每头识别到几个乳头、完整识别率和乳头识别率是多少”。
+Use this skill for questions such as “7 点这个小时有多少头牛、最终识别到多少个乳头、乳头识别率是多少”。
+
+## Product definition
+
+- One cow is limited to **4 physical nipples**.
+- Recognition count means **2D nipple detection box count** from log `NippleNum[...]`.
+- A count above 4 is reported as over-detection but is capped at 4 for KPI calculation.
+- **Do not use 3D nipple coordinates, `IsValid`, 3D transform success, or 3D valid-count fields to calculate recognition rate.**
 
 ## Primary source
 
-Inference JSON is the primary source. Logs are supporting context, not the KPI source by default.
+CowDisinfect logs are the KPI source because saved image/JSON files do not exist for every failed detection/inference path.
 
-Use `{baseDir}/scripts/nipple_stats.py` with explicit schema mappings:
+Use `{baseDir}/scripts/nipple_stats.py` with the relevant rotated log files and an explicit time window.
 
-- timestamp field;
-- cow identity field(s);
-- nipple count/list field;
-- optional final/selected marker;
-- explicit per-cow selection policy.
+The final 2D nipple count for one cow is not `max(NippleNum)` and not a sum across frames. Resolve it through the actual consumed frame:
 
-Do not guess a JSON field name from business terminology. Inspect a small representative JSON first when the mapping is not already documented.
+```text
+Start left camera AI detect
+  ImgTimeStamp = T
+  CowOccuredCount = C
+  DetectingNumCurRound = R
+        ↓
+Left camera cow [C] detecting [R] finished ... NippleNum[N]
+        ↓
+New cow detecte finished ... LastImgTimeStamp[T]
+```
 
-## Cow-level aggregation
+The `NippleNum[N]` belonging to `LastImgTimeStamp[T]` is the cow's final 2D result.
 
-A cow may have multiple inference records. KPI calculation must first reduce records to one business result per cow.
+This prevents an earlier frame with 4 boxes from hiding a later final frame with only 2 or 3 boxes.
 
-Selection policy must match confirmed data semantics:
+## Cow denominator
 
-- `selected`: use when JSON has a reliable final/selected marker;
-- `latest`: use when the latest record is the actual consumed business result;
-- `max`: only use when the business meaning is explicitly “best observed recognition during the cow cycle”. If this is only a provisional diagnostic convention, say so in the result.
+V1 counts unique named cow detection cycles whose first `DetectingNumCurRound` frame starts inside the requested time window.
 
-Never sum all frame-level nipple detections as though they were different physical nipples.
+This is a log-backed business denominator. A physical cow that is completely invisible to the perception system and never creates a named cow cycle cannot be recovered from this source alone; that requires an independent ground-truth source later (for example RFID/video/other site truth).
 
-## Coverage before KPI
+## KPIs
 
-Keep two denominators separate:
+For all counted cow cycles:
 
-- `total_cows`: unique cow keys represented by a valid timestamp + cow identity in the JSON window;
-- `cows_with_selected_result`: cows for which the configured policy produced a usable nipple result.
+- `total_cows`;
+- `complete_four_nipple_cows`;
+- `complete_four_nipple_rate = complete_four_nipple_cows / total_cows`;
+- `capped_2d_detections = Σ min(final_2d_count, 4)`; unfinished/missing final results contribute 0 to the conservative numerator;
+- `expected_nipples = total_cows × 4`;
+- `nipple_recognition_rate = capped_2d_detections / expected_nipples`;
+- final 2D count distribution;
+- unfinished/missing-result/over-detection quality counters.
 
-Always surface `selected_result_coverage_rate` and `cows_without_selected_result`. A KPI must not silently look better just because cows with missing/bad final results disappeared from the denominator.
+## Saved JPG / JSON
 
-Completely missing cows that generated **no JSON record at all** still cannot be discovered from JSON alone. If an independent log/RFID/business source later provides the actual passed-cow count, report that as a separate cross-source coverage metric instead of pretending JSON observed it.
+JPG and JSON are optional supporting artifacts, not the KPI denominator.
 
-## First-version KPIs
+If `--artifact-dir` is available, the tool may cross-check:
 
-For the selected record of each cow:
+- whether the selected `LastImgTimeStamp` has a saved image/JSON;
+- whether saved JSON marker labels `1..4` agree with log final 2D count.
 
-- exact four-nipple cows = selected nipple count exactly 4;
-- `complete_four_nipple_rate` uses all JSON-observed cows as the conservative denominator; a cow without usable selected result is therefore not counted as complete;
-- `nipple_recognition_rate = sum(min(selected count, 4)) / (total JSON-observed cows × 4)`;
-- selected-only variants are also exposed for diagnosis, but must be shown together with result coverage;
-- count > 4 is reported separately as over-detection and must not inflate recognition rate above 100%;
-- distribution of selected nipple count is always shown.
-
-These definitions are product metrics, not proof of why recognition failed.
+Do not infer failure only from a missing artifact unless the supplied artifact directory is known to be complete for that time window.
 
 ## Log context
 
-Use `log-context` only when needed, for example:
+The KPI script already consumes the stable business anchors needed for counting. Use the shared `log-context` Skill only when the user asks why a specific cow/time failed or when an abnormal interval needs explanation.
 
-- JSON has a gap or malformed/missing records;
-- a cow is represented in JSON but has no usable final result;
-- a time slice shows a meaningful recognition drop;
-- the user asks what happened around a particular cow/time;
-- you need to distinguish inference absence from task stop/restart/camera/runtime events.
-
-Do not scan a whole log just because it exists.
+Do not scan unrelated logs/images merely because they exist.
 
 ## Output discipline
 
 Separate:
 
-1. data coverage / mapping / selection policy;
-2. KPI facts;
-3. abnormal cows/time ranges;
-4. log-backed contextual explanation, if requested/needed;
-5. unknowns.
+1. time/log coverage and denominator definition;
+2. 2D KPI facts;
+3. incomplete/missing/over-detection data-quality facts;
+4. artifact coverage/cross-checks when available;
+5. contextual explanation only when requested or needed;
+6. unknowns.
 
-If the real JSON schema or selection semantics are not confirmed, report that limitation rather than silently manufacturing a production KPI.
+Do not turn 3D calculation failures into 2D recognition failures unless the user explicitly asks about the 3D downstream pipeline.
