@@ -23,6 +23,7 @@ class RuntimeApiFactoryTests(unittest.TestCase):
             cli.chmod(0o755)
             workspace = root / "workspace"
             workspace.mkdir()
+            catalog_summary = "- cowdisinfect_logs: /agent-data/logs\nDo not recursively scan roots."
 
             config = LocalRuntimeConfig(
                 cli_path=cli,
@@ -36,6 +37,7 @@ class RuntimeApiFactoryTests(unittest.TestCase):
                 timeout_s=181,
                 max_requests=6,
                 data_binds=("/srv/logs:/agent-data/logs:ro",),
+                data_catalog_summary=catalog_summary,
                 exec_host="gateway",
                 exec_mode="full",
                 enable_view_image=True,
@@ -62,6 +64,7 @@ class RuntimeApiFactoryTests(unittest.TestCase):
             self.assertEqual(coordinator.agent.spec.timeout_s, 181)
             self.assertEqual(coordinator.agent.spec.max_requests, 6)
             self.assertTrue(coordinator.agent.spec.compaction_enabled)
+            self.assertEqual(coordinator.agent.spec.data_catalog_summary, catalog_summary)
             binds = coordinator.agent.spec.sandbox_binds
             self.assertEqual(binds[0], "/srv/logs:/agent-data/logs:ro")
             self.assertEqual(len(binds), 2)
