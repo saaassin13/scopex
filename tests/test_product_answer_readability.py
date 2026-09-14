@@ -65,7 +65,7 @@ class ProductAnswerReadabilityTests(unittest.TestCase):
         self.assertIn('总体乳头识别率为 97.83%', text)
         self.assertIn('3个乳头 38 头', text)
 
-    def test_structured_encoder_facts_do_not_call_every_negative_delta_anomaly(self):
+    def test_structured_encoder_facts_lead_with_real_anomaly_events(self):
         catalog = EvidenceCatalog('task-1', 'session-1')
         catalog.add(
             source='business_facts:encoder-health',
@@ -74,69 +74,92 @@ class ProductAnswerReadabilityTests(unittest.TestCase):
                 'source': 'encoder-health',
                 'facts': {
                     'samples_in_window': 35244,
-                    'valid_samples': 35244,
                     'invalid_samples': 0,
                     'median_sample_dt_ms': 21.0,
                     'sampling_gap_count': 0,
-                    'negative_jump_count': 231,
-                    'negative_jump_abs_p95_pulses': 14.0,
-                    'negative_jump_abs_max_pulses': 52.0,
-                    'negative_jump_outlier_candidate_count': 2,
-                    'large_negative_jump_candidate_count': 0,
-                    'positive_delta_outlier_candidate_count': 1,
-                    'flat_raw_candidate_count': 0,
+                    'negative_steps_observed': 231,
+                    'small_negative_groups_ignored': 228,
+                    'anomaly_event_count': 3,
+                    'reverse_glitch_candidate_count': 2,
+                    'reverse_interval_candidate_count': 1,
+                    'reverse_step_candidate_count': 0,
+                    'positive_spike_candidate_count': 0,
                 },
+                'top_candidates': [
+                    {'type': 'reverse_glitch_candidate', 'start': '2026-09-14 03:12:01:120', 'pulse_delta': -52},
+                    {'type': 'reverse_interval_candidate', 'start': '2026-09-14 03:28:41:420', 'pulse_delta': -88},
+                ],
             }, ensure_ascii=False),
             metadata={'evidence_type': 'structured_business_facts', 'evidence_role': 'business_facts'},
         )
         text = compose_product_answer(one_fact_claim(), catalog).to_dict()['conclusion'][0]['text']
         self.assertIn('时间窗内共 35244 个编码器采样', text)
-        self.assertIn('采样缺口候选 0 个', text)
-        self.assertIn('观察到 raw 数值下降 231 次', text)
-        self.assertIn('显著 raw 下降候选 2', text)
+        self.assertIn('发现 3 个显著异常事件', text)
+        self.assertIn('回退-恢复毛刺 2', text)
+        self.assertIn('连续回退区间 1', text)
+        self.assertIn('03:12:01:120', text)
         self.assertNotIn('231 次异常', text)
 
-    def test_multi_evidence_claim_does_not_leak_structured_json_into_product_text(self):
+    def test_structured_encoder_zero_events_says_no_significant_glitch(self):
         catalog = EvidenceCatalog('task-1', 'session-1')
         catalog.add(
             source='business_facts:encoder-health',
             raw=json.dumps({
-                'scopex_role': 'business_facts',
-                'source': 'encoder-health',
-                'facts': {
-                    'samples_in_window': 200859,
-                    'valid_samples': 200859,
-                    'invalid_samples': 0,
-                    'median_sample_dt_ms': 21.0,
-                    'sampling_gap_count': 0,
-                    'negative_jump_count': 1191,
-                    'negative_jump_abs_p95_pulses': 33.0,
-                    'negative_jump_abs_max_pulses': 72.0,
-                    'negative_jump_outlier_candidate_count': 4,
-                    'large_negative_jump_candidate_count': 0,
-                    'positive_delta_outlier_candidate_count': 0,
-                    'flat_raw_candidate_count': 2,
-                },
-            }, ensure_ascii=False),
+                'scopex_role': 'business_facts', 'source': 'encoder-health',
+                'facts': {'samples_in_window': 1000, 'invalid_samples': 0, 'median_sample_dt_ms': 20.0, 'sampling_gap_count': 0, 'anomaly_event_count': 0},
+            }),
             metadata={'evidence_type': 'structured_business_facts', 'evidence_role': 'business_facts'},
         )
+        text = compose_product_answer(one_fact_claim(), catalog).to_dict()['conclusion'][0]['text']
+        self.assertIn('未发现显著毛刺、回退或异常跳变候选', text)
+
+    def test_system_health_business_facts_are_human_readable(self):
+        catalog = EvidenceCatalog('task-1', 'session-1')
         catalog.add(
-            source='/agent-data/logs/CowDisinfect.log',
-            raw='2026-09-14 12:09:30:023 [INFO] EncoderVal [2365209], TurnTableSpeed [0.000 mm/s]',
-            metadata={'evidence_type': 'file_line'},
+            source='business_facts:system-health',
+            raw=json.dumps({
+                'scopex_role': 'business_facts', 'source': 'system-health',
+                'facts': {
+                    'captured_at': '2026-09-14T20:22:20+08:00',
+                    'cpu_util_percent': 11.22,
+                    'cpu_count': 20,
+                    'memory_total_gb': 121.7,
+                    'memory_used_gb': 57.735,
+                    'memory_available_gb': 63.96,
+                    'disk_root_used_percent': 49.7,
+                    'disk_root_free_gb': 2030.7,
+                    'gpu_count': 1,
+                    'gpu_util_percent_max': 27.2,
+                },
+            }),
+            metadata={'evidence_type': 'structured_business_facts', 'evidence_role': 'business_facts'},
         )
+        text = compose_product_answer(one_fact_claim(), catalog).to_dict()['conclusion'][0]['text']
+        self.assertIn('当前 CPU 利用率 11.22%', text)
+        self.assertIn('已用 57.74 GB', text)
+        self.assertIn('可用 63.96 GB', text)
+        self.assertIn('根磁盘已用 49.7%', text)
+        self.assertNotIn('"cpu_util_percent"', text)
+
+    def test_structured_fact_is_preferred_over_raw_lines_when_claim_has_both(self):
+        catalog = EvidenceCatalog('task-1', 'session-1')
+        catalog.add(
+            source='business_facts:encoder-health',
+            raw=json.dumps({
+                'scopex_role': 'business_facts', 'source': 'encoder-health',
+                'facts': {'samples_in_window': 100, 'invalid_samples': 0, 'median_sample_dt_ms': 20.0, 'sampling_gap_count': 0, 'anomaly_event_count': 0},
+            }),
+            metadata={'evidence_type': 'structured_business_facts', 'evidence_role': 'business_facts'},
+        )
+        catalog.add(source='/agent-data/logs/app.log', raw='2026-09-14 raw line', metadata={'evidence_type': 'file_line'})
         claims = claim_set_from_dict({
-            'claims': [
-                {'id': 'C1', 'kind': 'fact', 'topic': 'summary', 'evidence_refs': ['E1'], 'confidence': 'high', 'scope': 'time_window', 'relation': 'observed'},
-                {'id': 'C2', 'kind': 'fact', 'topic': 'detail', 'evidence_refs': ['E1', 'E2'], 'confidence': 'high', 'scope': 'time_window', 'relation': 'observed'},
-            ],
-            'summary_claim_ids': ['C1', 'C2'],
+            'claims': [{'id': 'C1', 'kind': 'fact', 'topic': 'ignored', 'evidence_refs': ['E1', 'E2'], 'confidence': 'high', 'scope': 'time_window', 'relation': 'observed'}],
+            'summary_claim_ids': ['C1'],
         })
-        answer = compose_product_answer(claims, catalog).to_dict()
-        joined = '；'.join([answer['conclusion'][0]['text']] + [row['text'] for row in answer['explanation']])
-        self.assertNotIn('"scopex_role"', joined)
-        self.assertNotIn('"facts"', joined)
-        self.assertIn('时间窗内共 200859 个编码器采样', joined)
+        text = compose_product_answer(claims, catalog).to_dict()['conclusion'][0]['text']
+        self.assertIn('时间窗内共 100 个编码器采样', text)
+        self.assertNotIn('scopex_role', text)
+        self.assertNotIn('2026-09-14 raw line', text)
 
     def test_missing_host_snapshot_is_not_presented_as_host_measurement(self):
         catalog = EvidenceCatalog('task-1', 'session-1')
