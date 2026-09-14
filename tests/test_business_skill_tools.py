@@ -94,7 +94,7 @@ class BusinessSkillToolTests(unittest.TestCase):
             self.assertTrue(cows[10]['artifact_2d_count_matches_log'])
             self.assertTrue(cows[11]['artifact_2d_count_matches_log'])
 
-    def test_encoder_health_does_not_bridge_invalid_sample_and_outputs_compact_facts(self):
+    def test_encoder_health_does_not_bridge_invalid_sample_and_keeps_small_negative_as_telemetry(self):
         script = ROOT / 'skills/encoder-health/scripts/encoder_health.py'
         invalid = 2 ** 63
         with tempfile.TemporaryDirectory() as td:
@@ -116,13 +116,39 @@ class BusinessSkillToolTests(unittest.TestCase):
             self.assertEqual(data['scopex_role'], 'business_facts')
             facts = data['facts']
             self.assertEqual(facts['invalid_samples'], 1)
-            self.assertEqual(facts['negative_jump_count'], 1)
-            self.assertEqual(facts['negative_jump_abs_max_pulses'], 5.0)
+            self.assertEqual(facts['negative_steps_observed'], 1)
             self.assertEqual(facts['sampling_gap_count'], 1)
-            self.assertEqual(facts['flat_raw_candidate_count'], 1)
+            self.assertEqual(facts['flat_count_candidate_count'], 1)
+            self.assertLessEqual(facts['significant_reverse_event_count'], 1)
             self.assertLess(len(proc.stdout), 5000)
 
-    def test_encoder_health_log_dir_analyzes_multiple_hour_rotation_files_in_one_call(self):
+    def test_encoder_health_identifies_reverse_glitch_and_recovery(self):
+        script = ROOT / 'skills/encoder-health/scripts/encoder_health.py'
+        with tempfile.TemporaryDirectory() as td:
+            log = Path(td) / 'app.log'
+            rows = []
+            count = 1000
+            for i in range(15):
+                rows.append(f'2026-09-14 07:00:00:{i*20:03d} [INFO] EncoderVal [{count}], TurnTableSpeed [50.0 mm/s]')
+                count += 20
+            rows.append('2026-09-14 07:00:00:300 [INFO] EncoderVal [1240], TurnTableSpeed [50.0 mm/s]')
+            rows.append('2026-09-14 07:00:00:320 [INFO] EncoderVal [1190], TurnTableSpeed [-10.0 mm/s]')
+            rows.append('2026-09-14 07:00:00:340 [INFO] EncoderVal [1260], TurnTableSpeed [60.0 mm/s]')
+            rows.append('2026-09-14 07:00:00:360 [INFO] EncoderVal [1280], TurnTableSpeed [50.0 mm/s]')
+            log.write_text('\n'.join(rows) + '\n', encoding='utf-8')
+            proc = run_script(script, str(log))
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            data = json.loads(proc.stdout)
+            facts = data['facts']
+            self.assertEqual(facts['primary_stream'], 'application_encoder')
+            self.assertGreaterEqual(facts['reverse_glitch_candidate_count'], 1)
+            self.assertGreaterEqual(facts['anomaly_event_count'], 1)
+            events = [row for row in data['top_candidates'] if row['type'] == 'reverse_glitch_candidate']
+            self.assertTrue(events)
+            self.assertLess(events[0]['pulse_delta'], 0)
+            self.assertTrue(events[0]['recovered'])
+
+    def test_encoder_health_log_dir_analyzes_multiple_rotation_files_in_one_call(self):
         script = ROOT / 'skills/encoder-health/scripts/encoder_health.py'
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
@@ -144,8 +170,8 @@ class BusinessSkillToolTests(unittest.TestCase):
             data = json.loads(proc.stdout)
             self.assertEqual(len(data['logs']), 2)
             self.assertEqual(data['facts']['samples_in_window'], 4)
-            self.assertEqual(data['facts']['negative_jump_count'], 1)
-            self.assertEqual(data['facts']['negative_jump_abs_max_pulses'], 1.0)
+            self.assertEqual(data['facts']['negative_steps_observed'], 1)
+            self.assertEqual(data['facts']['anomaly_event_count'], 0)
 
     def test_log_context_is_bounded_and_preserves_raw_lines(self):
         script = ROOT / 'skills/log-context/scripts/log_context.py'
@@ -185,15 +211,37 @@ class BusinessSkillToolTests(unittest.TestCase):
             self.assertTrue(rows[0]['anchor'])
             self.assertIn('TARGET_ANCHOR', rows[0]['raw'])
 
-    def test_system_health_skill_uses_only_current_host_snapshot(self):
+    def test_system_health_skill_uses_only_current_host_snapshot_and_compact_helper(self):
         text = (ROOT / 'skills/system-health/SKILL.md').read_text(encoding='utf-8')
         self.assertIn('/scopex-host/current.json', text)
         self.assertIn('does **not** continuously collect', text)
         self.assertIn('Do not fall back to sandbox-local measurements', text)
-        self.assertIn('historical resource data is unavailable', text)
+        self.assertIn('system_health.py', text)
         factory = (ROOT / 'scopex/api/factory.py').read_text(encoding='utf-8')
         self.assertIn('write_current_host_snapshot', factory)
         self.assertIn(':/scopex-host:ro', factory)
+
+    def test_system_health_helper_outputs_one_business_fact_object(self):
+        script = ROOT / 'skills/system-health/scripts/system_health.py'
+        with tempfile.TemporaryDirectory() as td:
+            snapshot = Path(td) / 'current.json'
+            snapshot.write_text(json.dumps({
+                'schema': 1, 'source': 'scopex_host_snapshot', 'captured_at': '2026-09-14T20:22:20+08:00',
+                'cpu': {'util_percent': 11.22, 'count': 20, 'load1': 1.0, 'load5': 2.0, 'load15': 3.0},
+                'memory': {'total_gb': 121.7, 'used_gb': 57.735, 'available_gb': 63.96, 'swap_used_gb': 0},
+                'disks': [{'mount': '/', 'total_gb': 4000, 'used_gb': 1970, 'free_gb': 2030, 'used_percent': 49.25}],
+                'gpu': [{'util_percent': 27.2, 'memory_used_mib': 1024, 'memory_total_mib': 4096}],
+                'docker': [{}, {}], 'errors': {},
+            }), encoding='utf-8')
+            proc = run_script(script, '--snapshot', str(snapshot))
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            data = json.loads(proc.stdout)
+            self.assertEqual(data['scopex_role'], 'business_facts')
+            self.assertEqual(data['source'], 'system-health')
+            self.assertEqual(data['facts']['cpu_util_percent'], 11.22)
+            self.assertEqual(data['facts']['memory_available_gb'], 63.96)
+            self.assertEqual(data['facts']['disk_root_free_gb'], 2030)
+            self.assertLess(len(proc.stdout), 5000)
 
 
 if __name__ == '__main__':
