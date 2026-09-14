@@ -32,7 +32,7 @@ OpenClaw + local model
         ↓
 Data Catalog + Business Skills
         ↓
-Trace / Working Data / Claim-grade Evidence
+Trace / Working Data / Internal Evidence / Claim-grade Evidence
         ↓
 conversation answer
 或
@@ -50,7 +50,8 @@ Finalizer -> Claims -> Product Answer
 - encoder compact window analysis；
 - bounded log-context；
 - Data Catalog + data-locator；
-- Evidence Trace/Working/Claim/User Facts 分层；
+- Catalog Summary 全局注入 Runtime message；
+- Evidence Trace/Working/Internal/Claim/User Facts 分层；
 - interval/daily/once；
 - offline missed skip/no replay；
 - run timing；
@@ -71,7 +72,13 @@ Finalizer -> Claims -> Product Answer
   YYYYMMDD/HH/YYYYMMDD-HHMMSSmmm.jpg|json|pcd
 ```
 
-统一定义在 `config/data-catalog.json`，Runtime 复制到 workspace 并自动挂载存在的 host path。
+统一定义在 `config/data-catalog.json`。Runtime：
+
+1. 复制 Catalog 到 workspace；
+2. 自动挂载存在的 host path；
+3. 将有界语义摘要注入每个 OpenClaw turn。
+
+摘要只包含 source/path/layout/access limits，不包含实际文件清单，也不是业务 Evidence。
 
 ### Log selection
 
@@ -98,14 +105,22 @@ Trace
 Working Data
   /task-scratch
 
+Internal Evidence
+  working_derived
+  有界 scratch 派生材料，可供 Finalizer / 审计兼容
+  不进入用户事实依据
+
 Claim-grade Evidence
   business source / original image / host fact / structured business_facts
 
 User Facts
   UI-visible factual basis
+  排除 working_derived
 ```
 
 `business_facts` 一次稳定分析只形成一条结构化 Evidence，不再按 stdout 每行拆分。
+
+保留 `working_derived` 是为了不破坏 Step 6 已验证的大数据/compaction 路径；它的产品边界是“内部可信工作材料”，不是“用户事实”。
 
 ## 6. Encoder failure correction
 
@@ -166,6 +181,7 @@ python3 -m unittest \
   tests.test_task_feedback_export \
   tests.test_fastapi_app \
   tests.test_runtime_api_factory \
+  tests.test_runtime_message_contract \
   tests.test_skill_provisioning -v
 ```
 
@@ -188,16 +204,17 @@ Build/import `scopex-sandbox-analysis:step7`.
 
 ### Gate 5 — real data wiring
 
-- Runtime startup automatically binds real Log / LeftCamera sources;
-- `/workspace/scopex-data-catalog.json` exists;
-- Locator query around non-round log start returns correct file group;
-- LeftCamera query only visits target hour dir.
+- Runtime startup automatically binds real Log / LeftCamera sources；
+- `/workspace/scopex-data-catalog.json` exists；
+- first-turn Runtime message contains bounded Catalog Summary；
+- Locator query around non-round log start returns correct file group；
+- LeftCamera query only visits target hour dir。
 
 ### Gate 6 — unified entry
 
-- “当前有哪些能力” → normal answer, internal conversation;
-- “检查3点编码器” → audited task;
-- business attempt without facts cannot downgrade to chat.
+- “当前有哪些能力” → normal answer, internal conversation；
+- “检查3点编码器” → audited task；
+- business attempt without facts cannot downgrade to chat。
 
 ### Gate 7 — encoder real acceptance
 
@@ -208,6 +225,7 @@ Repeat failed task “3点的编码器数据是否存在异常”:
 - no unrelated image listing;
 - no `cd && python` preflight errors;
 - Evidence count drastically lower than previous 990;
+- User Facts exclude Skill/catalog/locator/working_derived;
 - Product Answer readable;
 - manual candidate spot-check agrees with raw lines.
 
