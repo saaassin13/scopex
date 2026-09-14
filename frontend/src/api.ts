@@ -4,6 +4,7 @@ import type {
   EventsResponse,
   ResultResponse,
   ScheduleSnapshot,
+  TaskCalendarResponse,
   TaskSnapshot,
 } from './types'
 
@@ -35,8 +36,17 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
 export const api = {
   health: () => request<{ status: string; active_task_id: string | null }>('/health'),
-  listTasks: (mode?: 'task' | 'conversation') =>
-    request<{ tasks: TaskSnapshot[] }>(mode ? `/tasks?mode=${mode}` : '/tasks'),
+  createRun: (message: string) =>
+    request<TaskSnapshot>('/runs', { method: 'POST', body: JSON.stringify({ message }) }),
+  listTasks: (options?: { mode?: 'task' | 'conversation' | 'auto'; day?: string }) => {
+    const params = new URLSearchParams()
+    if (options?.mode) params.set('mode', options.mode)
+    if (options?.day) params.set('day', options.day)
+    const query = params.toString()
+    return request<{ tasks: TaskSnapshot[] }>(query ? `/tasks?${query}` : '/tasks')
+  },
+  getTaskCalendar: (month: string) =>
+    request<TaskCalendarResponse>(`/tasks/calendar?month=${encodeURIComponent(month)}`),
   createTask: (message: string) =>
     request<TaskSnapshot>('/tasks', { method: 'POST', body: JSON.stringify({ message }) }),
   createConversation: (message: string) =>
@@ -46,6 +56,8 @@ export const api = {
       method: 'POST', body: JSON.stringify({ message }),
     }),
   getTask: (id: string) => request<TaskSnapshot>(`/tasks/${encodeURIComponent(id)}`),
+  deleteTask: (id: string) =>
+    request<{ task_id: string; deleted: boolean; external_business_data_deleted: boolean }>(`/tasks/${encodeURIComponent(id)}`, { method: 'DELETE' }),
   getEvents: (id: string, after = 0) =>
     request<EventsResponse>(`/tasks/${encodeURIComponent(id)}/events?after=${after}`),
   getEvidence: (id: string) =>
