@@ -51,18 +51,24 @@ _LABELS = {
     "capped_2d_detections": "计入指标的2D乳头框总数",
     "expected_nipples": "理论乳头总数",
     "samples_in_window": "时间窗采样数",
-    "valid_samples": "有效采样数",
     "invalid_samples": "无效/读取失败采样数",
     "median_sample_dt_ms": "采样中位间隔",
-    "sampling_gap_count": "采样缺口候选数",
-    "negative_jump_count": "raw 数值下降次数",
-    "negative_jump_abs_p95_pulses": "raw 下降幅度P95",
-    "negative_jump_abs_max_pulses": "raw 最大下降幅度",
-    "negative_jump_outlier_candidate_count": "显著 raw 下降候选数",
-    "large_negative_jump_candidate_count": "大幅 raw 下降候选数",
-    "positive_delta_outlier_candidate_count": "显著正向跳变候选数",
-    "flat_raw_candidate_count": "长时间不变候选数",
-    "longest_flat_raw_ms": "最长 raw 不变持续时间",
+    "sampling_gap_count": "采样缺口数",
+    "anomaly_event_count": "显著异常事件数",
+    "reverse_glitch_candidate_count": "回退-恢复毛刺数",
+    "reverse_interval_candidate_count": "连续回退区间数",
+    "reverse_step_candidate_count": "单步显著回退数",
+    "positive_spike_candidate_count": "异常正向跳变数",
+    "flat_count_candidate_count": "长时间不变候选数",
+    "cpu_util_percent": "CPU利用率",
+    "cpu_count": "CPU逻辑核数",
+    "memory_total_gb": "内存总量",
+    "memory_used_gb": "已用内存",
+    "memory_available_gb": "可用内存",
+    "disk_root_free_gb": "根盘剩余空间",
+    "disk_root_used_percent": "根盘使用率",
+    "gpu_util_percent_max": "GPU最高利用率",
+    "gpu_count": "GPU数量",
     "free_gb": "剩余空间",
     "used_percent": "磁盘使用率",
     "available_gb": "可用内存",
@@ -74,19 +80,6 @@ _SCALAR_LINE = re.compile(r'^\s*"?([^"\s:]+)"?\s*:\s*(.+?)\s*,?\s*$')
 
 def _has_image_evidence(claim: Claim, catalog: EvidenceCatalog) -> bool:
     return any(catalog.get(ref).metadata.get("evidence_type") == "image" for ref in claim.evidence_refs)
-
-
-def _raw_evidence_text(claim: Claim, catalog: EvidenceCatalog) -> str:
-    rows: list[str] = []
-    seen: set[str] = set()
-    for ref in claim.evidence_refs:
-        if ref in seen:
-            continue
-        seen.add(ref)
-        raw = catalog.get(ref).raw.strip()
-        if raw:
-            rows.append(raw)
-    return "；".join(rows)
 
 
 def _scalar(value: str):
@@ -111,6 +104,13 @@ def _number(value, digits: int = 2) -> str:
     if isinstance(value, float):
         return f"{value:.{digits}f}".rstrip("0").rstrip(".")
     return str(value)
+
+
+def _short_time(value: object) -> str:
+    text = str(value or "")
+    if " " in text:
+        return text.split(" ", 1)[1]
+    return text
 
 
 def _humanize_business_facts(payload: dict) -> str | None:
@@ -162,47 +162,100 @@ def _humanize_business_facts(payload: dict) -> str | None:
             return None
         rows: list[str] = []
         samples = facts.get("samples_in_window")
-        valid = facts.get("valid_samples")
         invalid = facts.get("invalid_samples")
+        median_dt = facts.get("median_sample_dt_ms")
         if isinstance(samples, (int, float)):
             text = f"时间窗内共 {int(samples)} 个编码器采样"
-            if isinstance(valid, (int, float)):
-                text += f"，有效 {int(valid)}"
             if isinstance(invalid, (int, float)):
                 text += f"，无效/读取失败 {int(invalid)}"
+            if isinstance(median_dt, (int, float)):
+                text += f"，采样中位间隔 {_number(median_dt, 3)} ms"
             rows.append(text)
-        median_dt = facts.get("median_sample_dt_ms")
-        gap_count = facts.get("sampling_gap_count")
-        if isinstance(median_dt, (int, float)):
-            text = f"采样中位间隔 {_number(median_dt, 3)} ms"
-            if isinstance(gap_count, (int, float)):
-                text += f"，采样缺口候选 {int(gap_count)} 个"
+
+        anomaly = facts.get("anomaly_event_count")
+        gaps = facts.get("sampling_gap_count")
+        reverse_glitch = facts.get("reverse_glitch_candidate_count")
+        reverse_interval = facts.get("reverse_interval_candidate_count")
+        reverse_step = facts.get("reverse_step_candidate_count")
+        positive_spike = facts.get("positive_spike_candidate_count")
+        if isinstance(anomaly, (int, float)):
+            if int(anomaly) == 0:
+                rows.append("未发现显著毛刺、回退或异常跳变候选")
+            else:
+                parts = []
+                if isinstance(reverse_glitch, (int, float)) and reverse_glitch:
+                    parts.append(f"回退-恢复毛刺 {int(reverse_glitch)}")
+                if isinstance(reverse_interval, (int, float)) and reverse_interval:
+                    parts.append(f"连续回退区间 {int(reverse_interval)}")
+                if isinstance(reverse_step, (int, float)) and reverse_step:
+                    parts.append(f"单步显著回退 {int(reverse_step)}")
+                if isinstance(positive_spike, (int, float)) and positive_spike:
+                    parts.append(f"异常正向跳变 {int(positive_spike)}")
+                if isinstance(gaps, (int, float)) and gaps:
+                    parts.append(f"采样缺口 {int(gaps)}")
+                rows.append(f"发现 {int(anomaly)} 个显著异常事件" + ("：" + "，".join(parts) if parts else ""))
+
+        top = payload.get("top_candidates")
+        if isinstance(top, list):
+            details = []
+            labels = {
+                "reverse_glitch_candidate": "回退-恢复毛刺",
+                "reverse_interval_candidate": "连续回退",
+                "reverse_step_candidate": "单步回退",
+                "positive_spike_candidate": "异常正跳",
+                "sampling_gap": "采样缺口",
+            }
+            for event in top:
+                if not isinstance(event, dict) or event.get("type") not in labels:
+                    continue
+                when = _short_time(event.get("at") or event.get("start"))
+                if event.get("type") == "sampling_gap":
+                    details.append(f"{when} {labels[event['type']]} {_number(event.get('dt_ms'), 1)} ms")
+                else:
+                    delta = event.get("pulse_delta")
+                    details.append(f"{when} {labels[event['type']]} {delta:+} pulse" if isinstance(delta, (int, float)) else f"{when} {labels[event['type']]}")
+                if len(details) >= 3:
+                    break
+            if details:
+                rows.append("主要事件：" + "；".join(details))
+        return "；".join(rows) if rows else None
+
+    if source == "system-health":
+        facts = payload.get("facts")
+        if not isinstance(facts, dict):
+            return None
+        rows = []
+        cpu = facts.get("cpu_util_percent")
+        if isinstance(cpu, (int, float)):
+            rows.append(f"当前 CPU 利用率 {_number(cpu, 2)}%")
+        mem_used = facts.get("memory_used_gb")
+        mem_available = facts.get("memory_available_gb")
+        mem_total = facts.get("memory_total_gb")
+        if isinstance(mem_used, (int, float)) or isinstance(mem_available, (int, float)):
+            text = "当前内存"
+            if isinstance(mem_used, (int, float)):
+                text += f"已用 {_number(mem_used, 2)} GB"
+            if isinstance(mem_available, (int, float)):
+                text += f"，可用 {_number(mem_available, 2)} GB"
+            if isinstance(mem_total, (int, float)):
+                text += f" / 总计 {_number(mem_total, 2)} GB"
             rows.append(text)
-        negative = facts.get("negative_jump_count")
-        if isinstance(negative, (int, float)):
-            p95 = facts.get("negative_jump_abs_p95_pulses")
-            maximum = facts.get("negative_jump_abs_max_pulses")
-            text = f"观察到 raw 数值下降 {int(negative)} 次"
-            if isinstance(p95, (int, float)):
-                text += f"，下降幅度 P95 为 {_number(p95, 2)} pulse"
-            if isinstance(maximum, (int, float)):
-                text += f"，最大 {_number(maximum, 2)} pulse"
+        disk_used = facts.get("disk_root_used_percent")
+        disk_free = facts.get("disk_root_free_gb")
+        if isinstance(disk_used, (int, float)) or isinstance(disk_free, (int, float)):
+            text = "根磁盘"
+            if isinstance(disk_used, (int, float)):
+                text += f"已用 {_number(disk_used, 2)}%"
+            if isinstance(disk_free, (int, float)):
+                text += f"，剩余 {_number(disk_free, 2)} GB"
             rows.append(text)
-        significant = facts.get("negative_jump_outlier_candidate_count")
-        large = facts.get("large_negative_jump_candidate_count")
-        positive = facts.get("positive_delta_outlier_candidate_count")
-        flat = facts.get("flat_raw_candidate_count")
-        candidates = []
-        if isinstance(significant, (int, float)):
-            candidates.append(f"显著 raw 下降候选 {int(significant)}")
-        if isinstance(large, (int, float)):
-            candidates.append(f"大幅 raw 下降候选 {int(large)}")
-        if isinstance(positive, (int, float)):
-            candidates.append(f"显著正向跳变候选 {int(positive)}")
-        if isinstance(flat, (int, float)):
-            candidates.append(f"长时间不变候选 {int(flat)}")
-        if candidates:
-            rows.append("候选事件：" + "，".join(candidates))
+        gpu = facts.get("gpu_util_percent_max")
+        gpu_count = facts.get("gpu_count")
+        if isinstance(gpu, (int, float)):
+            rows.append(f"当前 GPU 最高利用率 {_number(gpu, 2)}%" + (f"（{int(gpu_count)} 个 GPU）" if isinstance(gpu_count, (int, float)) else ""))
+        captured = facts.get("captured_at")
+        if isinstance(captured, str) and captured:
+            rows.append(f"采样时间 {captured}")
         return "；".join(rows) if rows else None
 
     facts = payload.get("facts") or payload.get("summary")
