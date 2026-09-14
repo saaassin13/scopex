@@ -8,6 +8,17 @@ user-invocable: true
 
 Use this skill when the user asks whether one or more images are blurry, fogged, dirty, contaminated, poorly exposed, motion-blurred, defocused, or otherwise visually degraded.
 
+## Data source
+
+The normal LeftCamera source is:
+
+- `left_camera_multimodal` -> `/agent-data/left-camera`
+- host: `/opt/ScalingRobotics/CowDisinfect/GrabbedImages/LeftCamera`
+- directories: `YYYYMMDD/HH`
+- files: `YYYYMMDD-HHMMSSmmm.jpg|json|pcd`
+
+For a time-window request such as “检查过去30分钟图片情况”, first use `data-locator` to resolve only the matching hour directory/files. Do not recursively enumerate the full historical LeftCamera root.
+
 ## Scope first
 
 - Treat the user's explicit target and scope as binding. If the user names one image, a short list of images, or says to use visual inspection only, inspect those original images directly and do not enumerate or read sibling logs, JSON files, directories, or unrelated data by default.
@@ -31,7 +42,7 @@ For batch screening, comparison, or when the user explicitly wants numerical qua
 
 `{baseDir}/scripts/image_quality_metrics.py`
 
-The helper only reports bounded objective metrics such as Laplacian variance, gradient energy, brightness, contrast and clipping ratios. It does not diagnose a root cause. Pass explicit image paths; do not feed an entire directory by default.
+The helper only reports bounded objective metrics such as Laplacian variance, gradient energy, brightness, contrast and clipping ratios. It does not diagnose a root cause. Pass explicit image paths from the locator; do not feed an entire directory by default.
 
 For a direct one-image visual question, the helper is optional and should not replace visual inspection.
 
