@@ -71,6 +71,8 @@ def log_groups(root: Path) -> list[tuple[datetime, list[tuple[int, str]]]]:
 
 
 def locate_logs(root: Path, start: datetime, end: datetime, *, max_hours: int, max_files: int) -> dict[str, Any]:
+    # Bound requested duration, but do not equate natural clock hours with log
+    # file start hours: files may start at e.g. 10:23:36 and cover data past 11:00.
     hour_buckets(start, end, maximum=max_hours)
     groups = log_groups(root)
     matched: list[tuple[datetime, int, str]] = []
@@ -91,6 +93,7 @@ def locate_logs(root: Path, start: datetime, end: datetime, *, max_hours: int, m
     return {
         'matching_count': len(matched),
         'files_truncated': len(matched) > max_files,
+        'selection_mode': 'all_relevant_logs',
         'files': files,
         'selected_log_intervals': intervals,
     }
@@ -104,6 +107,36 @@ def multimodal_timestamp(name: str) -> datetime | None:
         return datetime.strptime(m.group('stamp'), '%Y%m%d-%H%M%S%f')
     except ValueError:
         return None
+
+
+def _evenly_spaced(rows: list[tuple[datetime, str]], maximum: int) -> list[tuple[datetime, str]]:
+    """Keep temporal coverage when a multimodal window exceeds its file budget."""
+    if len(rows) <= maximum:
+        return rows
+    if maximum <= 1:
+        return [rows[len(rows) // 2]]
+    last = len(rows) - 1
+    indices = [round(i * last / (maximum - 1)) for i in range(maximum)]
+    selected: list[tuple[datetime, str]] = []
+    seen: set[int] = set()
+    for index in indices:
+        if index in seen:
+            continue
+        seen.add(index)
+        selected.append(rows[index])
+    # Rounding can theoretically deduplicate an index for tiny rows; fill from
+    # chronological candidates without exceeding the budget.
+    if len(selected) < maximum:
+        selected_paths = {path for _, path in selected}
+        for row in rows:
+            if row[1] in selected_paths:
+                continue
+            selected.append(row)
+            selected_paths.add(row[1])
+            if len(selected) >= maximum:
+                break
+        selected.sort(key=lambda row: (row[0], row[1]))
+    return selected
 
 
 def locate_multimodal(root: Path, start: datetime, end: datetime, *, kind: str, max_hours: int, max_files: int) -> dict[str, Any]:
@@ -135,10 +168,15 @@ def locate_multimodal(root: Path, start: datetime, end: datetime, *, kind: str, 
                     continue
                 matched.append((ts, str(hour_dir / entry.name)))
     matched.sort(key=lambda row: (row[0], row[1]))
+    truncated = len(matched) > max_files
+    selected = _evenly_spaced(matched, max_files) if truncated else matched
     return {
         'matching_count': len(matched),
-        'files_truncated': len(matched) > max_files,
-        'files': [row[1] for row in matched[:max_files]],
+        'files_truncated': truncated,
+        'selection_mode': 'evenly_spaced_time_sample' if truncated else 'all_matching_files',
+        'files': [row[1] for row in selected],
+        'selected_first_ts': selected[0][0].strftime('%Y-%m-%d %H:%M:%S.%f') if selected else None,
+        'selected_last_ts': selected[-1][0].strftime('%Y-%m-%d %H:%M:%S.%f') if selected else None,
         'scanned_hour_dirs': scanned_dirs,
         'directory_file_counts': counts,
     }
