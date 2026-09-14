@@ -93,35 +93,37 @@ docs/business/01-business-capabilities-v1.md
 
 设计边界：Agent 不拿 Sandbox 的 `/proc/free/df/nvidia-smi` 当 Spark host 数据，也不因此获得 gateway shell。
 
-待验收：Spark 连续采样、历史 7 点窗口、Docker/GPU 字段真实形态、文件上限行为。
+待验收：Spark 连续采样、历史时间窗口、Docker/GPU 字段真实形态、文件上限行为。
 
 ### 4.2 image-quality-diagnosis — 已实现 / 继续真实验收
 
 已有 direct original `view_image` + bounded metrics；单图任务要求不默认 `exec`、不扫其他数据、证据够停止。
 
-### 4.3 nipple-recognition-analysis — 已实现框架 / 待真实 JSON 冻结口径
+### 4.3 nipple-recognition-analysis — 已按真实业务纠正 / 待完整时间窗对账
 
-已实现通用 `nipple_stats.py`：
+真实图片/JSON/日志确认后，第一版“以 JSON 为主”的设计已撤回。原因：检测或推理失败时 JPG/JSON 可能不保存，文件数不能作为总牛数分母。
 
-- 显式 JSON schema mapping；
-- 可组合 cow key；
-- 强制显式 `selected/latest/max` per-cow policy；
-- exact-4 rate；
-- capped nipple recognition rate；
-- >4 over-detection 单列；
-- malformed/missing field 质量统计。
+当前正式口径：
 
-待用户提供真实推理 JSON 后冻结：
+- 一头牛固定最多 4 个乳头；
+- 识别数量只统计日志里的 **2D `NippleNum` 检测框数**；
+- 3D nipple coordinates / `IsValid` / 3D valid count 不参与该 KPI；
+- 一头牛多帧时不能取 max，也不能求和；
+- 由 `New cow detecte finished -> LastImgTimeStamp` 回挂到对应检测帧，取该帧 `NippleNum` 作为最终 2D 结果；
+- `NippleNum > 4` 单列 over-detection，KPI 最多按 4；
+- 已开始但没有最终结果的牛周期仍保留在保守分母中。
+
+当前工具：
 
 ```text
-time field
-cow key
-nipple field
-final/selected semantics
-selected/latest/max 的真实业务口径
+skills/nipple-recognition-analysis/scripts/nipple_stats.py
 ```
 
-在此之前不能把临时 `max` 约定写成正式 KPI 真理。
+输出 `total_cows / complete_four_nipple_rate / capped_2d_detections / expected_nipples / nipple_recognition_rate / distribution`，并保留逐牛最终时间戳和行证据。
+
+JPG/JSON 现在只做辅助核对：如果 artifact 目录完整，可以验证最终 `LastImgTimeStamp` 文件是否存在，以及 JSON 的 2D marker `1..4` 是否与最终日志 `NippleNum` 一致。
+
+仍有一个真实边界：系统完全漏掉、从未创建命名检测周期的物理奶牛，需要 RFID/视频/其他 ground truth 才能进入“实际经过牛数”。
 
 ### 4.4 encoder-health — 已实现 V1 / 待真实日志验收
 
@@ -169,7 +171,7 @@ ScopeX Update Bundle（高频）
 `docs/09-zero-to-one-build-and-offline-deployment.md` 已补齐：
 
 - DGX Spark Docker/NVIDIA runtime 验证；
-- vLLM official container 基础启动模板；
+- vLLM container 基础启动模板；
 - 当前 served id 与下载 repo 的区别；
 - `MODEL_REPO + MODEL_REVISION` 固定；
 - Hugging Face `hf download`；
@@ -189,7 +191,7 @@ ScopeX Update Bundle（高频）
 3. Vue `npm run build`；
 4. Spark ARM64 analysis sandbox build + toolbox import；
 5. system metrics timer 连续运行并能分析历史时间窗；
-6. 真实乳头 JSON 人工复算一致；
+6. 用完整一小时轮转日志人工复算牛数、最终 2D `NippleNum`、四乳头率和乳头识别率；有完整 artifact 目录时做 JSON/JPG 辅助对账；
 7. 真实编码器日志 candidate 与人工原始行一致；
 8. log-context 不越界扩张；
 9. 单图明确范围任务少量请求完成；
@@ -199,7 +201,7 @@ ScopeX Update Bundle（高频）
 
 ## 8. 当前已知缺口
 
-- 乳头真实 JSON schema 与最终结果 selection 语义未冻结；
+- 完全漏检且从未创建命名检测周期的物理奶牛缺独立 ground truth；
 - 编码器 invalid/reset/物理阈值尚需真实协议/固件 profile；
 - 网络 topology 未确认；
 - current model 的真实 `MODEL_REPO + MODEL_REVISION` 未写入仓库/设备 manifest；
@@ -215,10 +217,11 @@ ScopeX Update Bundle（高频）
 - 不把固定业务流程写成 Runtime Handler；
 - 不把旧实验脚本的经验阈值无验证升级成产品规则；
 - 不把模型话术当原始 Evidence；
+- 不把 3D nipple 结果混入 2D 识别率；
 - 不把统计异常直接等同物理根因；
 - 用户范围优先，够证据即停；
 - 代码合入不等于 PASS。
 
 ## 10. 当前阶段结论
 
-> **ScopeX 已正式进入业务能力阶段。第一批能力不是“把旧脚本自动执行”，而是把系统负载、图片质量、乳头 JSON KPI、编码器数据健康拆成独立主能力，再用 bounded log-context 提供必要上下文。当前代码与文档已实现第一版，下一步是用真实 JSON/日志/Spark 运行证据冻结业务口径。**
+> **ScopeX 已正式进入业务能力阶段。第一批能力把系统负载、图片质量、乳头 2D 识别 KPI、编码器数据健康拆成独立能力，并用 bounded log-context 提供必要上下文。乳头 KPI 已根据真实数据纠正为日志牛周期 + 最终采用帧 `NippleNum`，JPG/JSON 仅作辅助证据。当前代码仍需 Spark 单测和完整时间窗人工对账后才能标记 PASS。**
