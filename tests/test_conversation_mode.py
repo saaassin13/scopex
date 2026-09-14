@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import json
 import tempfile
 import time
 import unittest
@@ -20,11 +21,12 @@ class Cleanup:
 
 
 class NoEvidenceCoordinator:
-    def __init__(self, task, session, events, audit):
+    def __init__(self, task, session, events, audit, *, business_attempt=False):
         self.task = task
         self.session = session
         self.events = events
         self.audit = audit
+        self.business_attempt = business_attempt
         self.controller = TaskController(task, session, events)
         self.catalog = EvidenceCatalog(task.id, task.session_key)
         self.steering = PendingSteeringQueue()
@@ -41,6 +43,21 @@ class NoEvidenceCoordinator:
         stdout.write_text('', encoding='utf-8')
         stderr.write_text('', encoding='utf-8')
         message_path.write_text('', encoding='utf-8')
+        if self.business_attempt:
+            request = {
+                'messages': [{
+                    'role': 'assistant',
+                    'tool_calls': [{
+                        'id': 'call-1',
+                        'type': 'function',
+                        'function': {
+                            'name': 'exec',
+                            'arguments': json.dumps({'command': 'python3 encoder_health.py --log-dir /agent-data/logs'}),
+                        },
+                    }],
+                }],
+            }
+            (root / 'wire-001-request.json').write_text(json.dumps(request), encoding='utf-8')
         process = type('Process', (), {
             'returncode': 0,
             'stop_reason': None,
@@ -49,7 +66,7 @@ class NoEvidenceCoordinator:
             'stderr_path': stderr,
             'message_path': message_path,
         })()
-        outcome = CliOutcome((), (), '当前可用 Skill 有 5 个。', 1, {})
+        outcome = CliOutcome((), (), '当前可用 Skill 有 6 个。', 1, {})
         return OpenClawTurnResult(
             turn_name=turn_name,
             process=process,
@@ -63,8 +80,11 @@ class NoEvidenceCoordinator:
 
 
 class NoEvidenceFactory:
+    def __init__(self, *, business_attempt=False):
+        self.business_attempt = business_attempt
+
     def __call__(self, task, session, events, audit):
-        return NoEvidenceCoordinator(task, session, events, audit)
+        return NoEvidenceCoordinator(task, session, events, audit, business_attempt=self.business_attempt)
 
 
 def wait_terminal(service: TaskService, task_id: str, timeout: float = 2.0):
@@ -82,32 +102,45 @@ def wait_terminal(service: TaskService, task_id: str, timeout: float = 2.0):
 class ConversationModeTests(unittest.TestCase):
     def test_conversation_can_publish_normal_answer_without_evidence(self):
         with tempfile.TemporaryDirectory() as td:
-            service = TaskService(
-                audit_root=Path(td),
-                coordinator_factory=NoEvidenceFactory(),
-                finalizer_factory=lambda: object(),
-            )
+            service = TaskService(audit_root=Path(td), coordinator_factory=NoEvidenceFactory(), finalizer_factory=lambda: object())
             created = service.create_task('当前有哪些 Skill', mode='conversation')
             row = wait_terminal(service, created['id'])
             self.assertEqual(row['state'], 'COMPLETED')
             result = service.get_result(created['id'])
-            self.assertTrue(result['available'])
             self.assertEqual(result['result']['mode'], 'conversation')
-            self.assertEqual(result['result']['answer_text'], '当前可用 Skill 有 5 个。')
             self.assertEqual(service.get_evidence(created['id'])['items'], [])
 
-    def test_audited_task_still_fails_without_evidence(self):
+    def test_auto_manual_run_resolves_to_conversation_without_business_work(self):
+        with tempfile.TemporaryDirectory() as td:
+            service = TaskService(audit_root=Path(td), coordinator_factory=NoEvidenceFactory(), finalizer_factory=lambda: object())
+            created = service.create_auto_run('当前有哪些 Skill')
+            self.assertEqual(created['mode'], 'auto')
+            row = wait_terminal(service, created['id'])
+            self.assertEqual(row['state'], 'COMPLETED')
+            self.assertEqual(row['mode'], 'conversation')
+            self.assertEqual(service.get_result(created['id'])['result']['answer_text'], '当前可用 Skill 有 6 个。')
+
+    def test_auto_business_attempt_without_business_evidence_does_not_downgrade_to_chat(self):
         with tempfile.TemporaryDirectory() as td:
             service = TaskService(
                 audit_root=Path(td),
-                coordinator_factory=NoEvidenceFactory(),
+                coordinator_factory=NoEvidenceFactory(business_attempt=True),
                 finalizer_factory=lambda: object(),
             )
+            created = service.create_auto_run('检查3点编码器')
+            row = wait_terminal(service, created['id'])
+            self.assertEqual(row['state'], 'FAILED')
+            self.assertEqual(row['mode'], 'task')
+            self.assertEqual(row['last_reason'], 'investigation_completed_without_business_evidence')
+            self.assertFalse(service.get_result(created['id'])['available'])
+
+    def test_audited_task_still_fails_without_evidence(self):
+        with tempfile.TemporaryDirectory() as td:
+            service = TaskService(audit_root=Path(td), coordinator_factory=NoEvidenceFactory(), finalizer_factory=lambda: object())
             created = service.create_task('检查设备异常', mode='task')
             row = wait_terminal(service, created['id'])
             self.assertEqual(row['state'], 'FAILED')
             self.assertEqual(row['last_reason'], 'investigation_completed_without_evidence')
-            self.assertFalse(service.get_result(created['id'])['available'])
 
 
 if __name__ == '__main__':
