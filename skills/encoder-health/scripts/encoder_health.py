@@ -238,7 +238,10 @@ def detect_count_events(samples: list[dict[str, Any]], *, flat_ms: float, gap_fa
         used_recovery: list[int] = []
         for j in range(last_i + 1, min(len(pairs), last_i + 4)):
             p = pairs[j]
-            if p['dt_ms'] > gap_threshold or p['delta'] < 0:
+            # build_pairs omits invalid/nonpositive-time pairs but preserves
+            # their original sequence numbers. Recovery must not cross a hole.
+            if (p['seq'] != pairs[j - 1]['seq'] + 1
+                    or p['dt_ms'] > gap_threshold or p['delta'] < 0):
                 break
             if p['delta'] > 0:
                 recovery += float(p['delta'])
@@ -302,11 +305,10 @@ def detect_count_events(samples: list[dict[str, Any]], *, flat_ms: float, gap_fa
     start_i: int | None = None
     for i, p in enumerate(pairs):
         contiguous = p['dt_ms'] <= gap_threshold
-        if contiguous and p['delta'] == 0:
-            if start_i is None:
-                start_i = i
-            continue
-        if start_i is not None:
+        follows_previous = i == 0 or p['seq'] == pairs[i - 1]['seq'] + 1
+        # Equal values on either side of an invalid/time boundary do not
+        # establish one uninterrupted flat interval. Flush, then start anew.
+        if start_i is not None and (not follows_previous or not contiguous or p['delta'] != 0):
             first, last = pairs[start_i], pairs[i - 1]
             duration = (last['b']['ts'] - first['a']['ts']).total_seconds() * 1000.0
             if duration >= flat_ms:
@@ -317,6 +319,8 @@ def detect_count_events(samples: list[dict[str, Any]], *, flat_ms: float, gap_fa
                     'line_start': first['a']['line_no'], 'line_end': last['b']['line_no'],
                 })
             start_i = None
+        if contiguous and p['delta'] == 0 and start_i is None:
+            start_i = i
     if start_i is not None and pairs:
         first, last = pairs[start_i], pairs[-1]
         duration = (last['b']['ts'] - first['a']['ts']).total_seconds() * 1000.0
@@ -332,7 +336,7 @@ def detect_count_events(samples: list[dict[str, Any]], *, flat_ms: float, gap_fa
     raw_negative_steps = sum(1 for p in pairs if p['dt_ms'] <= gap_threshold and p['delta'] < 0)
     delta_values = [float(p['delta']) for p in pairs if p['dt_ms'] <= gap_threshold]
     facts = {
-        'samples': len(samples),
+        'samples': sum(not row.get('invalid') for row in samples),
         'median_sample_dt_ms': round(median_dt, 3) if median_dt is not None else None,
         'sample_gap_threshold_ms': round(gap_threshold, 3),
         'sampling_gap_count': gap_count,
@@ -430,19 +434,23 @@ def main() -> int:
         primary_samples = main_samples
     else:
         primary_name = 'raw_encoder'
-        primary_samples = [row for row in raw_samples if not row.get('invalid')]
+        # Keep invalid records as continuity barriers. Filtering them here
+        # manufactures deltas between previously non-adjacent valid readings.
+        primary_samples = raw_samples
 
+    # Filter only for coverage/count reporting and the empty-input exit status;
+    # event detection always receives the original sequence with its barriers.
+    valid_primary_samples = [row for row in primary_samples if not row.get('invalid')]
     facts, candidates, primary_pairs, gap_threshold = detect_count_events(
         primary_samples,
         flat_ms=args.flat_ms,
         gap_factor=args.gap_factor,
         gap_min_ms=args.gap_min_ms,
-    ) if len(primary_samples) >= 2 else ({'samples': len(primary_samples)}, [], [], args.gap_min_ms)
+    ) if len(valid_primary_samples) >= 2 else ({'samples': len(valid_primary_samples)}, [], [], args.gap_min_ms)
 
     false_zero = false_zero_speed_candidates(main_samples, gap_threshold) if len(main_samples) >= 3 else []
     candidates.extend(false_zero)
 
-    raw_pairs = build_pairs([row for row in raw_samples if not row.get('invalid')])
     filtered_negative = 0
     raw_negative = 0
     raw_filtered_abs = []
@@ -462,12 +470,12 @@ def main() -> int:
 
     facts.update({
         'primary_stream': primary_name,
-        'samples_in_window': len(primary_samples),
+        'samples_in_window': len(valid_primary_samples),
         'application_samples': len(main_samples),
         'raw_filtered_samples': len(raw_samples),
         'invalid_samples': invalid_raw,
-        'first_ts': primary_samples[0]['ts_text'] if primary_samples else None,
-        'last_ts': primary_samples[-1]['ts_text'] if primary_samples else None,
+        'first_ts': valid_primary_samples[0]['ts_text'] if valid_primary_samples else None,
+        'last_ts': valid_primary_samples[-1]['ts_text'] if valid_primary_samples else None,
         'anomaly_event_count': sum(
             1 for row in candidates
             if row['type'] in {
@@ -516,7 +524,7 @@ def main() -> int:
         args.out.write_text(json.dumps(result, ensure_ascii=False, indent=2, allow_nan=False) + '\n', encoding='utf-8')
 
     print(json.dumps(result, ensure_ascii=False, separators=(',', ':'), allow_nan=False))
-    return 0 if primary_samples else 1
+    return 0 if valid_primary_samples else 1
 
 
 if __name__ == '__main__':
