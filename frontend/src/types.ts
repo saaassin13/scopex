@@ -8,12 +8,27 @@ export interface TaskSnapshot {
   started_at?: string | null
   finished_at?: string | null
   duration_ms?: number | null
-  mode?: 'task' | 'conversation'
+  mode?: 'task' | 'conversation' | 'auto'
   trigger_type?: 'manual' | 'schedule'
   schedule_id?: string | null
   scheduled_for?: string | null
   metadata?: Record<string, unknown>
   last_reason?: string | null
+}
+
+export interface TaskCalendarDay {
+  date: string
+  count: number
+  completed: number
+  failed: number
+  running: number
+  scheduled: number
+  manual: number
+}
+
+export interface TaskCalendarResponse {
+  month: string
+  days: TaskCalendarDay[]
 }
 
 export interface ProgressEvent {
@@ -89,6 +104,8 @@ export interface ScheduleSnapshot {
   last_run_at?: string | null
   last_status?: string | null
   last_task_id?: string | null
+  missed_count?: number
+  last_missed_at?: string | null
 }
 
 export interface Evaluation {
