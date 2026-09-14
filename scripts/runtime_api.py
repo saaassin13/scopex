@@ -20,8 +20,6 @@ from scopex.api.factory import LocalRuntimeConfig, OpenClawRuntimeFactory
 from scopex.api.fastapi_app import create_app
 from scopex.api.service import TaskService
 
-SYSTEM_METRICS_AGENT_DIR = "/scopex-system-metrics"
-
 
 def loopback_host(host: str) -> bool:
     if host == "localhost":
@@ -70,21 +68,16 @@ def main(argv=None) -> int:
         help="read-only host directory exposed to the OpenClaw sandbox; repeatable",
     )
     parser.add_argument(
-        "--system-metrics-dir",
-        type=Path,
-        help="host system-metrics directory mounted read-only at /scopex-system-metrics",
-    )
-    parser.add_argument(
         "--exec-host",
         choices=("sandbox", "gateway", "node"),
         default="sandbox",
-        help="OpenClaw exec target; use gateway to inspect the current Spark host",
+        help="OpenClaw exec target; use gateway only for an explicitly approved host-level task",
     )
     parser.add_argument(
         "--exec-mode",
         choices=("deny", "allowlist", "ask", "auto", "full"),
         default="full",
-        help="OpenClaw native exec policy; POC07 uses full for permissive validation",
+        help="OpenClaw native exec policy; current local validation uses full inside sandbox",
     )
     parser.add_argument(
         "--enable-view-image",
@@ -151,16 +144,6 @@ def main(argv=None) -> int:
         builtin_root=ROOT / "skills",
     )
 
-    data_binds = list(args.data_dir)
-    if args.system_metrics_dir is not None:
-        metrics_dir = args.system_metrics_dir.expanduser().resolve()
-        metrics_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
-        if metrics_dir.is_symlink():
-            raise ValueError("system metrics directory symlink is not allowed")
-        if any(f":{SYSTEM_METRICS_AGENT_DIR}:" in bind for bind in data_binds):
-            raise ValueError("system metrics target conflicts with --data-dir")
-        data_binds.append(f"{metrics_dir}:{SYSTEM_METRICS_AGENT_DIR}:ro")
-
     data_root = args.data_root.expanduser().resolve()
     config = LocalRuntimeConfig(
         cli_path=args.openclaw_bin.expanduser().resolve(),
@@ -177,7 +160,7 @@ def main(argv=None) -> int:
         finalizer_max_tokens=args.finalizer_max_tokens,
         finalizer_timeout_s=args.finalizer_timeout,
         skills=skills,
-        data_binds=tuple(data_binds),
+        data_binds=tuple(args.data_dir),
         exec_host=args.exec_host,
         exec_mode=args.exec_mode,
         enable_view_image=args.enable_view_image,
