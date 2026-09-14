@@ -103,7 +103,7 @@ docs/business/01-business-capabilities-v1.md
 
 - `system-health`：Spark 宿主机资源历史；
 - `image-quality-diagnosis`：原始图片质量；
-- `nipple-recognition-analysis`：推理 JSON 按牛聚合 KPI；
+- `nipple-recognition-analysis`：日志牛周期 + 最终采用帧的 2D `NippleNum`；每头最多 4，3D valid 不参与 KPI；
 - `encoder-health`：编码器采样健康事实/候选；
 - `log-context`：公共小窗口日志证据，不独立给根因。
 
@@ -179,6 +179,8 @@ docker build \
   -t scopex-sandbox-analysis:step7 \
   .
 ```
+
+Dockerfile 已有默认 `BASE_IMAGE=scopex-sandbox-base:step6f`，显式 build arg 仍建议用于发布构建。
 
 验证：
 
@@ -288,16 +290,26 @@ Task audit：
 
 ### nipple-recognition-analysis
 
-需要真实推理 JSON 冻结：
+当前业务定义已冻结到：
 
 ```text
-time field
-cow key
-nipple field
-selected/latest/max 真实业务语义
+总牛数：日志中命名检测周期
+最终乳头数：LastImgTimeStamp 对应帧的 2D NippleNum
+物理上限：4 个/牛
+3D valid count：不参与 KPI
+JPG/JSON：辅助结果核对，不作为分母
 ```
 
-逐牛结果和小时统计必须可人工复算；`>4` 不允许提高识别率到 100% 以上。
+验收需使用完整一小时轮转日志人工抽样复算：
+
+- 牛周期数量；
+- 最终帧绑定；
+- 每头最终 `NippleNum`；
+- `Σ min(N,4) / (牛数×4)`；
+- unfinished/missing result 不从分母消失；
+- 有完整 artifact 目录时核对 JSON marker / JPG 文件。
+
+完全漏检且没有命名周期的物理奶牛仍需独立 ground truth。
 
 ### encoder-health
 
@@ -384,7 +396,7 @@ ScopeX Runtime 使用 `Restart=on-failure`；vLLM 建议 Docker `--restart unles
 
 ## 17. 当前已知缺口
 
-- 真实乳头 JSON schema/最终结果选择语义尚未冻结；
+- 完全漏检且没有命名检测周期的物理奶牛缺独立 ground truth；
 - 编码器无效值、物理阈值仍需按真实协议/固件形成 profile；
 - 网络 topology 未确认；
 - 通用 business action verification provenance 尚未完全泛化；
@@ -416,7 +428,8 @@ business/01-business-capabilities-v1.md
 
 Step 6A-6F 已冻结。
 第一批业务能力是 system-health / image-quality / nipple-recognition-analysis / encoder-health，log-context 作为公共上下文能力；网络暂缓。
+乳头 KPI 只统计最终采用帧的 2D NippleNum，一头最多 4 个；JPG/JSON 只是辅助结果证据，3D valid count 不参与。
 
 历史脚本只作为业务理解和回归参考，不直接当产品需求。
-先检查 main 最新 commit、测试状态、真实 JSON/日志数据和剩余验收 Gate。
+先检查 main/业务分支最新 commit、测试状态、真实日志数据和剩余验收 Gate。
 ```
