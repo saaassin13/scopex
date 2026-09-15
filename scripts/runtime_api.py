@@ -97,6 +97,11 @@ def main(argv=None) -> int:
     parser.add_argument("--web-dist", type=Path, default=ROOT / "frontend" / "dist")
     parser.add_argument("--api-key-env", default="SCOPEX_API_KEY")
     parser.add_argument("--host", default="127.0.0.1")
+    parser.add_argument(
+        "--allow-trusted-network-bind",
+        action="store_true",
+        help="allow an explicit non-loopback IP; deployment must restrict it to a trusted VPN interface",
+    )
     parser.add_argument("--port", type=int, default=8787)
     parser.add_argument("--timeout", type=int, default=600)
     parser.add_argument("--max-requests", type=int, default=16)
@@ -113,8 +118,15 @@ def main(argv=None) -> int:
 
     if not sys.platform.startswith("linux") or os.geteuid() == 0:
         raise ValueError("run Runtime API on Spark Linux as the ordinary user, not sudo")
-    if not loopback_host(args.host):
-        raise ValueError("Runtime API may bind only to loopback")
+    if not loopback_host(args.host) and not args.allow_trusted_network_bind:
+        raise ValueError("non-loopback Runtime API bind requires --allow-trusted-network-bind")
+    if args.allow_trusted_network_bind:
+        try:
+            address = ipaddress.ip_address(args.host)
+        except ValueError as exc:
+            raise ValueError("trusted network bind must be an explicit IP address") from exc
+        if address.is_unspecified or address.is_multicast:
+            raise ValueError("trusted network bind may not use an unspecified or multicast address")
     if not 1 <= args.port <= 65535:
         raise ValueError("port must be between 1 and 65535")
 

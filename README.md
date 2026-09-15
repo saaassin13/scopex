@@ -75,7 +75,7 @@ StructuredFinalizer / Claim Validator / ReportComposer / TextReportComposer 保�
 
 vLLM `max-num-seqs` 最后文档值为1，需实机inspect；若仍为1，须确认原Compose/容器管理方式后在维护窗口改为2，再验证模型批处理。**本次仓库更新不重建、不重启、不修改现机vLLM。**
 
-更新时保留现有workspace/data-root/额外挂载，重建前端dist并重启ScopeX Python服务。Sandbox依赖与模型镜像未变，不需要因本轮Python/Vue修改重建它们。完整命令见 [本轮运行说明](docs/11-text-results-and-parallel-runs.md)；基础离线部署继续参考 [部署文档](docs/09-zero-to-one-build-and-offline-deployment.md)。
+端侧 Compose 与 rsync 更新使用 [简明部署命令](docs/deployment.md)；历史搭建依据见 [完整部署记录](docs/09-zero-to-one-build-and-offline-deployment.md)。
 
 ## 检查与验收工具
 

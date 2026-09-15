@@ -1,0 +1,120 @@
+name: scopex
+
+services:
+  vllm:
+    image: ${VLLM_IMAGE}
+    container_name: scopex-vllm
+    restart: "no"
+    stop_grace_period: 60s
+    gpus: all
+    ipc: private
+    shm_size: 8gb
+    entrypoint: ["/opt/nvidia/nvidia_entrypoint.sh"]
+    ports:
+      - "127.0.0.1:18002:8000"
+    volumes:
+      - ${SCOPEX_MODEL_DIR}:/models/Qwen3.8-27B-NVFP4:ro
+    command:
+      - vllm
+      - serve
+      - /models/Qwen3.8-27B-NVFP4
+      - --served-model-name
+      - qwen3.8-27b-nvfp4
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
+      - --max-model-len
+      - "32768"
+      - --max-num-seqs
+      - "1"
+      - --gpu-memory-utilization
+      - "0.60"
+      - --kv-cache-memory-bytes
+      - 8G
+      - --kv-cache-dtype
+      - bfloat16
+      - --enable-prefix-caching
+      - --reasoning-parser
+      - qwen3
+      - --enable-auto-tool-choice
+      - --tool-call-parser
+      - qwen3_coder
+      - --limit-mm-per-prompt
+      - '{"image":{"count":${SCOPEX_IMAGE_LIMIT},"width":1024,"height":1024},"video":0}'
+      - --mm-processor-cache-gb
+      - "0.5"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "--max-time", "5", "http://127.0.0.1:8000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 60
+      start_period: 30s
+
+  scopex:
+    image: ${SCOPEX_RUNTIME_IMAGE}
+    container_name: scopex-runtime
+    restart: "no"
+    stop_grace_period: 620s
+    network_mode: host
+    user: ${SCOPEX_UID}:${SCOPEX_GID}
+    group_add:
+      - ${SCOPEX_DOCKER_GID}
+    depends_on:
+      vllm:
+        condition: service_healthy
+    environment:
+      HOME: /opt/ScalingRobotics/scopex/data/home
+      TZ: Asia/Shanghai
+      SCOPEX_MAX_IMAGES_PER_PROMPT: ${SCOPEX_IMAGE_LIMIT}
+      SCOPEX_API_KEY: ${SCOPEX_API_KEY:-}
+    volumes:
+      - ${SCOPEX_APP_DIR}:${SCOPEX_APP_DIR}:ro
+      - ${SCOPEX_DATA_DIR}:${SCOPEX_DATA_DIR}:rw
+      - ${COWDISINFECT_LOG_DIR}:${COWDISINFECT_LOG_DIR}:ro
+      - ${LEFT_CAMERA_DIR}:${LEFT_CAMERA_DIR}:ro
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /etc/localtime:/etc/localtime:ro
+    working_dir: ${SCOPEX_APP_DIR}
+    command:
+      - --model
+      - qwen3.8-27b-nvfp4
+      - --base-url
+      - http://127.0.0.1:18002/v1
+      - --openclaw-bin
+      - /usr/local/bin/openclaw
+      - --workspace
+      - ${SCOPEX_DATA_DIR}/workspace
+      - --data-root
+      - ${SCOPEX_DATA_DIR}/runtime-api
+      - --data-catalog
+      - ${SCOPEX_APP_DIR}/config/data-catalog.json
+      - --sandbox-image
+      - ${SCOPEX_SANDBOX_IMAGE}
+      - --web-dist
+      - ${SCOPEX_APP_DIR}/frontend/dist
+      - --host
+      - ${SCOPEX_VPN_IP}
+      - --port
+      - "8787"
+      - --allow-trusted-network-bind
+      - --timeout
+      - "600"
+      - --max-requests
+      - "16"
+      - --max-tokens
+      - "2048"
+      - --max-active-tasks
+      - "2"
+      - --max-queued-tasks
+      - "16"
+      - --queue-timeout
+      - "600"
+      - --enable-view-image
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /var/tmp
+      - /run
+    security_opt:
+      - no-new-privileges:true

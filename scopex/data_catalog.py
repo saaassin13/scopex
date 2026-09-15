@@ -100,6 +100,8 @@ def render_runtime_catalog_summary(catalog: dict[str, Any]) -> str:
                 lines.append(f"  directory layout: {layout['directory']}")
             if layout.get("filename"):
                 lines.append(f"  filename: {layout['filename']}")
+            if layout.get("timezone"):
+                lines.append(f"  timestamp timezone: {layout['timezone']}")
         access = row.get("access")
         if isinstance(access, dict):
             limits = []
