@@ -18,6 +18,8 @@ class FinalizerResponse:
     finish_reasons: tuple[str, ...]
     done_seen: bool
     usage: dict[str, Any] | None
+    reasoning_chars: int = 0
+    tool_call_chunks: int = 0
 
 
 class StreamingFinalizerClient:
@@ -109,6 +111,8 @@ class StreamingFinalizerClient:
         usage: dict[str, Any] | None = None
         done = False
         headers_s = 0.0
+        reasoning_chars = 0
+        tool_call_chunks = 0
         try:
             connection.request("POST", "/v1/chat/completions", body=encoded, headers=headers)
             response = connection.getresponse()
@@ -138,6 +142,15 @@ class StreamingFinalizerClient:
                     if reason is not None:
                         finish.append(str(reason))
                     delta = choice.get("delta") or {}
+                    # Diagnose empty visible output without promoting reasoning
+                    # or tool-call arguments into the final JSON answer.
+                    for field in ("reasoning_content", "reasoning"):
+                        value = delta.get(field)
+                        if isinstance(value, str):
+                            reasoning_chars += len(value)
+                    calls = delta.get("tool_calls")
+                    if isinstance(calls, list):
+                        tool_call_chunks += len(calls)
                     content = delta.get("content")
                     if isinstance(content, str) and content:
                         if first_content is None:
@@ -153,6 +166,8 @@ class StreamingFinalizerClient:
                 finish_reasons=tuple(finish),
                 done_seen=done,
                 usage=usage,
+                reasoning_chars=reasoning_chars,
+                tool_call_chunks=tool_call_chunks,
             )
         finally:
             connection.close()
