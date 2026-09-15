@@ -54,4 +54,13 @@ python3 {baseDir}/scripts/data_locator.py --source cowdisinfect_logs --start "20
 python3 {baseDir}/scripts/data_locator.py --source left_camera_multimodal --kind jpg --start "2026-09-14 13:00:00" --end "2026-09-14 13:30:00" --max-files 32
 ```
 
-The locator is not business evidence and does not diagnose anything. It only returns a bounded set/count of relevant paths. After locating data, call the appropriate business Skill/tool.
+The locator is not business evidence and does not diagnose anything. It only returns a bounded set/count of relevant paths.
+
+For a fixed-time check, `status=no_data` / `matching_count=0` ends the current run:
+state that no matching data was found for the source and exact window, then finish.
+Do not widen/shift the window, search other roots, poll or retry unless the user
+explicitly requested that fallback. `source_unavailable` means the source could
+not be accessed, not an empty healthy dataset; report the access problem and finish.
+Future scheduled triggers are unaffected. Only when paths are found, call the
+business tool; if it finds zero records in the requested window, likewise finish
+with no data, never a normal diagnosis. Parse failures are errors, not no-data proof.

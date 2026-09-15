@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+from bisect import bisect_left
 from datetime import datetime, timedelta
 import json
 import os
@@ -456,6 +457,160 @@ def select_events(events, maximum):
     return selected[:maximum]
 
 
+def motion_episodes(samples, gap_threshold, settle_ms=2000.0):
+    """Describe sign-change episodes; grouping time is NOT a normality limit."""
+    pairs = build_pairs(samples)
+    blocks = []
+    for p in pairs:
+        if p['dt_ms'] > gap_threshold:
+            continue
+        if not blocks or p['seq'] != blocks[-1][-1]['seq'] + 1:
+            blocks.append([])
+        blocks[-1].append(p)
+    episodes = []
+    for block in blocks:
+        rates = [p['delta'] * 1000 / p['dt_ms'] for p in block]
+        # Isolated off-trend points must rejoin the same trend on BOTH sides.
+        jumps = {}
+        for i in range(2, len(block) - 3):
+            left, right = rates[i - 2:i], rates[i + 2:i + 4]
+            baseline = statistics.median(left + right)
+            scale = max(1.0, abs(baseline) * .1, (mad(left + right) or 0) * 6)
+            p, q = block[i:i + 2]
+            bridge = (p['delta'] + q['delta']) * 1000 / (p['dt_ms'] + q['dt_ms'])
+            if (p['delta'] * q['delta'] < 0
+                    and abs(statistics.median(left) - statistics.median(right)) <= scale
+                    and abs(bridge - baseline) <= scale
+                    and abs(p['delta'] - baseline * p['dt_ms'] / 1000) > 2
+                    and min(abs(rates[i] - baseline), abs(rates[i + 1] - baseline)) > 8 * scale):
+                jumps[i] = abs(p['delta'] - baseline * p['dt_ms'] / 1000)
+        transitions = set()
+        # Include starts/stops and abrupt persistent changes, even without reverse.
+        times = [p['a']['ts'] for p in block]
+        for i in range(1, len(block) - 1):
+            if (block[i - 1]['delta'] == 0) != (block[i]['delta'] == 0):
+                transitions.add(i)
+            if abs(rates[i] - rates[i - 1]) <= max(1.0, abs(rates[i - 1]) * .5):
+                continue
+            left = bisect_left(times, times[i] - timedelta(seconds=1))
+            right = bisect_left(times, times[i] + timedelta(seconds=1))
+            if i - left < 3 or right - i < 3:
+                continue
+            a, b = rates[left:i], rates[i:right]
+            center = statistics.median(a)
+            scale = max(1.0, abs(center) * .1, (mad(a) or 0) * 6)
+            if abs(statistics.median(b) - center) > 8 * scale:
+                transitions.add(i)
+        seeds = sorted(set(i for i, p in enumerate(block) if p['delta'] < 0) | set(jumps) | transitions)
+        groups = []
+        for i in seeds:
+            if groups and (block[i]['a']['ts'] - block[groups[-1][-1]]['b']['ts']).total_seconds() * 1000 < settle_ms:
+                groups[-1].append(i)
+            else:
+                groups.append([i])
+        for group in groups:
+            first, last = group[0], group[-1]
+            if last in jumps:
+                last += 1
+            lo, hi = first, last
+            while lo > 0 and (block[first]['a']['ts'] - block[lo - 1]['a']['ts']).total_seconds() * 1000 <= settle_ms:
+                lo -= 1
+            while hi + 1 < len(block) and (block[hi + 1]['b']['ts'] - block[last]['b']['ts']).total_seconds() * 1000 <= settle_ms:
+                hi += 1
+            selected = block[lo:hi + 1]
+            rows = [selected[0]['a']] + [p['b'] for p in selected]
+            core = block[first:last + 1]
+            # Drawdown measures peak-to-trough displacement, not sum of all oscillations.
+            peak, drawdown = core[0]['a']['count'], 0
+            reverse_lobes, lobe = [], 0
+            for p in core:
+                peak = max(peak, p['b']['count'])
+                drawdown = max(drawdown, peak - p['b']['count'])
+                if p['delta'] < 0:
+                    lobe -= p['delta']
+                elif lobe:
+                    reverse_lobes.append(lobe)
+                    lobe = 0
+            if lobe:
+                reverse_lobes.append(lobe)
+            before, after = block[lo:first], block[last + 1:hi + 1]
+            def context(part):
+                if not part:
+                    return {'observed_ms': 0, 'state': 'unobserved'}
+                duration = sum(p['dt_ms'] for p in part)
+                zero_ms = sum(p['dt_ms'] for p in part if p['delta'] == 0)
+                speeds = [p['delta'] * 1000 / p['dt_ms'] for p in part]
+                return {'observed_ms': round(duration, 3),
+                        'state': 'stationary' if zero_ms == duration else 'mixed' if min(speeds) < 0 else 'forward',
+                        'rate_first': round(speeds[0], 3), 'rate_last': round(speeds[-1], 3),
+                        'rate_median': round(statistics.median(speeds), 3)}
+            episodes.append({
+                'id': f'M{len(episodes) + 1}',
+                'start': core[0]['a']['ts_text'], 'end': core[-1]['b']['ts_text'],
+                'duration_ms': round(sum(p['dt_ms'] for p in core), 3),
+                'drawdown_counts': drawdown,
+                'rate_transition_observed': any(i in transitions for i in group),
+                'reverse_duration_ms': round(sum(p['dt_ms'] for p in core if p['delta'] < 0), 3),
+                'negative_lobes': reverse_lobes,
+                'lobes_decreasing': len(reverse_lobes) >= 2 and all(a > b for a, b in zip(reverse_lobes, reverse_lobes[1:])),
+                'off_trend_return_counts': max((jumps.get(i, 0) for i in group), default=0),
+                'before': context(before), 'after': context(after),
+                'context_complete': sum(p['dt_ms'] for p in before) >= settle_ms * .9 and sum(p['dt_ms'] for p in after) >= settle_ms * .9,
+                'series': [[r['ts_text'], r['count'], r['source'], r['line_no']] for r in rows],
+            })
+    for episode in episodes:
+        def comparable_rate(other):
+            a = abs(episode['before'].get('rate_median', 0))
+            b = abs(other['before'].get('rate_median', 0))
+            return (a == b == 0) or (min(a, b) > 0 and max(a, b) / min(a, b) <= 2)
+        peers = [e for e in episodes if e is not episode and comparable_rate(e)
+                 and e['before']['state'] == episode['before']['state']
+                 and e['after']['state'] == episode['after']['state']
+                 and bool(e['off_trend_return_counts']) == bool(episode['off_trend_return_counts'])]
+        comparisons = {}
+        if len(peers) >= 5:
+            for key in ('drawdown_counts', 'duration_ms'):
+                values = [e[key] for e in peers]
+                center = statistics.median(values)
+                scale = max(1.0, mad(values) * 1.4826)
+                comparisons[key] = {'median': round(center, 3), 'mad_scale': round(scale, 3),
+                                    'robust_deviation': round((episode[key] - center) / scale, 3)}
+        peer_center = statistics.median([p['drawdown_counts'] for p in peers]) if peers else 0
+        episode['comparison'] = {'peer_count': len(peers), 'reference': 'same_window_observed_not_verified_normal',
+                                 'features': comparisons,
+                                 'examples': [{'id': e['id'], 'drawdown_counts': e['drawdown_counts'],
+                                               'duration_ms': e['duration_ms']} for e in
+                                              sorted(peers, key=lambda e: abs(e['drawdown_counts'] - peer_center))[:2]]}
+
+    return episodes
+
+
+def episode_view(episode, maximum=32):
+    """Full-span envelope: preserve endpoints and per-bin extrema, never a prefix."""
+    result = {k: v for k, v in episode.items() if k != 'series'}
+    rows = episode['series']
+    if len(rows) <= maximum:
+        indices = list(range(len(rows)))
+    else:
+        indices = {0, len(rows) - 1}
+        bins = (maximum - 2) // 2
+        for i in range(bins):
+            lo, hi = i * len(rows) // bins, (i + 1) * len(rows) // bins
+            indices.add(min(range(lo, hi), key=lambda j: rows[j][1]))
+            indices.add(max(range(lo, hi), key=lambda j: rows[j][1]))
+        indices = sorted(indices)
+    result['trace_columns'] = ['time', 'count']
+    result['trace'] = [[rows[i][0], rows[i][1]] for i in indices]
+    result['trace_coverage'] = {'original_samples': len(rows), 'shown': len(indices),
+                              'method': 'full_span_bin_extrema', 'all_samples_shown': len(indices) == len(rows)}
+    result['sources'] = list(dict.fromkeys(r[2] for r in rows))
+    result['source_bounds'] = [[rows[0][2], rows[0][3]], [rows[-1][2], rows[-1][3]]]
+    # Many oscillations must not create unbounded JSON; full details remain saved.
+    result['negative_lobe_count'] = len(result['negative_lobes'])
+    result['negative_lobes'] = result['negative_lobes'][:12]
+    return result
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description='Detect bounded encoder sampling gaps, local spikes, reverse/glitch events and flat intervals without assigning hardware root cause.')
     ap.add_argument('logs', nargs='*', type=Path, help='explicit rotated log files')
@@ -469,6 +624,8 @@ def main() -> int:
     ap.add_argument('--recovery-ms', type=float, default=1000.0)
     ap.add_argument('--top-events', type=int, default=6)
     ap.add_argument('--inspect-events', type=Path, help='inspect saved events without rereading logs')
+    ap.add_argument('--motion-report', action='store_true')
+    ap.add_argument('--episode', help='inspect one process ID from --inspect-events')
     ap.add_argument('--out', type=Path)
     ap.add_argument('--events-out', type=Path)
     args = ap.parse_args()
@@ -479,6 +636,12 @@ def main() -> int:
         if args.logs or args.log_dir or args.out or args.events_out:
             ap.error('--inspect-events does not accept logs or output paths')
         saved = json.loads(args.inspect_events.read_text(encoding='utf-8'))
+        if args.episode:
+            episode = next((e for e in saved.get('episodes', []) if e['id'] == args.episode), None)
+            if episode is None:
+                ap.error('episode not found; use an ID returned by the motion report')
+            print(json.dumps(episode_view(episode, 64), ensure_ascii=False, separators=(',', ':')))
+            return 0
         events = saved['events']
         if args.start:
             events = [e for e in events if parse_time(e.get('end') or e.get('at') or e['start']) >= args.start]
@@ -492,6 +655,8 @@ def main() -> int:
                          ensure_ascii=False, separators=(',', ':')))
         return 0
 
+    if args.episode:
+        ap.error('--episode requires --inspect-events')
     if args.start and args.end and args.end <= args.start:
         ap.error('--end must be after --start')
     if args.log_dir and args.logs:
@@ -603,9 +768,53 @@ def main() -> int:
         },
     }
 
+    episodes = motion_episodes(primary_samples, gap_threshold) if args.motion_report else []
+    if episodes:
+        raw_times = [r['ts'] for r in raw_samples]
+        for episode in episodes:
+            start_time, end_time = parse_time(episode['series'][0][0]), parse_time(episode['series'][-1][0])
+            lo = bisect_left(raw_times, start_time)
+            hi = bisect_left(raw_times, end_time + timedelta(microseconds=1))
+            nearby = raw_samples[lo:hi]
+            valid = [r for r in nearby if not r.get('invalid')]
+            episode['raw_filtered_context'] = {
+                'samples': len(valid), 'invalid_samples': len(nearby) - len(valid),
+                'max_abs_difference': max((abs(r['count'] - r['filtered']) for r in valid), default=None),
+                'raw_negative_steps': sum(p['delta'] < 0 for p in build_pairs(nearby) if p['dt_ms'] <= gap_threshold),
+                'filtered_negative_steps': sum(p['delta'] < 0 for p in build_pairs(nearby, count_key='filtered') if p['dt_ms'] <= gap_threshold),
+                'limits': 'Same time window, not independent sensors; filter delay is not automatically an error.',
+            }
+
+    if args.motion_report:
+        def priority(e):
+            deviations = [abs(v['robust_deviation']) for v in e['comparison']['features'].values()]
+            return (bool(e['off_trend_return_counts']), max(deviations, default=0), e['drawdown_counts'])
+        ordered = []
+        # Preserve extremes as well as relative deviations; tiny return-to-trend
+        # events must never crowd out the largest motion process.
+        for key in ('drawdown_counts', 'off_trend_return_counts'):
+            if episodes:
+                e = max(episodes, key=lambda e: e[key])
+                if e[key] > 0 and e not in ordered:
+                    ordered.append(e)
+        ordered.extend(e for e in sorted(episodes, key=priority, reverse=True) if e not in ordered)
+        result = {
+            'scopex_role': 'business_facts', 'source': 'encoder-health', 'schema': 5,
+            'facts': {k: facts[k] for k in ('primary_stream', 'samples_in_window', 'first_ts', 'last_ts',
+                'median_sample_dt_ms', 'sampling_gap_count', 'invalid_samples') if k in facts},
+            'episode_count': len(episodes),
+            'episodes': [episode_view(e, 16) for e in ordered[:3]],
+            'episodes_omitted': max(0, len(episodes) - 3),
+            'limitations': [
+                'Observed motion groups, not confirmed anomalies. Same-window peers are not verified normal.',
+                'Grouping uses 2000ms without reversal; this is not an allowable rebound duration.',
+                'Starts/stops and abrupt rate transitions are observed patterns, not faults; slow drift and a uniformly faulty reference may be missed.',
+                'Trace spans the full saved context but is reduced; do not infer absent fine-scale behavior.',
+            ],
+        }
     if args.events_out:
         args.events_out.parent.mkdir(parents=True, exist_ok=True)
-        args.events_out.write_text(json.dumps({'schema': 3, 'events': candidates}, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
+        args.events_out.write_text(json.dumps({'schema': 4, 'events': candidates, 'episodes': episodes}, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
         result['events_out'] = str(args.events_out)
     if args.out:
         args.out.parent.mkdir(parents=True, exist_ok=True)

@@ -13,6 +13,27 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class DataLocatorSamplingTests(unittest.TestCase):
+    def test_empty_window_and_missing_source_are_distinct(self):
+        script = ROOT / 'skills/data-locator/scripts/data_locator.py'
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            data = root / 'data'
+            catalog = root / 'catalog.json'
+            for source in ('cowdisinfect_logs', 'left_camera_multimodal'):
+                catalog.write_text(json.dumps({'schema': 1, 'sources': {source: {'agent_path': str(data)}}}))
+                for exists, status in ((False, 'source_unavailable'), (True, 'no_data')):
+                    if exists:
+                        data.mkdir()
+                    proc = subprocess.run([sys.executable, str(script), '--catalog', str(catalog),
+                        '--source', source, '--start', '2026-09-14 13:00:00', '--end', '2026-09-14 14:00:00'],
+                        capture_output=True, text=True, timeout=10)
+                    self.assertEqual(proc.returncode, 0, proc.stderr)
+                    result = json.loads(proc.stdout)
+                    self.assertEqual(result['status'], status)
+                    self.assertEqual(result['matching_count'], 0)
+                    self.assertEqual(result['files'], [])
+                data.rmdir()
+
     def test_dense_burst_does_not_crowd_out_middle_of_hour(self):
         sample = runpy.run_path(str(ROOT / 'skills/data-locator/scripts/data_locator.py'))['_evenly_spaced']
         start = datetime(2026, 9, 14, 13)

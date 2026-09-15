@@ -211,6 +211,8 @@ def main() -> int:
         'root': str(root),
         'window': {'start': args.start.strftime(TIME_FMT), 'end': args.end.strftime(TIME_FMT)},
         'kind': args.kind,
+        'status': ('source_unavailable' if not root.is_dir() else
+                   'no_data' if result['matching_count'] == 0 else 'found'),
         **result,
     }
     print(json.dumps(payload, ensure_ascii=False, separators=(',', ':')))

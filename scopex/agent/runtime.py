@@ -251,6 +251,16 @@ class OpenClawTaskRuntime:
             "tools and hand off the result instead of continuing exploratory investigation."
         )
         catalog_summary = self.spec.data_catalog_summary.strip()
+        notes.append(
+            "For a fixed-time data check, including a scheduled run, if the bounded locator "
+            "finds no matching data, or the analysis finds zero records in that exact window, "
+            "finish this run immediately with a no-data answer stating the source and window. "
+            "Do not widen or shift the time window, try alternative sources, poll, wait or retry "
+            "to obtain data unless the user explicitly requested such a fallback. No data is "
+            "not a normal/healthy diagnosis. An inaccessible source or read/parse failure is "
+            "an error, not proof of no data; report it and finish without searching elsewhere. "
+            "This ends only the current run and does not change future scheduled triggers."
+        )
         if catalog_summary:
             notes.append(
                 "ScopeX data catalog (semantic locations and bounded-access rules; do not treat "
