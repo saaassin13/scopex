@@ -290,6 +290,15 @@ class OpenClawTaskRuntime:
                 "brief and do not restate the full evidence trail. This affects presentation "
                 "only; it does not change what you investigate, execute, verify, or when you stop."
             )
+        else:
+            notes.append(
+                "Your final answer is delivered directly to the user. Answer the requested "
+                "question in readable Chinese, with the important observations, source paths "
+                "or timestamps, and material coverage limits. Distinguish measured facts, "
+                "interpretation and unknowns. Give next steps only when they help answer the "
+                "request; do not restate tool schemas or unrelated missing evidence. "
+                "Do not invent internal Evidence IDs; use the source identifiers you observed."
+            )
         if not notes:
             return message
         note = (

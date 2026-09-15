@@ -71,7 +71,6 @@ def render_image_capacity_context() -> str:
         "Repeated calls accumulate images; splitting a batch does not reset the prompt limit. "
         f"Plan a representative set of at most {maximum} originals for this run, avoid reopening "
         "the same image, and do not exceed the remaining cumulative allowance. "
-        "The Fresh Finalizer uses the same capacity and re-opens the admitted originals. "
         "If this bounded sample is insufficient, report limited coverage rather than claiming "
         "the whole time window is normal. Do not replace visual judgement with image metrics."
     )

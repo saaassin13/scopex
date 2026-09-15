@@ -125,7 +125,7 @@ class TextReportTests(unittest.TestCase):
         self.assertNotIn('test-secret', result.text)
         self.assertIn('only application data', self.client.complete.call_args.kwargs['user_prompt'])
 
-    def test_factory_product_path_uses_text_without_claims_call(self):
+    def test_factory_product_path_leaves_report_composers_out(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             cli = root / 'openclaw'; cli.write_text('#!/bin/sh\nexit 0\n'); cli.chmod(0o755)
@@ -137,17 +137,9 @@ class TextReportTests(unittest.TestCase):
             audit = RuntimeAudit(AuditStore(root/'audit'), task.id)
             with patch('scopex.api.factory.write_current_host_snapshot'):
                 coord = OpenClawRuntimeFactory(cfg).coordinator(task, Session(task.id, task.session_key), InMemoryEventSink(), audit)
-            self.assertIsNotNone(coord.text_reporter)
+            self.assertTrue(coord.native_answers)
+            self.assertIsNone(coord.text_reporter)
             self.assertIsNone(coord.report_composer)
-            coord.text_reporter.client = self.client
-            coord.catalog.add(source='business_facts:counter', raw='two candidates', metadata={'evidence_type':'structured_business_facts'})
-            coord.controller.start(); coord.begin_finalization(goal_satisfied=True)
-            legacy = Mock()
-            result = coord.finish_fresh_finalization(legacy)
-            self.assertTrue(result.valid)
-            legacy.run.assert_not_called()
-            self.assertEqual(self.client.complete.call_count, 1)
-            stored = audit.store.read_json(task.id,'result.json')
-            self.assertEqual(stored['version'], 2)
-            self.assertEqual(stored['report_text'], result.text)
-            self.assertFalse((root/'audit'/'t'/'claims.json').exists())
+            self.assertFalse(coord.agent.spec.compaction_enabled)
+            self.assertFalse(coord.agent.spec.concise_terminal_handoff)
+            self.client.complete.assert_not_called()

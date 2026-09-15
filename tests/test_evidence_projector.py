@@ -117,6 +117,29 @@ class EvidenceProjectorTests(unittest.TestCase):
         self.assertEqual(value["facts"]["samples_in_window"], 35244)
         self.assertEqual(value["facts"]["negative_jump_count"], 231)
 
+    def test_new_skill_fields_and_all_events_survive_projection(self):
+        _, _, projector = self.projector()
+        payload = {
+            "scopex_role": "business_facts", "source": "custom-skill",
+            "units": {"value": "count/s"}, "limitations": ["sample only"],
+            "semantics": {"candidate": "not a confirmed fault"},
+            "result": {"value": 17}, "top_candidates": [{"value": i} for i in range(12)],
+        }
+        self.assertEqual(json.loads(projector._compact_business_facts(payload)), payload)
+
+    def test_oversized_facts_are_explicitly_unavailable_not_truncated_json(self):
+        catalog, _, projector = self.projector(max_exec_chars=128)
+        content = json.dumps({"scopex_role": "business_facts", "facts": {"large": "x" * 200}})
+        trace = AgentTrace(calls=(ToolCall("large", "exec", {"command": "analyze"}),),
+                           results=(ToolResult("large", content),))
+        projector.process_trace(trace)
+        item = catalog.items[0]
+        self.assertEqual(item.metadata["projection_status"], "capacity_exceeded")
+        self.assertEqual(item.metadata["evidence_role"], "working_derived")
+        self.assertEqual(item.metadata["result_sha256"], hashlib.sha256(content.encode()).hexdigest())
+        self.assertNotIn('"large"', item.raw)
+        self.assertLessEqual(len(item.raw), 128)
+
     def test_exec_call_host_overrides_runtime_default_for_provenance(self):
         catalog, _, projector = self.projector(exec_host="sandbox")
         trace = AgentTrace(

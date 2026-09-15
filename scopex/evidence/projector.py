@@ -215,36 +215,14 @@ class OpenClawEvidenceProjector:
             return None
         return value if isinstance(value, dict) else None
 
-    def _compact_business_facts(self, payload: dict) -> str:
-        keep: dict = {}
-        for key in (
-            "scopex_role",
-            "schema",
-            "source",
-            "window",
-            "facts",
-            "summary",
-            "quality",
-            "candidate_events_total",
-            "top_candidates",
-            "logs",
-            "per_file_matching_samples",
-            "details_out",
-            "events_out",
-        ):
-            if key in payload:
-                keep[key] = payload[key]
-        if isinstance(keep.get("top_candidates"), list):
-            keep["top_candidates"] = keep["top_candidates"][:10]
-        text = json.dumps(keep, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
-        if len(text) <= self.max_exec_chars:
-            return text
-        for key in ("logs", "per_file_matching_samples", "top_candidates", "quality"):
-            keep.pop(key, None)
-            text = json.dumps(keep, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
-            if len(text) <= self.max_exec_chars:
-                return text
-        return text[: self.max_exec_chars]
+    def _compact_business_facts(self, payload: dict) -> str | None:
+        """Remove JSON whitespace only; domain fields belong to the Skill.
+
+        An oversized object stays in the original tool audit. Never delete its
+        units/limitations/events or cut it into a different, incomplete fact.
+        """
+        text = json.dumps(payload, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
+        return text if len(text) <= self.max_exec_chars else None
 
     def _project_exec(self, call: ToolCall, result: ToolResult) -> tuple[EvidenceItem, ...]:
         content = result.content
@@ -264,14 +242,16 @@ class OpenClawEvidenceProjector:
                 return ()
             if role == "business_facts":
                 raw = self._compact_business_facts(structured)
+                omitted = raw is None
                 return (
                     self.collector.add(
                         source=f"business_facts:{structured.get('source') or call.id}",
-                        raw=raw,
+                        raw=raw if raw is not None else "Result omitted: projection capacity exceeded."[:self.max_exec_chars],
                         tool_call_id=call.id,
                         metadata={
                             "evidence_type": "structured_business_facts",
-                            "evidence_role": "business_facts",
+                            "evidence_role": "working_derived" if omitted else "business_facts",
+                            "projection_status": "capacity_exceeded" if omitted else "complete",
                             "tool": "exec",
                             "exec_host": actual_host,
                             "command": command if isinstance(command, str) else None,

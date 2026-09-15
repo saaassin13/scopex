@@ -143,7 +143,7 @@ class BusinessSkillToolTests(unittest.TestCase):
             facts = data['facts']
             self.assertEqual(facts['primary_stream'], 'application_encoder')
             self.assertGreaterEqual(facts['reverse_glitch_candidate_count'], 1)
-            self.assertGreaterEqual(facts['anomaly_event_count'], 1)
+            self.assertGreaterEqual(facts['candidate_event_count'], 1)
             events = [row for row in data['top_candidates'] if row['type'] == 'reverse_glitch_candidate']
             self.assertTrue(events)
             self.assertEqual(events[0]['pulse_delta'], -50)
@@ -195,7 +195,7 @@ class BusinessSkillToolTests(unittest.TestCase):
             self.assertEqual(len(data['logs']), 2)
             self.assertEqual(data['facts']['samples_in_window'], 4)
             self.assertEqual(data['facts']['negative_steps_observed'], 1)
-            self.assertEqual(data['facts']['anomaly_event_count'], 0)
+            self.assertEqual(data['facts']['candidate_event_count'], 0)
 
     def test_log_context_is_bounded_and_preserves_raw_lines(self):
         script = ROOT / 'skills/log-context/scripts/log_context.py'

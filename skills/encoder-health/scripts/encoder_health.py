@@ -167,7 +167,9 @@ def local_positive_profile(pairs: list[dict[str, Any]], index: int, gap_threshol
     lo = max(0, index - radius)
     hi = min(len(pairs), index + radius + 1)
     values = [
-        float(pairs[i]['delta']) for i in range(lo, hi)
+        # Compare increments over the SAME elapsed time. A longer polling
+        # interval at constant velocity must not look like a pulse spike.
+        float(pairs[i]['delta']) * pairs[index]['dt_ms'] / pairs[i]['dt_ms'] for i in range(lo, hi)
         if i != index and pairs[i]['dt_ms'] <= gap_threshold and pairs[i]['delta'] > 0
     ]
     center = median(values)
@@ -187,7 +189,35 @@ def anomaly_thresholds(center: float | None, spread: float | None) -> tuple[floa
     return reverse, positive_spike
 
 
-def detect_count_events(samples: list[dict[str, Any]], *, flat_ms: float, gap_factor: float, gap_min_ms: float):
+def motion_context(pairs, index, direction, gap_threshold, window_ms=2000.0):
+    """Bounded neighboring motion, without inferring a physical cause."""
+    chosen = []
+    elapsed = 0.0
+    previous = None
+    while 0 <= index < len(pairs):
+        p = pairs[index]
+        if p['dt_ms'] > gap_threshold or (previous is not None and p['seq'] != previous + direction):
+            break
+        if elapsed + p['dt_ms'] > window_ms:
+            break
+        chosen.append(p)
+        elapsed += p['dt_ms']
+        previous = p['seq']
+        index += direction
+    if not chosen:
+        return {'samples': 0, 'observed_ms': 0.0}
+    rates = [p['delta'] * 1000.0 / p['dt_ms'] for p in chosen]
+    return {
+        'samples': len(chosen), 'observed_ms': round(elapsed, 3),
+        'rate_counts_s_min': round(min(rates), 3),
+        'rate_counts_s_median': round(statistics.median(rates), 3),
+        'rate_counts_s_max': round(max(rates), 3),
+        'stationary_fraction': round(sum(p['delta'] == 0 for p in chosen) / len(chosen), 3),
+    }
+
+
+def detect_count_events(samples: list[dict[str, Any]], *, flat_ms: float, gap_factor: float, gap_min_ms: float,
+                        recovery_ms: float = 1000.0):
     pairs = build_pairs(samples)
     intervals = [p['dt_ms'] for p in pairs]
     median_dt = median(intervals)
@@ -200,6 +230,7 @@ def detect_count_events(samples: list[dict[str, Any]], *, flat_ms: float, gap_fa
             gap_count += 1
             events.append({
                 'type': 'sampling_gap', 'at': p['b']['ts_text'], 'dt_ms': round(p['dt_ms'], 3),
+                'threshold_ms': round(gap_threshold, 3),
                 'source_from': p['a']['source'], 'source_to': p['b']['source'],
                 'line_from': p['a']['line_no'], 'line_to': p['b']['line_no'],
             })
@@ -229,29 +260,35 @@ def detect_count_events(samples: list[dict[str, Any]], *, flat_ms: float, gap_fa
         magnitude = abs(float(drop))
         center, spread = local_positive_profile(pairs, first_i, gap_threshold)
         reverse_threshold, _ = anomaly_thresholds(center, spread)
-        max_reverse = max(max_reverse, magnitude)
         if magnitude < reverse_threshold:
             small_negative_groups += 1
             continue
+        max_reverse = max(max_reverse, magnitude)
 
         recovery = 0.0
+        recovery_elapsed = 0.0
         used_recovery: list[int] = []
-        for j in range(last_i + 1, min(len(pairs), last_i + 4)):
+        for j in range(last_i + 1, len(pairs)):
             p = pairs[j]
             # build_pairs omits invalid/nonpositive-time pairs but preserves
             # their original sequence numbers. Recovery must not cross a hole.
             if (p['seq'] != pairs[j - 1]['seq'] + 1
-                    or p['dt_ms'] > gap_threshold or p['delta'] < 0):
+                    or p['dt_ms'] > gap_threshold or p['delta'] < 0
+                    or recovery_elapsed + p['dt_ms'] > recovery_ms):
                 break
+            recovery_elapsed += p['dt_ms']
             if p['delta'] > 0:
                 recovery += float(p['delta'])
                 used_recovery.append(j)
+                if recovery >= magnitude * 0.8:
+                    break
         recovered = recovery >= magnitude * 0.8
+        if recovered:
+            recovery_indices.update(used_recovery)
         significant_reverse += 1
         if len(group) == 1 and recovered:
             event_type = 'reverse_glitch_candidate'
             reverse_glitch += 1
-            recovery_indices.update(used_recovery)
         elif len(group) >= 2:
             event_type = 'reverse_interval_candidate'
             reverse_interval += 1
@@ -267,7 +304,12 @@ def detect_count_events(samples: list[dict[str, Any]], *, flat_ms: float, gap_fa
             'count_end': last['b']['count'],
             'pulse_delta': int(drop),
             'abs_pulse_drop': magnitude,
-            'recovery_pulses_next_3': round(recovery, 3),
+            'duration_ms': round(sum(pairs[i]['dt_ms'] for i in group), 3),
+            'mean_rate_counts_s': round(drop * 1000.0 / sum(pairs[i]['dt_ms'] for i in group), 3),
+            'recovery_pulses': round(recovery, 3),
+            'recovery_window_ms': recovery_ms,
+            'recovery_observed_ms': round(recovery_elapsed, 3),
+            'recovery_target_fraction': 0.8,
             'recovered': recovered,
             'local_positive_median': round(center, 3) if center is not None else None,
             'candidate_threshold_pulses': round(reverse_threshold, 3),
@@ -275,6 +317,10 @@ def detect_count_events(samples: list[dict[str, Any]], *, flat_ms: float, gap_fa
             'source_end': last['b']['source'],
             'line_start': first['a']['line_no'],
             'line_end': last['b']['line_no'],
+            'motion_before': motion_context(pairs, first_i - 1, -1, gap_threshold)
+                if first_i > 0 and pairs[first_i - 1]['seq'] == first['seq'] - 1 else {'samples': 0},
+            'motion_after': motion_context(pairs, last_i + 1, 1, gap_threshold)
+                if last_i + 1 < len(pairs) and pairs[last_i + 1]['seq'] == last['seq'] + 1 else {'samples': 0},
         })
 
     positive_spikes = 0
@@ -295,8 +341,13 @@ def detect_count_events(samples: list[dict[str, Any]], *, flat_ms: float, gap_fa
             'count_after': p['b']['count'],
             'pulse_delta': p['delta'],
             'dt_ms': round(p['dt_ms'], 3),
+            'rate_counts_s': round(p['delta'] * 1000.0 / p['dt_ms'], 3),
             'local_positive_median': round(center, 3) if center is not None else None,
             'candidate_threshold_pulses': round(threshold, 3),
+            'motion_before': motion_context(pairs, i - 1, -1, gap_threshold)
+                if i > 0 and pairs[i - 1]['seq'] == p['seq'] - 1 else {'samples': 0},
+            'motion_after': motion_context(pairs, i + 1, 1, gap_threshold)
+                if i + 1 < len(pairs) and pairs[i + 1]['seq'] == p['seq'] + 1 else {'samples': 0},
             'source_from': p['a']['source'], 'source_to': p['b']['source'],
             'line_from': p['a']['line_no'], 'line_to': p['b']['line_no'],
         })
@@ -350,7 +401,7 @@ def detect_count_events(samples: list[dict[str, Any]], *, flat_ms: float, gap_fa
         'reverse_interval_candidate_count': reverse_interval,
         'reverse_step_candidate_count': reverse_step,
         'positive_spike_candidate_count': positive_spikes,
-        'max_reverse_pulses': round(max_reverse, 3) if groups else None,
+        'max_reverse_pulses': round(max_reverse, 3) if significant_reverse else None,
         'max_positive_spike_pulses': round(max_positive_spike, 3) if positive_spikes else None,
         'flat_count_candidate_count': len(flat_events),
         'longest_flat_count_ms': max((row['duration_ms'] for row in flat_events), default=None),
@@ -383,14 +434,26 @@ def false_zero_speed_candidates(samples: list[dict[str, Any]], gap_threshold: fl
 
 def severity(event: dict[str, Any]) -> float:
     if event['type'] == 'sampling_gap':
-        return float(event.get('dt_ms') or 0.0)
+        return float(event.get('dt_ms') or 0.0) / max(1.0, float(event.get('threshold_ms') or 500.0))
     if event['type'] in {'reverse_glitch_candidate', 'reverse_interval_candidate', 'reverse_step_candidate'}:
-        return float(event.get('abs_pulse_drop') or 0.0)
+        return float(event.get('abs_pulse_drop') or 0.0) / max(1.0, float(event.get('candidate_threshold_pulses') or 1.0))
     if event['type'] == 'positive_spike_candidate':
-        return abs(float(event.get('pulse_delta') or 0.0))
-    if event['type'] == 'flat_count_candidate':
-        return float(event.get('duration_ms') or 0.0)
+        return abs(float(event.get('pulse_delta') or 0.0)) / max(1.0, float(event.get('candidate_threshold_pulses') or 1.0))
     return 0.0
+
+
+def select_events(events, maximum):
+    """Keep global extrema visible, then rank screening candidates, never stops."""
+    candidates = [e for e in events if e['type'] != 'flat_count_candidate']
+    selected = []
+    for key in ('abs_pulse_drop', 'pulse_delta', 'dt_ms'):
+        eligible = [e for e in candidates if e.get(key, 0) > 0]
+        if eligible:
+            event = max(eligible, key=lambda e: e[key])
+            if event not in selected:
+                selected.append(event)
+    selected.extend(e for e in sorted(candidates, key=severity, reverse=True) if e not in selected)
+    return selected[:maximum]
 
 
 def main() -> int:
@@ -403,10 +466,31 @@ def main() -> int:
     ap.add_argument('--gap-factor', type=float, default=5.0)
     ap.add_argument('--gap-min-ms', type=float, default=500.0)
     ap.add_argument('--flat-ms', type=float, default=1000.0)
-    ap.add_argument('--top-events', type=int, default=12)
+    ap.add_argument('--recovery-ms', type=float, default=1000.0)
+    ap.add_argument('--top-events', type=int, default=6)
+    ap.add_argument('--inspect-events', type=Path, help='inspect saved events without rereading logs')
     ap.add_argument('--out', type=Path)
     ap.add_argument('--events-out', type=Path)
     args = ap.parse_args()
+
+    if not 1 <= args.top_events <= 50 or not 0 < args.recovery_ms <= 10000:
+        ap.error('--top-events must be 1..50 and --recovery-ms must be >0..10000')
+    if args.inspect_events:
+        if args.logs or args.log_dir or args.out or args.events_out:
+            ap.error('--inspect-events does not accept logs or output paths')
+        saved = json.loads(args.inspect_events.read_text(encoding='utf-8'))
+        events = saved['events']
+        if args.start:
+            events = [e for e in events if parse_time(e.get('end') or e.get('at') or e['start']) >= args.start]
+        if args.end:
+            events = [e for e in events if parse_time(e.get('start') or e['at']) < args.end]
+        print(json.dumps({'scopex_role': 'business_facts', 'source': 'encoder-health',
+                          'observed_events_total': len(events),
+                          'candidate_events_total': sum(e['type'] != 'flat_count_candidate' for e in events),
+                          'top_candidates': select_events(events, args.top_events),
+                          'limitations': ['Saved screening candidates only; not confirmed anomalies or physical causes.']},
+                         ensure_ascii=False, separators=(',', ':')))
+        return 0
 
     if args.start and args.end and args.end <= args.start:
         ap.error('--end must be after --start')
@@ -446,6 +530,7 @@ def main() -> int:
         flat_ms=args.flat_ms,
         gap_factor=args.gap_factor,
         gap_min_ms=args.gap_min_ms,
+        recovery_ms=args.recovery_ms,
     ) if len(valid_primary_samples) >= 2 else ({'samples': len(valid_primary_samples)}, [], [], args.gap_min_ms)
 
     false_zero = false_zero_speed_candidates(main_samples, gap_threshold) if len(main_samples) >= 3 else []
@@ -476,13 +561,7 @@ def main() -> int:
         'invalid_samples': invalid_raw,
         'first_ts': valid_primary_samples[0]['ts_text'] if valid_primary_samples else None,
         'last_ts': valid_primary_samples[-1]['ts_text'] if valid_primary_samples else None,
-        'anomaly_event_count': sum(
-            1 for row in candidates
-            if row['type'] in {
-                'sampling_gap', 'reverse_glitch_candidate', 'reverse_interval_candidate',
-                'reverse_step_candidate', 'positive_spike_candidate'
-            }
-        ),
+        'candidate_event_count': sum(row['type'] != 'flat_count_candidate' for row in candidates),
         'zero_speed_with_rising_count_candidate_count': len(false_zero),
         'raw_negative_steps': raw_negative,
         'filtered_negative_steps': filtered_negative,
@@ -490,10 +569,10 @@ def main() -> int:
         'raw_filtered_abs_diff_max': max(raw_filtered_abs) if raw_filtered_abs else None,
     })
 
-    top_candidates = sorted(candidates, key=severity, reverse=True)[:max(1, min(args.top_events, 50))]
+    top_candidates = select_events(candidates, args.top_events)
     result = {
         'scopex_role': 'business_facts',
-        'schema': 3,
+        'schema': 4,
         'source': 'encoder-health',
         'window': {
             'start': args.start.strftime(TS_FMT) if args.start else None,
@@ -503,7 +582,15 @@ def main() -> int:
         'per_file_matching_samples': per_file,
         'facts': facts,
         'top_candidates': top_candidates,
-        'candidate_events_total': len(candidates),
+        'observed_events_total': len(candidates),
+        'candidate_events_total': facts['candidate_event_count'],
+        'stationary_intervals': sorted((e for e in candidates if e['type'] == 'flat_count_candidate'),
+                                       key=lambda e: e['duration_ms'], reverse=True)[:2],
+        'limitations': [
+            'Candidates are not confirmed anomalies. Normal starts, stops and mechanical rebound require motion-context interpretation.',
+            'Neighbor motion uses at most 2 seconds each side; it is not an independent motor command or ground truth.',
+            'Recovery checks a bounded elapsed-time window and 80% catch-up, not physical recovery or permanent non-recovery.',
+        ],
         'semantics': {
             'reverse_glitch_candidate': 'isolated significant count decrease followed by near-term recovery; observed data glitch/reverse candidate, not proof of physical reversal',
             'reverse_interval_candidate': 'two or more consecutive significant negative increments; observed reverse-count interval, physical cause unresolved',
@@ -511,13 +598,14 @@ def main() -> int:
             'positive_spike_candidate': 'positive increment unusually large relative to nearby positive increments',
             'small_negative_groups_ignored': 'small negative groups below local data-driven threshold; telemetry only, not promoted as anomaly',
             'sampling_gap': 'timestamp gap above max(500 ms, 5x median interval) by default',
-            'flat_count_candidate': 'count unchanged for configured duration; may be normal stop and is not included in anomaly_event_count',
+            'flat_count_candidate': 'count unchanged; may be normal stop, listed separately and excluded from candidate_event_count',
+            'local_positive_median': 'neighbor positive increments normalized to the event first-step dt; a screening reference, not a normal operating limit',
         },
     }
 
     if args.events_out:
         args.events_out.parent.mkdir(parents=True, exist_ok=True)
-        args.events_out.write_text(json.dumps({'schema': 2, 'events': candidates}, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
+        args.events_out.write_text(json.dumps({'schema': 3, 'events': candidates}, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
         result['events_out'] = str(args.events_out)
     if args.out:
         args.out.parent.mkdir(parents=True, exist_ok=True)

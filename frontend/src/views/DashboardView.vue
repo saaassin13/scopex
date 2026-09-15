@@ -129,7 +129,7 @@ onBeforeUnmount(() => timer && window.clearInterval(timer))
     <div class="hero-panel panel unified-agent-panel">
       <div class="eyebrow">LOCAL · BUSINESS AGENT</div>
       <h1>告诉 Agent 你要了解或处理什么</h1>
-      <p>普通问答和业务分析共用同一个 OpenClaw Runtime。ScopeX 会根据实际是否访问业务数据自动决定是否进入可审计结果链。</p>
+      <p>直接输入问题或分析目标。Agent 会使用可用的业务能力完成调查，并保留结果、来源和执行记录。</p>
 
       <form class="task-compose" @submit.prevent="createEntry">
         <textarea

@@ -6,11 +6,32 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import runpy
+from datetime import datetime, timedelta
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
 class DataLocatorSamplingTests(unittest.TestCase):
+    def test_dense_burst_does_not_crowd_out_middle_of_hour(self):
+        sample = runpy.run_path(str(ROOT / 'skills/data-locator/scripts/data_locator.py'))['_evenly_spaced']
+        start = datetime(2026, 9, 14, 13)
+        seconds = list(range(100)) + [1800, 3599]
+        rows = [(start + timedelta(seconds=s), str(s)) for s in seconds]
+        chosen = sample(rows, 3)
+        self.assertEqual([p for _, p in chosen], ['0', '1800', '3599'])
+        self.assertEqual(sample(rows, 1)[0][1], '1800')
+
+    def test_long_empty_interval_does_not_duplicate_images_to_fill_budget(self):
+        sample = runpy.run_path(str(ROOT / 'skills/data-locator/scripts/data_locator.py'))['_evenly_spaced']
+        start = datetime(2026, 9, 14, 13)
+        rows = [(start + timedelta(seconds=s), str(s)) for s in [0, 1, 2, 3, 4, 3599]]
+        chosen = sample(rows, 4)
+        self.assertLessEqual(len(chosen), 4)
+        self.assertEqual(len({p for _, p in chosen}), len(chosen))
+        self.assertEqual(chosen[0], rows[0])
+        self.assertEqual(chosen[-1], rows[-1])
+
     def test_truncated_image_selection_covers_full_time_window(self):
         script = ROOT / 'skills/data-locator/scripts/data_locator.py'
         with tempfile.TemporaryDirectory() as td:

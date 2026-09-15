@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+from bisect import bisect_left
 from datetime import datetime, timedelta
 import json
 import os
@@ -113,30 +114,18 @@ def _evenly_spaced(rows: list[tuple[datetime, str]], maximum: int) -> list[tuple
     """Keep temporal coverage when a multimodal window exceeds its file budget."""
     if len(rows) <= maximum:
         return rows
-    if maximum <= 1:
-        return [rows[len(rows) // 2]]
-    last = len(rows) - 1
-    indices = [round(i * last / (maximum - 1)) for i in range(maximum)]
-    selected: list[tuple[datetime, str]] = []
-    seen: set[int] = set()
-    for index in indices:
-        if index in seen:
-            continue
-        seen.add(index)
-        selected.append(rows[index])
-    # Rounding can theoretically deduplicate an index for tiny rows; fill from
-    # chronological candidates without exceeding the budget.
-    if len(selected) < maximum:
-        selected_paths = {path for _, path in selected}
-        for row in rows:
-            if row[1] in selected_paths:
-                continue
-            selected.append(row)
-            selected_paths.add(row[1])
-            if len(selected) >= maximum:
-                break
-        selected.sort(key=lambda row: (row[0], row[1]))
-    return selected
+    times = [row[0] for row in rows]
+    span = times[-1] - times[0]
+    targets = ([times[0] + span / 2] if maximum <= 1 else
+               [times[0] + span * i / (maximum - 1) for i in range(maximum)])
+    selected = set()
+    for target in targets:
+        index = bisect_left(times, target)
+        neighbors = [i for i in (index - 1, index) if 0 <= i < len(rows)]
+        selected.add(min(neighbors, key=lambda i: (abs(times[i] - target), i)))
+    # A time gap may map several grid positions to one image. Do not fill the
+    # allowance with a dense burst and imply uniform temporal coverage.
+    return [rows[i] for i in sorted(selected)]
 
 
 def locate_multimodal(root: Path, start: datetime, end: datetime, *, kind: str, max_hours: int, max_files: int) -> dict[str, Any]:
@@ -177,6 +166,9 @@ def locate_multimodal(root: Path, start: datetime, end: datetime, *, kind: str, 
         'files': [row[1] for row in selected],
         'selected_first_ts': selected[0][0].strftime('%Y-%m-%d %H:%M:%S.%f') if selected else None,
         'selected_last_ts': selected[-1][0].strftime('%Y-%m-%d %H:%M:%S.%f') if selected else None,
+        'selected_count': len(selected),
+        'largest_selected_gap_ms': max(((b[0] - a[0]).total_seconds() * 1000
+                                        for a, b in zip(selected, selected[1:])), default=None),
         'scanned_hour_dirs': scanned_dirs,
         'directory_file_counts': counts,
     }

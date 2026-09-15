@@ -1,5 +1,9 @@
 # ScopeX 阶段交接与本地使用
 
+## 2026-09-15 开发分支补充
+
+`feature/agent-native-results` 已开始落实用户批准的原生答案主链和编码器/图片Skill修正，未提交、合入或部署。实现、字段变化、验证及未验证范围见 [12-native-answers-and-skill-refinement.md](12-native-answers-and-skill-refinement.md)。本分支不再默认调用TextReportComposer，并关闭原生主动/完成后压缩；下文记录上一轮main集成基线，不能作为本分支新输出主链说明。
+
 更新：**2026-09-15 文本输出 / 独立任务并发 / 全局活动入口，PR #16 实施收口**。`main` 是唯一集成基线。阶段交接仅在大块完成后更新；本次是代码与界面实施收口，不是 Spark 整批加速或全部业务验收 PASS。
 
 ## 1. 本轮用户决定与文档优先级

@@ -1,129 +1,102 @@
 ---
 name: image-quality-diagnosis
-description: Inspect local images for blur, haze/fogging, lens contamination, water droplets, motion blur and defocus with bounded multi-image visual evidence.
+description: Inspect original images for visible quality degradation, including blur, defocus, haze, dirt and droplets; compare time samples and locally verify suspected persistent problems.
 user-invocable: true
 ---
 
 # Image quality diagnosis
 
-Use this skill when the user asks whether one image or a time window contains blur, fogging/haze, dirty lens/protective glass, water droplets, motion blur, defocus or other visible degradation.
+First answer whether image quality is degraded, where and how much. Then describe
+visible features and possible causes. Do not force a unique physical diagnosis
+when blur, haze, lighting and contamination cannot be separated from these images.
 
-## Business source
+Source: `left_camera_multimodal`, `/agent-data/left-camera`, layout
+`YYYYMMDD/HH/YYYYMMDD-HHMMSSmmm.jpg`. Use originals for visual judgment.
 
-- `left_camera_multimodal` -> `/agent-data/left-camera`
-- host: `/opt/ScalingRobotics/CowDisinfect/GrabbedImages/LeftCamera`
-- layout: `YYYYMMDD/HH/YYYYMMDD-HHMMSSmmm.jpg|json|pcd`
+## One or a few named images
 
-Use `data-locator` for time-window requests. Do not recursively enumerate historical roots.
+View those JPGs directly. No directory exploration, metrics or adjacent JSON/logs
+are needed unless the question or an unresolved distinction requires them.
 
-## Core rule: visual judgement owns the result
+## A time window
 
-**The final dirty/blur/fog/water-droplet judgement must come from direct visual inspection of original JPGs.**
+1. Locate only the requested window with `data-locator`. The helper samples by
+   time; returned paths are not attached images and do not establish visual coverage.
+2. Reserve some of the Runtime's cumulative image allowance for follow-up. With
+   4 slots, first view 2 time-separated originals, then use up to 2 for broader
+   coverage or local verification. With 12 slots, start with 4–6, not all 12.
+   With only 1 slot, give a single-frame answer and state the limitation.
+3. Inspect originals in `view_image` calls of at most 2. First assess visible
+   degradation across the frame and the business subject, then compare patterns.
+4. For a suspicious period or a disagreement, locate a narrower neighboring
+   window and view fresh originals within the remaining allowance. Compare
+   earlier/later observations to check persistence or bound a change. Do not
+   reopen already-viewed images just for bookkeeping.
+5. Stop when the question is supported, or state exactly which coverage is
+   missing. More metric calls cannot substitute for missing visual observations.
 
-Laplacian, gradient energy, brightness, contrast and clip ratios are optional screening/reference features only. They may help divide a large image set into different-looking groups, but none of them may independently decide:
-
-- “no fog”;
-- “no contamination”;
-- “image is normal”; or
-- the physical cause of degradation.
-
-A high Laplacian can coexist with a translucent veil; a low-contrast frame can be caused by scene content rather than fog. Never turn those metrics into a product conclusion by themselves.
-
-## Single-image flow
-
-If the user names one or a few images:
-
-1. inspect the original JPG directly with `view_image`;
-2. judge the visible dimensions below;
-3. use metrics only if they materially help compare sharpness/exposure;
-4. stop when the visual question is answered.
-
-Do not inspect adjacent JSON/log/PCD unless the user requests cross-source explanation.
-
-## Time-window / many-image flow
-
-For a large set such as one hour:
-
-1. **Locate only the requested window.**
-2. **Build a bounded representative screening set.** Prefer temporal coverage across beginning/middle/end. If metrics are useful, compute them only on a bounded sample.
-3. **Use metrics only to partition/reference the sample**, e.g. lower/median/higher sharpness, lower/normal contrast, or different time sections. Do not choose only the “worst Laplacian” images.
-4. **Select original images from multiple partitions/time sections** so that visual inspection covers different scenes and both normal-looking and suspicious candidates.
-5. **Directly inspect originals in repeated small `view_image` calls (<=2 images per call).**
-6. Compare across images and decide whether the visible problem is isolated or persistent.
-7. Stop after enough representative originals support a calibrated answer.
-
-The goal of screening is coverage and de-duplication, not automated diagnosis.
-
-## What to judge visually
-
-For each directly viewed representative image, distinguish:
-
-- **blur / low sharpness:** edges and fine structures are visibly soft;
-- **fogging / haze:** diffuse translucent or milky veil, washed blacks, broad contrast loss, halos/glare, persistent hazy layer;
-- **water droplets:** localized droplet-like translucent/reflective shapes, often with optical distortion;
-- **lens/protective-glass contamination:** localized smear, spot, streak or blob; stronger evidence when the pattern stays at the same image coordinate across different cows/scenes;
-- **motion blur:** directional streaking/duplicated edges;
-- **defocus:** more isotropic softness without a veil;
-- **exposure/lighting/noise/compression:** alternative explanations when visually supported.
-
-Separate **visible observation** from **physical cause**. For example, “明显雾化/veil” can be observed; “一定是冷凝水” normally requires stronger evidence.
-
-## Negative conclusion is harder than positive detection
-
-For a time window, do not conclude “no fog/no dirt” after seeing one normal frame or from metrics alone.
-
-A negative conclusion requires direct visual coverage across different times/scenes. If representative images disagree, report mixed/uncertain quality rather than forcing a global normal result.
-
-If one or more directly inspected originals clearly show a persistent diffuse veil or droplets, report that visible feature even if sharpness metrics look normal.
-
-## Whole-prompt image capacity
-
-Use the image capacity declared in the ScopeX Runtime Context. It applies to
-**all image attachments across the full conversation prompt**, not one tool call.
-With a capacity of 4, calls containing 2 + 2 images exhaust the allowance; a third
-2-image call creates a 6-image prompt and is not allowed. Splitting into smaller
-calls does not reset the budget. Reopening the same image can also consume a slot.
-
-Plan the representative set before viewing it. Choose at most the declared
-capacity, then view in batches of at most 2 (or fewer if the remaining capacity
-is smaller). Do not try to raise model-server limits from the sandbox.
-If coverage remains insufficient, report that limitation. Never publish an
-unsampled whole-hour “all normal” conclusion merely to fit the capacity.
-
-For location/screening, request a small path list directly instead of requesting
-256 paths and then writing Python to sample them again. For example:
+Example first pass with a 4-image allowance (use the actual requested window):
 
 ```bash
 python3 /workspace/skills/data-locator/scripts/data_locator.py \
   --source left_camera_multimodal --kind jpg \
-  --start "2026-09-14 13:00:00" --end "2026-09-14 14:00:00" --max-files 12
+  --start "2026-09-14 08:00:00" --end "2026-09-14 09:00:00" --max-files 2
 ```
 
-This is a list of paths, not 12 attached images. The locator already returns a
-bounded sample across the window; choose the visual set within the Runtime
-capacity. If using the optional metrics helper, its result is an object with an
-`images` array, not `results`. Read that bounded JSON directly; do not rerun the
-metrics or generate pipelines just to discover its schema. Do not use `head` or
-`tail` to cut JSON into unparseable fragments.
+The same command with a narrower start/end locates follow-up samples. Never scan
+the full historical root. Keep the filename timestamps and distinguish images
+located, images measured, and images actually viewed.
 
-## Claim-grade visual evidence
+## Visual assessment
 
-- Use **at most 2 original images per `view_image` call**.
-- If the visual tool reports any image was omitted/truncated/not placed in context, that call is incomplete and must not support a claim; re-open the needed originals in a smaller call.
-- Scratch contact sheets/previews may help screening but cannot replace final original-image inspection.
+- **Blur / softness:** are relevant contours and fine structures distinguishable?
+  Recognizing a cow or equipment does not mean edges are sharp enough.
+- **Defocus / motion:** broadly soft edges versus directional streaking or doubled
+  contours. Allow “blur visible, mechanism uncertain”.
+- **Haze / fog-like veil:** diffuse translucent layer, washed dark regions, contrast
+  loss or glare. High local sharpness elsewhere does not rule this out.
+- **Droplets:** localized translucent/reflective shapes with optical distortion.
+- **Contamination:** smears, spots or streaks; stable image coordinates across
+  changing scenes strengthen suspicion of a lens/protective-glass issue. Dirt
+  on a fixed railing is also spatially stable, so position alone is not proof.
+- **Other contributors:** lighting, exposure, noise, compression, scene motion or
+  occlusion. Note affected area/severity before asserting a physical cause.
 
-## Optional metric helper
+Do not declare the whole image normal because a background metal edge is sharp,
+or diagnose condensation solely because a veil is visible. Do not invent a fixed
+business ROI; describe which part of the actual subject is affected.
 
-`{baseDir}/scripts/image_quality_metrics.py`
+## Persistence and coverage
 
-It is a screening helper only. Pass explicit bounded paths; never feed an entire large directory by default.
+Several degraded samples support “degradation recurs at these times”. They do not
+prove every unobserved frame is degraded. Report observed times and gaps. A change
+lies between the last observed state and the next different state; do not invent
+an exact onset/end. If the allowance cannot locate the boundary, say so.
 
-## Expected result structure
+Normal samples support only their inspected coverage. Negative conclusions need
+multiple times/scenes; one normal frame or normal metrics cannot clear an hour.
 
-The business result should answer:
+## Optional metrics
 
-1. whether visible blur/fog/contamination/water droplets are present in the inspected window;
-2. whether the issue appears persistent or isolated across representative originals;
-3. the key visual facts supporting that judgement;
-4. uncertain physical causes as possibilities, not facts;
-5. what additional inspection is needed only when current visual evidence is insufficient.
+Use only when comparison would change the sampling decision:
+
+```bash
+python3 {baseDir}/scripts/image_quality_metrics.py /agent-data/left-camera/<original1>.jpg /agent-data/left-camera/<original2>.jpg
+```
+
+The result is an object with an `images` array. Brightness, contrast, Laplacian
+and gradient energy are screening features, never a fog/dirt/normal classifier.
+Similar numbers across samples prove neither normality nor uninterrupted damage.
+No `--help`, source inspection or repeated calculation is needed for this known
+interface; use explicit paths, not a large directory or a truncated JSON pipeline.
+
+## Final answer
+
+Give a concise Chinese assessment: visible degradation and affected areas, a few
+supporting timestamps, observed recurrence/change, and material coverage limits.
+Separate visible appearance from suspected cause. Give maintenance advice only
+when the observations justify it; do not pad with a table of all-normal labels.
+
+The entire conversation's image allowance accumulates across calls, including
+reopens. A view reported as omitted/truncated is not a completed inspection.
+Scratch previews can help screening but cannot replace original-image judgment.

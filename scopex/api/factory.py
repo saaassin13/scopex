@@ -13,7 +13,6 @@ from scopex.events.progress import EventSink
 from scopex.finalizer.client import StreamingFinalizerClient
 from scopex.finalizer.report import ConstrainedReportComposer
 from scopex.finalizer.structured import StructuredFinalizer
-from scopex.finalizer.text_report import TextReportComposer
 from scopex.host_snapshot import write_current_host_snapshot
 from scopex.runtime.convergence import ConvergencePolicy
 from scopex.runtime.investigation import InvestigationCoordinator
@@ -48,11 +47,13 @@ class LocalRuntimeConfig:
     exec_mode: str = "full"
     enable_view_image: bool = False
     enable_progress_card: bool = False
-    enable_compaction: bool = True
+    # Independent tasks do not need post-turn session maintenance. OpenClaw
+    # still owns preflight/overflow recovery (verified with 2026.9.2).
+    enable_compaction: bool = False
 
 
 class OpenClawRuntimeFactory:
-    """Create per-task OpenClaw runtime plus no-tool product post-processors."""
+    """Create independent OpenClaw tasks; legacy report factories serve replays."""
 
     def __init__(self, config: LocalRuntimeConfig) -> None:
         self.config = config
@@ -154,6 +155,7 @@ class OpenClawRuntimeFactory:
             exec_host=self.config.exec_host,
             exec_mode=self.config.exec_mode,
             compaction_enabled=self.config.enable_compaction,
+            concise_terminal_handoff=False,
             request_time_anchor=task.scheduled_for or task.created_at,
         )
         return InvestigationCoordinator.for_openclaw(
@@ -169,12 +171,7 @@ class OpenClawRuntimeFactory:
                 max_claim_images=2,
             ),
             audit=audit,
-            text_reporter=TextReportComposer(
-                StreamingFinalizerClient(self.config.base_url, api_key=self.config.api_key,
-                                         timeout_s=self.config.finalizer_timeout_s),
-                model=self.config.model_id, max_tokens=self.config.report_max_tokens,
-                media_loader=EvidenceMediaLoader(self.config.data_binds),
-            ),
+            native_answers=True,
         )
 
     def finalizer(self) -> StructuredFinalizer:

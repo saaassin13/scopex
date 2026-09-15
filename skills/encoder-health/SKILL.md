@@ -1,99 +1,98 @@
 ---
 name: encoder-health
-description: Detect real encoder sampling gaps, local pulse spikes, reverse/glitch events and unstable count behavior from CowDisinfect logs, then use bounded log context only when explanation is needed.
+description: Assess whether encoder behavior departs from normal motion, distinguishing starts, stops and rebound from suspicious spikes, reversals and sampling gaps.
 user-invocable: true
 ---
 
 # Encoder health
 
-Use this skill when the user asks whether encoder values contain **毛刺、回退、异常跳变、丢采样、卡住或不稳定**.
+Answer whether the requested count/time data departs from normal operating patterns.
+Finding negative increments or exceeding a screening threshold is not that answer.
+Normal turntable operation includes acceleration, deceleration, stationary periods
+and mechanical rebound. Do not require a separate “why” request to consider them.
 
-The goal is not to count every negative delta. The goal is to identify locally abnormal count behavior and show the concrete time/count context of the real candidates.
+## Data and tools
 
-## Primary source
+Use application `EncoderVal` first; raw/filtered are supporting streams, or the
+primary stream when application data is absent. Reported speed may be derived
+from these same counts, so it is not independent proof of physical motion.
 
-Use `cowdisinfect_logs` at `/agent-data/logs`.
-Host source: `/opt/ScalingRobotics/CowDisinfect/Log`.
-Files use `CowDisinfect-YYYYMMDD-HHMMSS.log[.N]`; use `data-locator` for the requested time window instead of guessing files by hour string.
-
-Do **not** inspect `/agent-data/left-camera` for an encoder-only request. Do not recursively enumerate `/agent-data`.
-
-## Preferred bounded path
-
-1. Resolve the requested window:
+Locate only the requested window in `cowdisinfect_logs` (`/agent-data/logs`):
 
 ```bash
 python3 /workspace/skills/data-locator/scripts/data_locator.py \
-  --source cowdisinfect_logs \
-  --start "2026-09-14 03:00:00" \
-  --end   "2026-09-14 04:00:00"
+  --source cowdisinfect_logs --start "2026-09-14 13:00:00" --end "2026-09-14 14:00:00"
 ```
 
-2. Analyze all returned rotated logs **once**:
+Analyze the returned rotation files once, using the actual requested timestamps:
 
 ```bash
-python3 {baseDir}/scripts/encoder_health.py \
-  /agent-data/logs/<file1> \
-  /agent-data/logs/<file2> \
-  --start "2026-09-14 03:00:00:000" \
-  --end   "2026-09-14 04:00:00:000" \
+python3 {baseDir}/scripts/encoder_health.py /agent-data/logs/<file1> /agent-data/logs/<file2> \
+  --start "2026-09-14 13:00:00:000" --end "2026-09-14 14:00:00:000" \
   --events-out /task-scratch/encoder-events.json
 ```
 
-Do not use `cd && python`, heredoc, inline Python, or inspect the analyzer source before running it.
+The compact JSON contains coverage, `facts`, `top_candidates`, separate
+`stationary_intervals` and interpretation limits. Candidate details include
+actual dt, rates in count/s and bounded neighboring motion. Normal stops never
+compete for the candidate detail slots. Counts summarize all candidates, not
+only the displayed examples; they are not confirmed anomaly counts.
 
-## What counts as a useful anomaly candidate
+If more detail is necessary, query the saved events without rerunning analysis
+or writing inline Python that prints every event:
 
-Use signed count increments and nearby normal increments. Do not label every decrease as an anomaly.
+```bash
+python3 {baseDir}/scripts/encoder_health.py --inspect-events /task-scratch/encoder-events.json \
+  --start "2026-09-14 13:22:00:000" --end "2026-09-14 13:23:00:000" --top-events 4
+```
 
-- **reverse_glitch_candidate**: an isolated significant count decrease followed by near-term catch-up/recovery. This is a strong data-glitch/reverse candidate, not proof of physical reversal.
-- **reverse_interval_candidate**: two or more consecutive significant negative increments. This proves a reverse-count interval in the data, not its physical cause.
-- **reverse_step_candidate**: one significant decrease without confirmed short recovery.
-- **positive_spike_candidate**: a positive increment unusually large relative to nearby positive increments.
-- **sampling_gap**: a timestamp/sample gap above the data-driven threshold.
-- **flat_count_candidate**: count unchanged for a long period. This may be a normal stop and is not automatically counted as an encoder anomaly.
+## Decide what matters
 
-Small negative groups below the local data-driven threshold are telemetry only (`small_negative_groups_ignored`). A number such as `negative_steps_observed=1000` by itself is **not** the answer to “编码器是否异常”.
+1. **Check coverage and continuity.** Missing/invalid data, reset and timestamp
+   boundaries are not motion. A gap in logged samples is not proof of lost
+   hardware acquisition. Zero parsed samples is not a normal result.
+2. **Compare equal time scales.** Compare `delta/dt`, duration and surrounding
+   motion. A larger increment over a proportionally longer interval is not a
+   spike. A multi-second total drop cannot be compared directly with a normal
+   single-step increment to establish abnormality.
+3. **Interpret the motion episode.** Is it steady running, acceleration,
+   deceleration, near-stop rebound, or an abrupt discontinuity? Neighbor summaries
+   cover at most two seconds each side; expand locally if that does not include
+   the full process. Group neighboring reversals/recoveries in one start/stop
+   episode rather than reporting each fluctuation as an independent fault.
+4. **Compare with relevant normal behavior.** Use verified site examples or
+   comparable surrounding episodes. Do not invent a universal allowable rebound
+   amplitude. Without a normal reference or motion command, describe the observed
+   process and leave its acceptability uncertain. Do not automatically dismiss
+   every stop-adjacent reversal either.
+5. **Resolve meaningful candidates.** Use `log-context` on explicit source/time
+   anchors when needed to distinguish a normal stop/reset from unexplained
+   behavior. Compare raw/filtered near the same event where useful. Whole-hour
+   raw/filtered negative totals do not prove that a specific event propagated.
 
-## Application count vs raw/filtered
+An isolated drop and catch-up is a data-glitch/reversal candidate; smooth
+multi-sample reverse motion is a different pattern. `recovered` checks 80%
+catch-up within a bounded elapsed-time window, stopping at the next reverse or
+continuity boundary. It proves neither full physical recovery nor permanent
+failure. `recovery_observed_ms` states how much was actually inspected.
 
-CowDisinfect may contain both:
+Thresholds only shortlist events. Do not stop at “N candidates, please check
+your equipment” if the available local context can answer the user's question.
+Conversely, do not invent causes such as wiring faults to make the answer decisive.
 
-- `EncoderVal [N], TurnTableSpeed [V mm/s]` — application cumulative count and reported speed;
-- `Get EncoderVal, raw[R], filtered[F]` — lower-layer raw and filtered values.
+## Deliver and stop
 
-Prefer the application cumulative count as the primary business stream when available. Use raw/filtered as supporting evidence to see whether a low-level anomaly is filtered or propagated. If application count is absent, analyze raw count as the primary stream.
+Lead with the result: explainable operating behavior, specific unexplained
+deviations, or a concrete unresolved distinction. Separate those categories in
+plain Chinese; do not call all candidates “异常” and add only “非硬件故障” later.
 
-Do not convert counts to physical distance unless a verified site calibration is supplied.
+Show the few important episodes with time, before/after counts, actual dt/rate,
+duration, local comparison, and observed recovery. Check any claimed maximum
+against the whole-window summary, not just the first displayed examples. Keep
+normal stationary periods as context rather than the headline anomaly.
 
-## Interpretation discipline
-
-- A negative delta is an observed count decrease, not automatically a hardware fault.
-- An isolated decrease plus recovery is more informative than a raw negative-step total.
-- Several consecutive decreases indicate a reverse-count interval; check task stop/reset/actual reverse context before assigning cause.
-- A large positive increment immediately after a reverse glitch may be the recovery leg and should not be double-counted as a separate spike.
-- Compare anomalies against nearby normal increments and actual sampling intervals, not only a global absolute threshold.
-- Keep observed data facts separate from cause hypotheses.
-
-## Log context
-
-Only after the compact summary identifies a meaningful candidate, use `log-context` over a small window around the candidate when the user asks why it happened or whether it affected the business.
-
-Relevant context may include encoder reset, Modbus/read errors, task stop, restart or actual reverse motion. Finding an anomaly alone neither requires broad production tracing nor authorizes repair.
-
-## User-facing result
-
-Lead with a direct answer such as:
-
-- 本时间窗采样连续，未发现明显毛刺/回退/异常跳变；或
-- 发现 3 个显著异常事件：2 个回退-恢复毛刺、1 个连续回退区间。
-
-Then show only the important event details:
-
-- 时间；
-- 前值 / 当前值 / 后续恢复；
-- delta / 持续时间；
-- 与附近正常增量的对比；
-- 是否 raw 与 filtered 同时出现。
-
-Do not lead with thousands of small negative-step counts or dump the full event JSON.
+Use count and count/s unless verified distance calibration is supplied. Include
+material coverage limits once. Suggest further checks only for unresolved
+questions; an encoder data check does not require pictures, broad production
+tracing or repair. Stop once the requested distinction is supported or the
+specific missing evidence is identified.

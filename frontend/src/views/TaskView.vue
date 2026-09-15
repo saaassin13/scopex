@@ -88,6 +88,7 @@ const reportRawEvidence = computed(() => {
 
 const fallbackUserFacts = computed(() => {
   const preferred = evidence.value.filter(item => {
+    if (item.metadata?.evidence_role === 'working_derived') return false
     const type = item.metadata?.evidence_type
     return type === 'structured_business_facts' || type === 'image'
   })
@@ -125,6 +126,8 @@ function friendlyReason(reason: string) {
     investigation_completed_without_evidence: '这次业务任务没有形成可审计事实，因此没有发布诊断结论。',
     text_report_partial: '调查已形成依据，但报告不完整；下方正文只能作为未完成草稿。',
     text_report_unavailable: '调查已形成依据，但文字报告未能生成；业务依据和执行记录已保留。',
+    native_answer_partial: 'Agent 未正常完成，下方文字仅作为未完成草稿保留。',
+    native_answer_unavailable: 'Agent 未返回完整答案；已取得的依据和执行记录已保留。',
     interrupted_on_restart: '服务重启中断了本次执行，没有自动重跑。',
     missed_on_restart: '排队任务在重启后已过期，没有补跑。',
     queue_expired: '超过排队等待期限，任务没有开始执行。',
@@ -332,13 +335,13 @@ onBeforeUnmount(() => timer && window.clearInterval(timer))
               <div class="eyebrow">RESULT</div>
               <h2>{{ isConversation ? '回答' : '任务结果' }}</h2>
             </div>
-            <span v-if="textReport" class="trust-badge">{{ textMeta?.status === 'complete' ? '文字报告' : '未完成草稿' }}</span>
+            <span v-if="textReport" class="trust-badge">{{ textMeta?.status === 'complete' ? '任务回答' : '未完成草稿' }}</span>
             <span v-else-if="report" class="trust-badge">历史结构化报告</span>
             <span v-else-if="answer" class="trust-badge">Fallback</span>
           </div>
 
           <div v-if="textReport" class="text-report">
-            <p v-if="textMeta?.status !== 'complete'" class="error-banner">报告不完整，不作为完整交付；已有业务依据保留。</p>
+            <p v-if="textMeta?.status !== 'complete'" class="error-banner">回答未完整交付；下方仅为草稿，已有依据保留。</p>
             <p v-if="Array.isArray(textMeta?.unresolved_citation_refs) && textMeta.unresolved_citation_refs.length" class="error-banner">部分正文引用无法对应来源，需要人工核实。</p>
             <div class="report-prose">{{ textReport }}</div>
             <p class="muted">来源可追溯不代表所有语义、数字和因果关系均已自动验证。</p>

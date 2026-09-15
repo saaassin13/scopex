@@ -88,7 +88,12 @@ def main(argv=None) -> int:
     parser.add_argument("--exec-mode", choices=("deny", "allowlist", "ask", "auto", "full"), default="full")
     parser.add_argument("--enable-view-image", action="store_true")
     parser.add_argument("--enable-progress-card", action="store_true")
-    parser.add_argument("--disable-compaction", action="store_true")
+    compaction = parser.add_mutually_exclusive_group()
+    compaction.add_argument("--enable-compaction", dest="enable_compaction", action="store_true",
+                            help="opt in to OpenClaw proactive/post-turn session maintenance")
+    compaction.add_argument("--disable-compaction", dest="enable_compaction", action="store_false",
+                            help="default for independent tasks; native overflow recovery remains available")
+    parser.set_defaults(enable_compaction=False)
     parser.add_argument("--web-dist", type=Path, default=ROOT / "frontend" / "dist")
     parser.add_argument("--api-key-env", default="SCOPEX_API_KEY")
     parser.add_argument("--host", default="127.0.0.1")
@@ -167,7 +172,7 @@ def main(argv=None) -> int:
         exec_mode=args.exec_mode,
         enable_view_image=args.enable_view_image,
         enable_progress_card=args.enable_progress_card,
-        enable_compaction=not args.disable_compaction,
+        enable_compaction=args.enable_compaction,
     )
     factory = OpenClawRuntimeFactory(config)
     service = TaskService(

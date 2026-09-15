@@ -573,6 +573,18 @@ class TaskService:
                 if state is TaskState.RUNNING and coordinator.steering.pending:
                     action = "steer"
                     turn_name = handle.next_turn_name()
+                elif state is TaskState.RUNNING and getattr(coordinator, "native_answers", False):
+                    if handle.task.mode == "auto":
+                        if (self._has_business_evidence(coordinator.catalog.items)
+                                or self._turn_attempted_business_work(current_turn)
+                                or not self._turn_completed_normally(current_turn)):
+                            self._resolve_auto_as_task(handle)
+                        else:
+                            self._resolve_auto_as_conversation(handle)
+                    # Same publication path for all native answers; no Evidence
+                    # schema gate or extra model call, including on failure.
+                    coordinator.finish_native_answer(current_turn)
+                    return
                 elif state is TaskState.RUNNING:
                     runtime_limit_reason = current_turn.runtime_limit_reason
                     runtime_guard_reason = current_turn.runtime_guard_reason

@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import json
+import hashlib
 from pathlib import Path
+import re
 import threading
 import time
 from typing import Callable, Iterable
@@ -17,7 +19,7 @@ from scopex.events.progress import EventSink, EventType
 from scopex.finalizer.report import ConstrainedReportComposer
 from scopex.finalizer.text_report import TextReportComposer, TextReportResult
 from scopex.finalizer.service import FinalizationResult, FinalizationService
-from scopex.finalizer.structured import StructuredFinalizer, StructuredFinalizerResult
+from scopex.finalizer.structured import StructuredFinalizer, StructuredFinalizerResult, _redact
 from scopex.runtime.controller import TaskController
 from scopex.runtime.convergence import (
     ConvergenceDecision,
@@ -62,6 +64,7 @@ class InvestigationCoordinator:
         audit: RuntimeAudit | None = None,
         report_composer: ConstrainedReportComposer | None = None,
         text_reporter: TextReportComposer | None = None,
+        native_answers: bool = False,
         control_lock=None,
     ) -> None:
         self.task = task
@@ -78,6 +81,7 @@ class InvestigationCoordinator:
         self.audit = audit
         self.report_composer = report_composer
         self.text_reporter = text_reporter
+        self.native_answers = native_answers
         self._control_lock = control_lock or threading.RLock()
         self._turn_lock = threading.RLock()
         self._started_at: float | None = None
@@ -102,6 +106,7 @@ class InvestigationCoordinator:
         audit: RuntimeAudit | None = None,
         report_composer: ConstrainedReportComposer | None = None,
         text_reporter: TextReportComposer | None = None,
+        native_answers: bool = False,
     ) -> "InvestigationCoordinator":
         controller = TaskController(task, session, events)
         stop_gate = SafeStopGate()
@@ -158,6 +163,7 @@ class InvestigationCoordinator:
             audit=audit,
             report_composer=report_composer,
             text_reporter=text_reporter,
+            native_answers=native_answers,
             control_lock=control_lock,
         )
 
@@ -262,6 +268,74 @@ class InvestigationCoordinator:
         self.controller.begin_finalization(reasons=decision.reasons)
         self._snapshot()
         return decision
+
+    def finish_native_answer(self, turn: OpenClawTurnResult) -> None:
+        """Publish the native CLI outcome, never a utility model's wire response.
+
+        A successful execution is not a semantic accuracy certificate. On an
+        interrupted/failed turn, visible native text is only a draft; preserved
+        Evidence must not turn a failed execution into a successful task.
+        """
+        if self.controller.state is not TaskState.RUNNING:
+            raise ValueError("native answer publication requires RUNNING task")
+        outcome = turn.cli_outcome
+        errors = list(outcome.blockers) if outcome is not None else ["missing_cli_outcome"]
+        for reason in (turn.runtime_limit_reason, turn.runtime_guard_reason, turn.process.stop_reason):
+            if reason and reason not in errors:
+                errors.append(reason)
+        if turn.process.returncode != 0:
+            errors.append(f"openclaw_exit_{turn.process.returncode}")
+        original = outcome.answer if outcome and outcome.answer else ""
+        if not original.strip() and "no_final_visible_answer" not in errors:
+            errors.append("no_final_visible_answer")
+        text = _redact(original, self.agent.spec.upstream_api_key)
+        redacted = text != original
+        if len(text) > 32768:
+            text = text[:32768]
+            errors.append("answer_content_limit")
+        complete = not errors
+        status = "complete" if complete else "partial" if text.strip() else "unavailable"
+        items = [item for item in self.catalog.items
+                 if item.metadata.get("evidence_role") != "working_derived"]
+        sources = [{"ref": item.ref, "source": item.source,
+                    "type": item.metadata.get("evidence_type"),
+                    "sha256": item.metadata.get("sha256")} for item in items]
+        unknown_refs = sorted(set(re.findall(r"\[(E\d+)\]", text)) - {x["ref"] for x in sources})
+        reasons = ("openclaw_completed",) if complete else tuple(errors)
+        self._finalization_reasons = reasons
+        meta = {
+            "version": 2, "format": "text", "producer": "openclaw",
+            "model": self.agent.spec.model_id, "status": status, "valid": complete,
+            "sources": sources, "source_count": len(sources),
+            "source_check": "identity_only_not_semantic_validation",
+            "completion_reasons": list(reasons), "errors": errors,
+            "native_stop_reason": outcome.flags.get("stopReason") if outcome else None,
+            "returncode": turn.process.returncode, "stop_reason": turn.process.stop_reason,
+            "runtime_limit_reason": turn.runtime_limit_reason,
+            "runtime_guard_reason": turn.runtime_guard_reason,
+            "postprocess_model_calls": 0, "content_redacted": redacted,
+            "content_sha256": hashlib.sha256(original.encode()).hexdigest(),
+            "unresolved_citation_refs": unknown_refs,
+            "warnings": list(outcome.warnings) if outcome else [],
+        }
+        self.controller.begin_finalization(reasons=reasons)
+        if self.audit is not None:
+            self.audit.store.write_json(self.task.id, "result.json", {
+                "version": 2, "valid": complete,
+                "task_state": TaskState.COMPLETED.value if complete else TaskState.FAILED.value,
+                "execution_status": "completed" if complete else "incomplete",
+                "investigation_reasons": list(reasons), "report_text": text,
+                "report_meta": meta, "errors": errors,
+            })
+            self.audit.store.write_text(self.task.id, "report.md", text)
+            self.audit.store.write_text(self.task.id, "final.txt", text)
+            self.audit.store.write_json(self.task.id, "report-meta.json", meta)
+        if complete:
+            self.controller.finalization_completed()
+            self.controller.complete()
+        else:
+            self.controller.fail("native_answer_" + status)
+        self._snapshot()
 
     def begin_runtime_limit_finalization(self, reason: str) -> tuple[str, ...]:
         if not isinstance(reason, str) or not reason:

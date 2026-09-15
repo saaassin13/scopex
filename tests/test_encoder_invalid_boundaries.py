@@ -73,7 +73,7 @@ class EncoderInvalidBoundaryTests(unittest.TestCase):
         event = next(row for row in events if row['type'] == 'reverse_step_candidate')
         self.assertEqual(event['pulse_delta'], -50)
         self.assertFalse(event['recovered'])
-        self.assertEqual(event['recovery_pulses_next_3'], 0)
+        self.assertEqual(event['recovery_pulses'], 0)
 
     def test_short_flat_intervals_do_not_merge_across_invalid_sample(self):
         facts, events, _, _ = self.detect(samples([100, 100, INVALID, 100, 100]))

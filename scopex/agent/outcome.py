@@ -89,6 +89,11 @@ def parse_cli_outcome(text: str) -> CliOutcome:
         blockers.append("timeout")
     if meta.get("livenessState") in {"abandoned", "blocked", "paused"}:
         blockers.append("nonterminal_or_failed_liveness")
+    # Native 2026.9.2 includes this terminal field even when it emits a visible
+    # truncation notice. Do not confuse text in payloads with a completed turn.
+    stop_reason = meta.get("stopReason")
+    if stop_reason is not None and stop_reason not in ("stop", "end_turn"):
+        blockers.append("nonfinal_stop_reason")
 
     rows = value.get("payloads")
     if not isinstance(rows, list) or not all(isinstance(row, dict) for row in rows):
@@ -117,11 +122,13 @@ def parse_cli_outcome(text: str) -> CliOutcome:
         "livenessState": meta.get("livenessState"),
         "timeoutPhase": meta.get("timeoutPhase"),
         "fallbackUsed": trace.get("fallbackUsed"),
+        "stopReason": stop_reason,
     }
+    partial_text = meta.get("finalAssistantVisibleText") if stop_reason == "length" else None
     return CliOutcome(
         blockers=tuple(blockers),
         warnings=tuple(warnings),
-        answer=visible[-1] if visible else None,
+        answer=partial_text if isinstance(partial_text, str) and partial_text.strip() else visible[-1] if visible else None,
         visible_payloads=len(visible),
         flags=flags,
     )

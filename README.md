@@ -4,9 +4,9 @@ ScopeX 是 NVIDIA DGX Spark 上的端侧工业 Agent。用户提出目标，Open
 
 > **OpenClaw owns execution. ScopeX owns product control and trust.**
 
-## 当前阶段：文本结果、独立任务并发、全局活动入口
+## 当前开发：原生回答与业务 Skill 修正
 
-`main` 是唯一集成基线。先读 [阶段交接](docs/08-local-usage-and-handoff.md) 和 [本轮方案与实机验证](docs/11-text-results-and-parallel-runs.md)。
+开发分支 `feature/agent-native-results`：正常任务直接交付 OpenClaw 答案，报告模型退出默认链；编码器按时间尺度筛查并补运动上下文，图片先看原图并预留复核额度。先读 [本轮实现与验收边界](docs/12-native-answers-and-skill-refinement.md)。尚未合入或部署，`main` 保留上一轮集成基线。
 
 2026-09-15 用户明确批准：结果输出做减法；多个独立任务真正并行，目标是整批总耗时缩短；所有追问/续问/上下文恢复改造暂缓。**并发代码可运行，不等于 Spark 吞吐已经验收通过。**
 
@@ -14,7 +14,7 @@ ScopeX 是 NVIDIA DGX Spark 上的端侧工业 Agent。用户提出目标，Open
 |---|---|
 | Step 6A–6D、6F | 保留历史 PASS，不扩大原范围 |
 | Step 6E | 保留历史 CAPABILITY PASS |
-| 单次文本报告 | 产品默认路径，不要求 Claims JSON 或嵌套报告 JSON |
+| 原生文本回答 | 开发分支默认直接交付；不额外调用报告模型，不要求 Claims JSON |
 | 独立任务并发与有限队列 | 默认2活动任务、16等待项；名额可配1–4，推理请求和报告不全局串行 |
 | 全局活动入口 | 顶部显示运行/等待/暂停；支持查看、暂停单项及取消排队 |
 | 仓库回归 | PR #16 首轮573项 Python测试、Vue构建、卫生检查通过；最终提交以PR检查为准 |
@@ -27,16 +27,15 @@ ScopeX 是 NVIDIA DGX Spark 上的端侧工业 Agent。用户提出目标，Open
 统一用户输入 / 定时触发
   -> TaskService 有界准入、独立执行
   -> OpenClaw + 模型自主调查、动作、验证
-  -> 普通回答，或业务 Evidence + 重新校验的原图
-  -> 一次无工具 TextReportComposer
+  -> 原生 CLI 回答 + 业务来源/Evidence 审计
   -> 可读正文 + 系统提供的来源/时刻/结构化数据/报告状态
 ```
 
-模型只负责中文表达，不要求填写 kind/relation/confidence 等内部协议。正文标题或分节不同不阻断交付；空内容、传输失败和截断仍明确区分 unavailable/partial，保留依据，不伪装业务全部完成。
+调查 Agent 直接负责最终表达，不要求填写 kind/relation/confidence 等内部协议。正文标题或分节不同不阻断交付；原生错误、超时、空内容和截断明确区分 unavailable/partial，保留依据，不伪装业务全部完成。
 
-`result.json` 的新输出为 version=2、report_text、report_meta、execution_status、investigation_reasons；另存 report.md/final.txt。来源身份可核对不等于自动证明语义正确，数字、单位、因果和覆盖范围仍需评测。
+`result.json` 保留 version=2、report_text、report_meta、execution_status、investigation_reasons；producer=openclaw，另存 report.md/final.txt。来源身份可核对不等于自动证明语义正确，数字、单位、因果和覆盖范围仍需评测。
 
-旧 StructuredFinalizer / Claim Validator / JSON ReportComposer 仅保留历史记录和 Step 6 专项兼容，不再是产品默认必经关卡。[旧报告架构](docs/architecture/08-trusted-report-composer.md) 中强制 Claims 的主链被本轮方案取代。
+StructuredFinalizer / Claim Validator / ReportComposer / TextReportComposer 保留历史、专项兼容和独立回放，不再是产品默认必经关卡。旧报告主链由[本轮方案](docs/12-native-answers-and-skill-refinement.md)取代。
 
 ## 首批业务口径不变
 
@@ -57,6 +56,8 @@ ScopeX 是 NVIDIA DGX Spark 上的端侧工业 Agent。用户提出目标，Open
 业务目录只读，task scratch独立可写；内置Skill和Locator references目录在Runtime启动时同步。CPU/内存/PID/工具超时有限，但不声称有覆盖任意Shell的全局I/O硬限流。
 
 ## 并发、调度与恢复
+
+独立任务默认关闭 OpenClaw 主动及完成后压缩，原生 preflight/overflow recovery保留；显式 `--enable-compaction` 可恢复主动维护。未自建上下文管理器；现场效果尚待新版验收。
 
 两项任务可同时执行工具或发起模型/报告请求，使用同一个vLLM服务，由vLLM做批处理。ScopeX不重写模型调度器、不复制模型，也不混合任务Prompt。超出执行名额的任务进入有界队列。
 
