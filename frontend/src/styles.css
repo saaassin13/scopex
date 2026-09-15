@@ -190,3 +190,14 @@ button:disabled { opacity: .45; cursor: not-allowed; }
   .calendar-day strong { font-size: 11px; }
   .calendar-day small { display: none; }
 }
+
+.report-prose { white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.85; font-size: 15px; }
+.state-pill[data-state="QUEUED"] { background: #fff4dc; color: #855d14; }
+.activity-trigger { border: 1px solid #c9d7e6; border-radius: 9px; padding: 8px 12px; background: #fff; cursor: pointer; color: #173954; }
+.activity-backdrop { position: fixed; inset: 0; background: #11263866; z-index: 80; }
+.activity-drawer { position: fixed; right: 0; top: 0; bottom: 0; width: min(440px, 96vw); background: #f5f8fb; z-index: 81; padding: 24px; overflow: auto; box-shadow: -12px 0 40px #152c4826; }
+.activity-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.activity-card { background: white; border: 1px solid #dce4ee; border-radius: 12px; padding: 16px; margin: 12px 0; }
+.activity-card a { display: block; font-weight: 650; color: #17476b; overflow-wrap: anywhere; }
+.activity-card p { font-size: 13px; margin: 8px 0; }
+.activity-actions { display: flex; gap: 8px; margin-top: 12px; }

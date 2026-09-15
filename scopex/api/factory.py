@@ -13,6 +13,7 @@ from scopex.events.progress import EventSink
 from scopex.finalizer.client import StreamingFinalizerClient
 from scopex.finalizer.report import ConstrainedReportComposer
 from scopex.finalizer.structured import StructuredFinalizer
+from scopex.finalizer.text_report import TextReportComposer
 from scopex.host_snapshot import write_current_host_snapshot
 from scopex.runtime.convergence import ConvergencePolicy
 from scopex.runtime.investigation import InvestigationCoordinator
@@ -39,7 +40,7 @@ class LocalRuntimeConfig:
     max_tokens: int = 2048
     finalizer_max_tokens: int = 768
     finalizer_timeout_s: int = 180
-    report_max_tokens: int = 1024
+    report_max_tokens: int = 2048
     skills: tuple[str, ...] = ()
     data_binds: tuple[str, ...] = ()
     data_catalog_summary: str = ""
@@ -153,6 +154,7 @@ class OpenClawRuntimeFactory:
             exec_host=self.config.exec_host,
             exec_mode=self.config.exec_mode,
             compaction_enabled=self.config.enable_compaction,
+            request_time_anchor=task.scheduled_for or task.created_at,
         )
         return InvestigationCoordinator.for_openclaw(
             task=task,
@@ -167,7 +169,12 @@ class OpenClawRuntimeFactory:
                 max_claim_images=2,
             ),
             audit=audit,
-            report_composer=self.report_composer(),
+            text_reporter=TextReportComposer(
+                StreamingFinalizerClient(self.config.base_url, api_key=self.config.api_key,
+                                         timeout_s=self.config.finalizer_timeout_s),
+                model=self.config.model_id, max_tokens=self.config.report_max_tokens,
+                media_loader=EvidenceMediaLoader(self.config.data_binds),
+            ),
         )
 
     def finalizer(self) -> StructuredFinalizer:

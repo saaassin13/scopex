@@ -1,4 +1,5 @@
 import type {
+  ActivitySnapshot,
   Evaluation,
   EvidenceSnapshot,
   EventsResponse,
@@ -35,6 +36,8 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export const api = {
+  activity: () => request<ActivitySnapshot>('/activity'),
+  cancelQueued: (id: string) => request<TaskSnapshot>(`/tasks/${encodeURIComponent(id)}/cancel-queued`, { method: 'POST', body: '{}' }),
   health: () => request<{ status: string; active_task_id: string | null }>('/health'),
   createRun: (message: string) =>
     request<TaskSnapshot>('/runs', { method: 'POST', body: JSON.stringify({ message }) }),

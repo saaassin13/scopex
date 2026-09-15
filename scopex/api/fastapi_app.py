@@ -164,6 +164,14 @@ def create_app(
 
     # Unified user entry. ScopeX resolves auto -> conversation/task from actual
     # execution behavior; no separate router model is called.
+    @app.get("/activity")
+    def activity() -> dict[str, Any]:
+        return service.activity()
+
+    @app.post("/tasks/{task_id}/cancel-queued", status_code=202)
+    def cancel_queued(task_id: str) -> dict[str, Any]:
+        return service.cancel_queued(task_id)
+
     @app.post("/runs", status_code=202)
     def create_run(body: MessageRequest) -> dict[str, Any]:
         return service.create_auto_run(body.message)

@@ -8,6 +8,10 @@ export interface TaskSnapshot {
   started_at?: string | null
   finished_at?: string | null
   duration_ms?: number | null
+  queue_wait_ms?: number | null
+  total_duration_ms?: number | null
+  queue_position?: number | null
+  latest_activity?: { type: string; at: string; tool: string; title: string } | null
   mode?: 'task' | 'conversation' | 'auto'
   trigger_type?: 'manual' | 'schedule'
   schedule_id?: string | null
@@ -130,4 +134,15 @@ export interface Evaluation {
   tags: string[]
   note: string
   updated_at: string
+}
+
+export interface ActivitySnapshot {
+  tasks: TaskSnapshot[]
+  max_active_tasks: number
+  max_queued_tasks: number
+  occupied_slots: number
+  running_count: number
+  queued_count: number
+  paused_count: number
+  scopex_commit: string | null
 }

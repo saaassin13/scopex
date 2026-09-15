@@ -15,6 +15,7 @@ def utcnow() -> str:
 
 class EventType(str, Enum):
     TASK_CREATED = "TASK_CREATED"
+    TASK_QUEUED = "TASK_QUEUED"
     TASK_STARTED = "TASK_STARTED"
     MODEL_REQUEST = "MODEL_REQUEST"
     PROGRESS_UPDATE = "PROGRESS_UPDATE"

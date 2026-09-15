@@ -23,6 +23,7 @@ def _duration_ms(started_at: str | None, finished_at: str | None) -> int | None:
 
 class TaskState(str, Enum):
     CREATED = "CREATED"
+    QUEUED = "QUEUED"
     RUNNING = "RUNNING"
     PAUSING = "PAUSING"
     PAUSED = "PAUSED"
@@ -33,7 +34,8 @@ class TaskState(str, Enum):
 
 
 _ALLOWED: dict[TaskState, set[TaskState]] = {
-    TaskState.CREATED: {TaskState.RUNNING, TaskState.CANCELLED, TaskState.FAILED},
+    TaskState.CREATED: {TaskState.QUEUED, TaskState.RUNNING, TaskState.CANCELLED, TaskState.FAILED},
+    TaskState.QUEUED: {TaskState.CREATED, TaskState.CANCELLED, TaskState.FAILED},
     TaskState.RUNNING: {
         TaskState.PAUSING,
         TaskState.FINALIZING,
@@ -106,4 +108,6 @@ class Task:
             "started_at": self.started_at,
             "finished_at": self.finished_at,
             "duration_ms": self.duration_ms,
+            "queue_wait_ms": _duration_ms(self.created_at, self.metadata.get("admitted_at")),
+            "total_duration_ms": _duration_ms(self.created_at, self.finished_at),
         }

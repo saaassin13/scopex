@@ -203,6 +203,8 @@ class ScheduleService:
                 scheduled_for=planned,
             )
             task_id = task["id"]
+            if task.get("state") == "QUEUED":
+                status = "QUEUED"
         except TaskBusyError as exc:
             status = "SKIPPED_BUSY"
             reason = str(exc)

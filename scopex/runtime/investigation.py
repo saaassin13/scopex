@@ -15,6 +15,7 @@ from scopex.evidence.extractor import EvidenceExtractionPipeline, EvidenceExtrac
 from scopex.evidence.projector import EvidenceProjector
 from scopex.events.progress import EventSink, EventType
 from scopex.finalizer.report import ConstrainedReportComposer
+from scopex.finalizer.text_report import TextReportComposer, TextReportResult
 from scopex.finalizer.service import FinalizationResult, FinalizationService
 from scopex.finalizer.structured import StructuredFinalizer, StructuredFinalizerResult
 from scopex.runtime.controller import TaskController
@@ -60,6 +61,7 @@ class InvestigationCoordinator:
         evidence_pipeline: EvidenceProjector | None = None,
         audit: RuntimeAudit | None = None,
         report_composer: ConstrainedReportComposer | None = None,
+        text_reporter: TextReportComposer | None = None,
         control_lock=None,
     ) -> None:
         self.task = task
@@ -75,6 +77,7 @@ class InvestigationCoordinator:
         self.evidence_pipeline = evidence_pipeline
         self.audit = audit
         self.report_composer = report_composer
+        self.text_reporter = text_reporter
         self._control_lock = control_lock or threading.RLock()
         self._turn_lock = threading.RLock()
         self._started_at: float | None = None
@@ -98,6 +101,7 @@ class InvestigationCoordinator:
         extractors: Iterable[EvidenceExtractor] = (),
         audit: RuntimeAudit | None = None,
         report_composer: ConstrainedReportComposer | None = None,
+        text_reporter: TextReportComposer | None = None,
     ) -> "InvestigationCoordinator":
         controller = TaskController(task, session, events)
         stop_gate = SafeStopGate()
@@ -153,6 +157,7 @@ class InvestigationCoordinator:
             evidence_pipeline=evidence_pipeline,
             audit=audit,
             report_composer=report_composer,
+            text_reporter=text_reporter,
             control_lock=control_lock,
         )
 
@@ -303,9 +308,11 @@ class InvestigationCoordinator:
         finalizer: StructuredFinalizer,
         *,
         report_composer: ConstrainedReportComposer | None = None,
-    ) -> StructuredFinalizerResult:
+    ) -> StructuredFinalizerResult | TextReportResult:
         if self.controller.state is not TaskState.FINALIZING:
             raise ValueError("task must be FINALIZING")
+        if self.text_reporter is not None:
+            return self._finish_text_report()
         result = finalizer.run(user_request=self.task.user_request, catalog=self.catalog)
         if self.audit is not None and result.payload is not None:
             self.audit.persist_claims(result.payload)
@@ -335,13 +342,44 @@ class InvestigationCoordinator:
         self._snapshot()
         return result
 
+    def _finish_text_report(self) -> TextReportResult:
+        assert self.text_reporter is not None
+        controls = f"原请求/计划时刻：{self.task.scheduled_for or self.task.created_at}\n" + "\n".join(
+            f"{turn.kind.value}: {turn.content}" for turn in self.session.turns
+            if turn.kind.value in {"STEER", "RESUME"}
+        )
+        result = self.text_reporter.run(
+            user_request=self.task.user_request, catalog=self.catalog,
+            control_context=controls, completion_reasons=self._finalization_reasons,
+        )
+        published = TaskState.COMPLETED if result.valid else TaskState.FAILED
+        if self.audit is not None:
+            # Do not ask legacy Claims/fallback rendering to translate business fields.
+            self.audit.store.write_json(self.task.id, "result.json", {
+                "version": 2, "valid": result.valid, "task_state": published.value,
+                "execution_status": "ended_with_evidence",
+                "investigation_reasons": list(self._finalization_reasons),
+                "report_text": result.text, "report_meta": result.meta,
+                "errors": result.meta.get("errors", []),
+            })
+            self.audit.store.write_text(self.task.id, "report.md", result.text)
+            self.audit.store.write_text(self.task.id, "final.txt", result.text)
+            self.audit.store.write_json(self.task.id, "report-meta.json", result.meta)
+        if result.valid:
+            self.controller.finalization_completed()
+            self.controller.complete()
+        else:
+            self.controller.fail("text_report_" + result.status)
+        self._snapshot()
+        return result
+
     def finalize_fresh(
         self,
         finalizer: StructuredFinalizer,
         *,
         goal_satisfied: bool = False,
         report_composer: ConstrainedReportComposer | None = None,
-    ) -> StructuredFinalizerResult:
+    ) -> StructuredFinalizerResult | TextReportResult:
         self.begin_finalization(goal_satisfied=goal_satisfied)
         return self.finish_fresh_finalization(finalizer, report_composer=report_composer)
 

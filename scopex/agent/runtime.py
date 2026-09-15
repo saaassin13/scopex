@@ -61,6 +61,7 @@ class OpenClawTaskSpec:
     docker_bin: str = "docker"
     compaction_enabled: bool = True
     concise_terminal_handoff: bool = True
+    request_time_anchor: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -233,6 +234,13 @@ class OpenClawTaskRuntime:
     def _runtime_message(self, message: str) -> str:
         """Attach product capability and scope context without owning the Agent loop."""
         notes: list[str] = []
+        if self.spec.request_time_anchor:
+            notes.append(
+                "Historical relative windows such as past 30 minutes are anchored to the "
+                f"original request/scheduled time {self.spec.request_time_anchor}, not admission "
+                "or later queue completion time. Current host-resource questions instead use "
+                "the admitted run snapshot and must report its captured_at time."
+            )
         notes.append(
             "Treat the user's explicit target, source, and scope constraints as binding. "
             "Use the smallest sufficient evidence path for the requested outcome; do not inspect "
