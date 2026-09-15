@@ -55,5 +55,9 @@ class EdgeDeploymentTests(unittest.TestCase):
             self.assertTrue((edge_root / "data" / "runtime-api").is_dir())
             self.assertIn("compose", calls.read_text())
 
+    def test_runtime_uses_the_device_docker_client(self):
+        compose = (ROOT / "deploy" / "edge" / "compose.yaml").read_text()
+        self.assertIn("/usr/bin/docker:/usr/local/bin/docker:ro", compose)
+
 if __name__ == "__main__":
     unittest.main()

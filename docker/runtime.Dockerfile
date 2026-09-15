@@ -1,5 +1,3 @@
-FROM docker:29.2.1-cli AS docker_cli
-
 FROM node:24-bookworm-slim
 
 ARG OPENCLAW_VERSION=2026.9.2
@@ -21,8 +19,6 @@ RUN set -eux; \
     rm -rf /var/lib/apt/lists/*; \
     npm install --global --omit=dev --registry="$NPM_REGISTRY" "openclaw@${OPENCLAW_VERSION}"; \
     openclaw --version
-
-COPY --from=docker_cli /usr/local/bin/docker /usr/local/bin/docker
 
 COPY requirements-api.txt /tmp/requirements-api.txt
 RUN python3 -m pip install --break-system-packages --no-cache-dir \

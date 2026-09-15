@@ -74,6 +74,7 @@ services:
       - ${COWDISINFECT_LOG_DIR}:${COWDISINFECT_LOG_DIR}:ro
       - ${LEFT_CAMERA_DIR}:${LEFT_CAMERA_DIR}:ro
       - /var/run/docker.sock:/var/run/docker.sock
+      - /usr/bin/docker:/usr/local/bin/docker:ro
       - /etc/localtime:/etc/localtime:ro
     working_dir: ${SCOPEX_APP_DIR}
     command:
