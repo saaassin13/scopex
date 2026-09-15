@@ -304,7 +304,8 @@ class InvestigationCoordinator:
         reasons = ("openclaw_completed",) if complete else tuple(errors)
         self._finalization_reasons = reasons
         meta = {
-            "version": 2, "format": "text", "producer": "openclaw",
+            "version": 2, "format": "text", "producer": "scopex_no_data" if turn.no_data else "openclaw",
+            "no_data": turn.no_data,
             "model": self.agent.spec.model_id, "status": status, "valid": complete,
             "sources": sources, "source_count": len(sources),
             "source_check": "identity_only_not_semantic_validation",

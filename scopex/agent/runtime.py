@@ -73,6 +73,7 @@ class OpenClawTurnResult:
     audit_dir: Path
     runtime_limit_reason: str | None = None
     runtime_guard_reason: str | None = None
+    no_data: dict | None = None
 
 
 def validate_session_key_agent(session_key: str, agent_id: str) -> None:
@@ -224,6 +225,7 @@ class OpenClawTaskRuntime:
                 audit_dir=audit,
                 runtime_limit_reason=runtime_limit_reason,
                 runtime_guard_reason=runtime_guard_reason,
+                no_data=hook.no_data,
             )
         finally:
             proxy.cancel()
@@ -259,7 +261,10 @@ class OpenClawTaskRuntime:
             "to obtain data unless the user explicitly requested such a fallback. No data is "
             "not a normal/healthy diagnosis. An inaccessible source or read/parse failure is "
             "an error, not proof of no data; report it and finish without searching elsewhere. "
-            "This ends only the current run and does not change future scheduled triggers."
+            "This ends only the current run and does not change future scheduled triggers. "
+            "Use only an explicitly documented source timezone; never infer UTC or change "
+            "timezone because a different window contains files. If timezone is unknown and "
+            "needed to resolve the requested window, report that missing configuration and finish."
         )
         if catalog_summary:
             notes.append(

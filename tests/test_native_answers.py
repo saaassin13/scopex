@@ -15,7 +15,7 @@ from test_runtime_api_service import wait_state
 
 class NativeAnswerTests(unittest.TestCase):
     def run_task(self, root, *, text="计数保持不变，对应停转；当前依据不足以确认故障。",
-                 meta=None, stop=None, limit=None, evidence=True, mode="task"):
+                 meta=None, stop=None, limit=None, evidence=True, mode="task", no_data=None):
         cli = root / "openclaw"
         cli.write_text("#!/bin/sh\nexit 0\n")
         cli.chmod(0o755)
@@ -36,7 +36,7 @@ class NativeAnswerTests(unittest.TestCase):
                 turn_name="turn-001", audit_dir=root / "wire",
                 process=SimpleNamespace(returncode=143 if stop else 0, stop_reason=stop),
                 cli_outcome=parse_cli_outcome(json.dumps(envelope)), proxy_records=(),
-                runtime_limit_reason=limit,
+                runtime_limit_reason=limit, no_data=no_data,
             )
             coord.agent.run_turn = Mock(return_value=turn)
             coord.agent.close = Mock(return_value=SimpleNamespace(container_ids=(), warnings=()))
@@ -62,6 +62,15 @@ class NativeAnswerTests(unittest.TestCase):
             self.assertEqual(len(service.get_evidence(tid)["items"]), 1)
             self.assertEqual(service.get_events(tid)[-1]["type"], "TASK_COMPLETED")
             self.assertFalse((root / "tasks" / tid / "claims.json").exists())
+
+    def test_no_data_publication_has_explicit_system_provenance(self):
+        with tempfile.TemporaryDirectory() as td:
+            service, tid = self.run_task(Path(td), text="指定窗口没有数据，本次检查已结束。",
+                no_data={'source': 'cowdisinfect_logs', 'window': {'start': '15:00', 'end': '15:30'}})
+            result = service.get_result(tid)['result']
+            self.assertEqual(result['report_meta']['producer'], 'scopex_no_data')
+            self.assertTrue(result['valid'])
+            self.assertEqual(result['report_meta']['no_data']['source'], 'cowdisinfect_logs')
 
     def test_success_does_not_require_a_scopex_business_schema(self):
         with tempfile.TemporaryDirectory() as td:

@@ -55,6 +55,20 @@ class ModelProxyTests(unittest.TestCase):
         self.upstream_thread.join(timeout=2)
         self.tmp.cleanup()
 
+    def test_no_data_returns_terminal_without_forwarding_in_both_protocols(self):
+        from test_no_data_terminal import hook, no_data_request
+        self.start_proxy(hook=hook())
+        for streaming in (False, True):
+            body = no_data_request()
+            body['stream'] = streaming
+            response = self.send(json.dumps(body).encode())
+            self.assertEqual(response[0], 200)
+            self.assertIn('15:04:47', response[-1].decode())
+            self.assertIn('stop', response[-1].decode())
+        self.assertEqual(UpstreamHandler.bodies, [])
+        self.assertTrue(all(not r['forwarded'] for r in self.proxy.records))
+        self.assertTrue(all(r['local_terminal'] == 'no_data' for r in self.proxy.records))
+
     def start_proxy(self, hook=None, *, max_requests=4, deadline_s=10):
         self.proxy = ModelProxy(
             audit_dir=Path(self.tmp.name),

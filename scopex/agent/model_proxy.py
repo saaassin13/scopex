@@ -24,6 +24,10 @@ class StopBeforeForward(RuntimeError):
     """Raised by the control plane to stop at a safe model-request boundary."""
 
 
+class LocalTerminalAnswer(RuntimeError):
+    """A deterministic product terminal result, never an upstream model reply."""
+
+
 class RequestRejected(RuntimeError):
     """Raised by request policy when a model request violates runtime invariants."""
 
@@ -292,6 +296,29 @@ class _ProxyHandler(BaseHTTPRequestHandler):
             record["response_bytes"] = count
             record["response_complete"] = True
 
+        except LocalTerminalAnswer as exc:
+            text = str(exc)
+            record['local_terminal'] = 'no_data'
+            completion = {'id': 'scopex-no-data', 'model': payload.get('model'),
+                          'object': 'chat.completion', 'created': int(time.time()),
+                          'choices': [{'index': 0, 'message': {'role': 'assistant', 'content': text},
+                                       'finish_reason': 'stop'}]}
+            if payload.get('stream'):
+                completion['object'] = 'chat.completion.chunk'
+                completion['choices'][0]['delta'] = completion['choices'][0].pop('message')
+                body = ('data: ' + json.dumps(completion, ensure_ascii=False) + '\n\ndata: [DONE]\n\n').encode()
+                content_type = 'text/event-stream'
+            else:
+                body = json.dumps(completion, ensure_ascii=False).encode()
+                content_type = 'application/json'
+            record.update(http_status=200, response_bytes=len(body), response_complete=True)
+            (proxy.audit_dir / f"wire-{record['index']:02d}-local-answer.txt").write_text(text, encoding='utf-8')
+            persist_record()
+            self.send_response(200)
+            self.send_header('Content-Type', content_type)
+            self.send_header('Content-Length', str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
         except StopBeforeForward as exc:
             if record is not None:
                 record["blocked"] = "safe_stop"
