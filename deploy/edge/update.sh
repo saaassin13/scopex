@@ -24,7 +24,7 @@ export SCOPEX_VPN_IP="$VPN_IP" SCOPEX_UID="$(id -u)" SCOPEX_GID="$(id -g)" SCOPE
 printf 'SCOPEX_VPN_IP=%s\nSCOPEX_UID=%s\nSCOPEX_GID=%s\nSCOPEX_DOCKER_GID=%s\n' \
   "$SCOPEX_VPN_IP" "$SCOPEX_UID" "$SCOPEX_GID" "$SCOPEX_DOCKER_GID" > "$RUNTIME_CONFIG"
 chmod 600 "$RUNTIME_CONFIG"
-docker compose --env-file "$CONFIG" -f "$COMPOSE" up -d --no-deps scopex
+docker compose --env-file "$CONFIG" -f "$COMPOSE" up -d --no-deps --force-recreate scopex
 for _ in $(seq 1 30); do
   curl -fsS --max-time 2 "http://$VPN_IP:8787/health" >/dev/null 2>&1 && { echo "ScopeX updated: http://$VPN_IP:8787"; exit 0; }
   sleep 2
