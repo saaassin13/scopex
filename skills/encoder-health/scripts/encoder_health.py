@@ -21,6 +21,7 @@ RAW_RE = re.compile(
 )
 LOG_RE = re.compile(r'^CowDisinfect-(?P<date>\d{8})-(?P<time>\d{6})\.log(?:\.(?P<rotation>\d+))?$')
 TS_FMT = '%Y-%m-%d %H:%M:%S:%f'
+ACCESS_LOG = Path(os.environ.get('SCOPEX_DATA_ACCESS_LOG', '/task-scratch/data-access.jsonl'))
 
 
 def parse_time(text: str) -> datetime:
@@ -28,6 +29,17 @@ def parse_time(text: str) -> datetime:
         return datetime.strptime(text, TS_FMT)
     except ValueError as exc:
         raise argparse.ArgumentTypeError(f'invalid timestamp: {text}') from exc
+
+
+def record_data_access(payload: dict[str, Any]) -> None:
+    if not ACCESS_LOG.parent.is_dir():
+        return
+    line = json.dumps({'schema': 1, **payload}, ensure_ascii=False, separators=(',', ':')) + '\n'
+    fd = os.open(ACCESS_LOG, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+    with os.fdopen(fd, 'a', encoding='utf-8') as handle:
+        handle.write(line)
+        handle.flush()
+        os.fsync(handle.fileno())
 
 
 def median(values: list[float]) -> float | None:
@@ -745,6 +757,18 @@ def main() -> int:
         for path in logs:
             if not path.is_file():
                 ap.error(f'log does not exist: {path}')
+
+    if args.start is not None and args.end is not None:
+        record_data_access({
+            'source': 'cowdisinfect_logs',
+            'operation': 'analyze',
+            'purpose': 'encoder_health',
+            'data_kind': 'log',
+            'content_filter': 'encoder',
+            'start': args.start.strftime(TS_FMT),
+            'end': args.end.strftime(TS_FMT),
+            'source_files': [str(path) for path in logs],
+        })
 
     main_samples, raw_samples, invalid_raw, per_file = load_samples(logs, args.start, args.end, args.invalid_min)
 

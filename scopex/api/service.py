@@ -15,6 +15,7 @@ import zipfile
 
 from scopex.agent.runtime import OpenClawTurnResult
 from scopex.agent.trace import load_audit_trace
+from scopex.api.data_packages import DataPackageService
 from scopex.evidence.catalog import EvidenceCatalog
 from scopex.events.progress import EventSink, InMemoryEventSink
 from scopex.finalizer.structured import StructuredFinalizer
@@ -106,6 +107,9 @@ class TaskService:
         max_active_tasks: int = 1,
         max_queued_tasks: int = 0,
         queue_timeout_s: float = 600.0,
+        data_binds: tuple[str, ...] = (),
+        collection_max_bytes: int = 2 * 1024 * 1024 * 1024,
+        collection_max_files: int = 5000,
         reconcile_interrupted: bool = False,
     ) -> None:
         if isinstance(max_active_tasks, bool) or not isinstance(max_active_tasks, int) or not 1 <= max_active_tasks <= 4:
@@ -117,6 +121,14 @@ class TaskService:
         self.store = AuditStore(Path(audit_root))
         self.work_root = Path(work_root) if work_root is not None else self.store.root.parent / "work"
         self.export_root = Path(export_root) if export_root is not None else self.store.root.parent / "exports"
+        if collection_max_bytes < 1 or collection_max_files < 1:
+            raise ValueError("collection limits must be positive")
+        self.data_packages = DataPackageService(
+            work_root=self.work_root,
+            data_binds=data_binds,
+            max_bytes=collection_max_bytes,
+            max_files=collection_max_files,
+        )
         self.coordinator_factory = coordinator_factory
         self.finalizer_factory = finalizer_factory
         self._lock = threading.RLock()
@@ -340,6 +352,10 @@ class TaskService:
         return {"month": month, "days": [days[key] for key in sorted(days)]}
 
     def delete_task(self, task_id: str) -> dict:
+        with self.data_packages.operation(task_id):
+            return self._delete_task(task_id)
+
+    def _delete_task(self, task_id: str) -> dict:
         task = self.get_task(task_id)
         if task.get("state") not in {"COMPLETED", "FAILED", "CANCELLED"}:
             raise TaskConflictError("only terminal tasks can be deleted")
@@ -353,7 +369,9 @@ class TaskService:
         task_dir = self.store.existing_task_dir(task_id)
         work_dir = self._safe_child(self.work_root, task_id)
         export_file = self._safe_child(self.export_root, f"scopex-review-{task_id}.zip")
-        removed = {"audit": False, "work": False, "review_export": False}
+        collected = work_dir / "collected"
+        removed = {"audit": False, "work": False, "review_export": False,
+                   "collected_business_data": collected.is_dir()}
         if work_dir.is_dir():
             shutil.rmtree(work_dir)
             removed["work"] = True
@@ -366,8 +384,36 @@ class TaskService:
             "task_id": task_id,
             "deleted": True,
             "removed": removed,
+            "collected_business_data_deleted": removed["collected_business_data"],
             "external_business_data_deleted": False,
         }
+
+    def get_data_package(self, task_id: str) -> dict:
+        task = self.get_task(task_id)
+        if task.get("state") not in {"COMPLETED", "FAILED", "CANCELLED"}:
+            raise TaskConflictError("data can only be collected for a terminal task")
+        return self.data_packages.options(task_id, self.get_evidence(task_id))
+
+    def build_data_package(self, task_id: str, modes: list[str]) -> dict:
+        with self.data_packages.operation(task_id):
+            return self._build_data_package(task_id, modes)
+
+    def _build_data_package(self, task_id: str, modes: list[str]) -> dict:
+        self.get_data_package(task_id)
+        path = self.data_packages.build(task_id, modes, self.get_evidence(task_id))
+        return {
+            **self.data_packages.options(task_id, self.get_evidence(task_id)),
+            "package_ready": True,
+            "filename": f"scopex-data-{task_id}.zip",
+            "bytes": path.stat().st_size,
+        }
+
+    def data_package_file(self, task_id: str) -> Path:
+        self.get_data_package(task_id)
+        path = self._safe_child(self.work_root, task_id) / "collected" / "scopex-data.zip"
+        if not path.is_file():
+            raise TaskConflictError("data package has not been collected")
+        return path
 
     def get_events(self, task_id: str, *, after: int = 0) -> list[dict]:
         if after < 0:

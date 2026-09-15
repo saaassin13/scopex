@@ -187,6 +187,8 @@ docker compose --env-file /opt/ScalingRobotics/scopex/config/edge.env --env-file
 | `COWDISINFECT_LOG_DIR` | `/opt/ScalingRobotics/CowDisinfect/Log` |
 | `LEFT_CAMERA_DIR` | `/opt/ScalingRobotics/CowDisinfect/GrabbedImages/LeftCamera` |
 | `SCOPEX_IMAGE_LIMIT` | `12`；同时传给 vLLM 和 ScopeX |
+| `SCOPEX_COLLECTION_MAX_BYTES` | `2147483648`；单包源数据内容最多 2 GiB（不含 ZIP/manifest 开销） |
+| `SCOPEX_COLLECTION_MAX_FILES` | `5000`；单个任务原始数据包最多 5000 个文件 |
 | `VLLM_IMAGE` | `nvcr.io/nvidia/vllm:26.08-py3` |
 | `SCOPEX_RUNTIME_IMAGE` | `scopex-runtime:2026.09.15` |
 | `SCOPEX_SANDBOX_IMAGE` | `scopex-sandbox-analysis:2026.09.15` |
@@ -235,3 +237,12 @@ OpenClaw 配置应为 `agents.defaults.compaction.enabled=true`。
 复查固定时间窗 `2026-09-15 17:56:13` 至 `2026-09-15 18:26:13`，确认完整交付，
 并保留归零、瞬时回归及采样缺口的区别。另验证一次足够长的上下文确实触发原生
 压缩且保留证据；仅看到开关启用或短任务成功不代表压缩链路已验收。
+
+
+### 临时下载原始数据
+
+任务结束后在详情页“原始数据”选择范围，点击收集、下载或重新收集。
+照片变化时提供当前文件并提示；缺失、读取失败或超限时尽量提供部分包，页面及
+`manifest.json` 会提示未完整收集。全部不可用或收集失败时保留旧包。
+时间范围日志按源文件存放于 `logs/window/`，逐行截取，不包含范围外记录。
+同一任务收集中暂不能删除或重复收集；结束后删除任务会删除包，不删除外部原始文件。

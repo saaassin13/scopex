@@ -7,6 +7,8 @@ import type {
   ScheduleSnapshot,
   TaskCalendarResponse,
   TaskSnapshot,
+  DataPackageMode,
+  DataPackageSnapshot,
 } from './types'
 
 export class ApiError extends Error {
@@ -63,7 +65,7 @@ export const api = {
     }),
   getTask: (id: string) => request<TaskSnapshot>(`/tasks/${encodeURIComponent(id)}`),
   deleteTask: (id: string) =>
-    request<{ task_id: string; deleted: boolean; external_business_data_deleted: boolean }>(`/tasks/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+    request<{ task_id: string; deleted: boolean; collected_business_data_deleted: boolean; external_business_data_deleted: boolean }>(`/tasks/${encodeURIComponent(id)}`, { method: 'DELETE' }),
   getEvents: (id: string, after = 0) =>
     request<EventsResponse>(`/tasks/${encodeURIComponent(id)}/events?after=${after}`),
   getEvidence: (id: string) =>
@@ -89,6 +91,13 @@ export const api = {
       method: 'POST', body: JSON.stringify({ rating, tags, note }),
     }),
   exportUrl: (id: string) => `/tasks/${encodeURIComponent(id)}/export`,
+  getDataPackage: (id: string) =>
+    request<DataPackageSnapshot>(`/tasks/${encodeURIComponent(id)}/data-package`),
+  buildDataPackage: (id: string, modes: DataPackageMode[]) =>
+    request<DataPackageSnapshot>(`/tasks/${encodeURIComponent(id)}/data-package`, {
+      method: 'POST', body: JSON.stringify({ modes }),
+    }),
+  dataPackageDownloadUrl: (id: string) => `/tasks/${encodeURIComponent(id)}/data-package/download`,
   listSchedules: () => request<{ schedules: ScheduleSnapshot[] }>('/schedules'),
   createSchedule: (payload: {
     name: string

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -110,12 +111,18 @@ class DataCatalogTests(unittest.TestCase):
                 sys.executable, str(script), '--catalog', str(catalog_path),
                 '--source', 'left_camera_multimodal', '--kind', 'jpg',
                 '--start', '2026-09-14 13:00:00', '--end', '2026-09-14 13:30:00', '--max-files', '32',
-            ], capture_output=True, text=True, timeout=10)
+            ], capture_output=True, text=True, timeout=10, env={
+                **os.environ, 'SCOPEX_DATA_ACCESS_LOG': str(root / 'data-access.jsonl'),
+            })
             self.assertEqual(proc.returncode, 0, proc.stderr)
             data = json.loads(proc.stdout)
             self.assertEqual(data['matching_count'], 1)
             self.assertTrue(data['files'][0].endswith('20260914-130002161.jpg'))
             self.assertEqual(data['scanned_hour_dirs'], [str(hour13)])
+            access = json.loads((root / 'data-access.jsonl').read_text(encoding='utf-8'))
+            self.assertEqual(access['source'], 'left_camera_multimodal')
+            self.assertEqual(access['operation'], 'locate')
+            self.assertEqual(access['start'], '2026-09-14 13:00:00')
 
 
 if __name__ == '__main__':

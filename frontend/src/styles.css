@@ -149,6 +149,10 @@ button:disabled { opacity: .45; cursor: not-allowed; }
 .saved-feedback span, .saved-feedback p { color: var(--muted); margin: 0; }
 .saved-feedback .ghost-button { width: fit-content; }
 .export-link { display: inline-flex; align-items: center; }
+.data-package-panel { border-color: rgba(157,240,200,.14); }
+.data-package-options { display: flex; gap: 8px; flex-wrap: wrap; margin: 16px 0; }
+.data-package-option { display: inline-flex; align-items: center; gap: 8px; padding: 10px 12px; color: #d7ddea; background: rgba(255,255,255,.035); border: 1px solid var(--panel-border); border-radius: 11px; }
+.data-package-option.active { color: #eef2ff; background: rgba(157,240,200,.09); border-color: rgba(157,240,200,.28); }
 
 .schedule-page { display: grid; gap: 20px; }
 .schedule-compose-panel { padding: 32px; }

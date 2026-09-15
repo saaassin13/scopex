@@ -78,6 +78,13 @@ class StubService:
         self.get_task(task_id)
         return {"task_id": task_id, "rating": rating, "tags": tags or [], "note": note}
 
+    def get_data_package(self, task_id):
+        return {"task_id": task_id, "available": True, "options": [{"mode": "encoder_window"}], "package_ready": False}
+
+    def build_data_package(self, task_id, modes):
+        self.calls.append(("data-package", task_id, modes))
+        return {"task_id": task_id, "available": True, "options": [], "package_ready": True}
+
     def stop(self, task_id, message=""):
         if task_id == "conflict":
             raise TaskConflictError("stop requires RUNNING")
@@ -169,6 +176,12 @@ class FastApiRuntimeTests(unittest.TestCase):
         response = self.client.post("/tasks/task-1/evaluation", json={"rating": "down", "tags": ["hard_to_read"], "note": "too mechanical"})
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["rating"], "down")
+
+    def test_data_package_options_and_collection(self):
+        self.assertTrue(self.client.get('/tasks/task-1/data-package').json()['available'])
+        response = self.client.post('/tasks/task-1/data-package', json={'modes': ['encoder_window']})
+        self.assertTrue(response.json()['package_ready'])
+        self.assertIn(('data-package', 'task-1', ['encoder_window']), self.service.calls)
 
     def test_schedule_routes(self):
         self.assertEqual(self.schedules.started, 1)

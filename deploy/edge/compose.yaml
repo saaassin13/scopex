@@ -111,6 +111,10 @@ services:
       - "16"
       - --queue-timeout
       - "600"
+      - --collection-max-bytes
+      - ${SCOPEX_COLLECTION_MAX_BYTES:-2147483648}
+      - --collection-max-files
+      - ${SCOPEX_COLLECTION_MAX_FILES:-5000}
       - --enable-compaction
       - --enable-view-image
     read_only: true

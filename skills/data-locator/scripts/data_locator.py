@@ -12,6 +12,7 @@ from typing import Any
 
 CATALOG_DEFAULT = Path('/workspace/skills/data-locator/references/data-catalog.json')
 TIME_FMT = '%Y-%m-%d %H:%M:%S'
+ACCESS_LOG = Path(os.environ.get('SCOPEX_DATA_ACCESS_LOG', '/task-scratch/data-access.jsonl'))
 LOG_RE = re.compile(r'^CowDisinfect-(?P<date>\d{8})-(?P<time>\d{6})\.log(?:\.(?P<rotation>\d+))?$')
 MM_RE = re.compile(r'^(?P<stamp>\d{8}-\d{9})\.(?P<ext>jpg|jpeg|json|pcd)$', re.IGNORECASE)
 
@@ -45,6 +46,18 @@ def load_catalog(path: Path) -> dict[str, Any]:
     if not isinstance(value, dict) or value.get('schema') != 1 or not isinstance(value.get('sources'), dict):
         raise ValueError('invalid ScopeX data catalog')
     return value
+
+
+def record_data_access(payload: dict[str, Any]) -> None:
+    """Record successful bounded source selection when running in a ScopeX task."""
+    if not ACCESS_LOG.parent.is_dir():
+        return
+    line = json.dumps({'schema': 1, **payload}, ensure_ascii=False, separators=(',', ':')) + '\n'
+    fd = os.open(ACCESS_LOG, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+    with os.fdopen(fd, 'a', encoding='utf-8') as handle:
+        handle.write(line)
+        handle.flush()
+        os.fsync(handle.fileno())
 
 
 def log_timestamp(name: str) -> tuple[datetime, int] | None:
@@ -215,6 +228,16 @@ def main() -> int:
                    'no_data' if result['matching_count'] == 0 else 'found'),
         **result,
     }
+    if payload['status'] == 'found':
+        record_data_access({
+            'source': args.source,
+            'operation': 'locate',
+            'data_kind': args.kind,
+            'start': payload['window']['start'],
+            'end': payload['window']['end'],
+            'matched_count': payload['matching_count'],
+            'selected_files': payload['files'],
+        })
     print(json.dumps(payload, ensure_ascii=False, separators=(',', ':')))
     return 0
 

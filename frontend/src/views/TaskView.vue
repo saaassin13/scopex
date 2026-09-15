@@ -10,6 +10,8 @@ import type {
   ProgressEvent,
   ResultResponse,
   TaskSnapshot,
+  DataPackageMode,
+  DataPackageSnapshot,
 } from '../types'
 
 const route = useRoute()
@@ -28,6 +30,10 @@ const feedbackRating = ref<'up' | 'down'>('up')
 const feedbackTags = ref<string[]>([])
 const feedbackNote = ref('')
 const feedbackBusy = ref(false)
+const dataPackage = ref<DataPackageSnapshot | null>(null)
+const selectedDataModes = ref<DataPackageMode[]>([])
+const collectionBusy = ref(false)
+let dataModesInitialized = false
 let timer: number | undefined
 
 const evaluationOptions = [
@@ -239,6 +245,12 @@ async function refresh() {
         feedbackTags.value = [...evaluation.value.tags]
         feedbackNote.value = evaluation.value.note
       }
+      const packageSnapshot = await api.getDataPackage(taskId.value)
+      dataPackage.value = packageSnapshot
+      if (!dataModesInitialized) {
+        selectedDataModes.value = packageSnapshot.options.filter(option => option.recommended).map(option => option.mode)
+        dataModesInitialized = true
+      }
     }
   } catch (exc) {
     error.value = exc instanceof Error ? exc.message : String(exc)
@@ -295,6 +307,25 @@ async function saveFeedback() {
     error.value = exc instanceof ApiError ? `${exc.code}: ${exc.message}` : String(exc)
   } finally {
     feedbackBusy.value = false
+  }
+}
+
+function toggleDataMode(mode: DataPackageMode) {
+  selectedDataModes.value = selectedDataModes.value.includes(mode)
+    ? selectedDataModes.value.filter(value => value !== mode)
+    : [...selectedDataModes.value, mode]
+}
+
+async function collectData() {
+  if (collectionBusy.value || !selectedDataModes.value.length) return
+  collectionBusy.value = true
+  error.value = ''
+  try {
+    dataPackage.value = await api.buildDataPackage(taskId.value, selectedDataModes.value)
+  } catch (exc) {
+    error.value = exc instanceof ApiError ? `${exc.code}: ${exc.message}` : String(exc)
+  } finally {
+    collectionBusy.value = false
   }
 }
 
@@ -456,6 +487,42 @@ onBeforeUnmount(() => timer && window.clearInterval(timer))
             <textarea v-model="feedbackNote" rows="3" placeholder="补充说明（可选）"></textarea>
             <button class="primary-button" :disabled="feedbackBusy" @click="saveFeedback">{{ feedbackBusy ? '保存中…' : '保存评价' }}</button>
           </div>
+        </section>
+
+        <section v-if="isTerminal && dataPackage?.available" class="panel data-package-panel">
+          <div class="section-heading">
+            <div>
+              <div class="eyebrow">SOURCE DATA</div>
+              <h2>原始数据</h2>
+            </div>
+            <a
+              v-if="dataPackage.package_ready"
+              class="ghost-button export-link"
+              :href="api.dataPackageDownloadUrl(taskId)"
+              download
+            >下载数据包</a>
+          </div>
+          <p class="muted">按本次任务实际访问的数据范围收集；不会改用其他时间的数据。</p>
+          <p v-if="dataPackage.package_ready" class="muted">
+            已收集 {{ dataPackage.collected_files ?? 0 }} 项
+            <template v-if="dataPackage.missing_files">；{{ dataPackage.missing_files }} 项收集提示（缺失、变化或超限），数据可能不完整，详情见包内 manifest</template>
+          </p>
+          <div class="data-package-options">
+            <button
+              v-for="option in dataPackage.options"
+              :key="option.mode"
+              class="data-package-option"
+              :class="{ active: selectedDataModes.includes(option.mode) }"
+              @click="toggleDataMode(option.mode)"
+            >
+              <span>{{ selectedDataModes.includes(option.mode) ? '✓' : '○' }}</span>
+              <strong>{{ option.label }}</strong>
+              <span v-if="option.count != null" class="muted">{{ option.count }} 个</span>
+            </button>
+          </div>
+          <button class="primary-button" :disabled="collectionBusy || !selectedDataModes.length" @click="collectData">
+            {{ collectionBusy ? '正在收集…' : dataPackage.package_ready ? '重新收集' : '收集原始数据' }}
+          </button>
         </section>
 
         <section class="panel">

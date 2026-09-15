@@ -41,6 +41,11 @@ class EvaluationRequest(BaseModel):
     note: str = Field(default="", max_length=4000)
 
 
+class DataPackageRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    modes: list[Literal["image_evidence", "image_window", "encoder_window", "encoder_source_files"]] = Field(min_length=1, max_length=4)
+
+
 class ScheduleCreateRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     name: str = Field(min_length=1, max_length=120)
@@ -249,6 +254,19 @@ def create_app(
     def export_task(task_id: str):
         path = service.export_review_bundle(task_id)
         return FileResponse(path, media_type="application/zip", filename=path.name)
+
+    @app.get("/tasks/{task_id}/data-package")
+    def get_data_package(task_id: str) -> dict[str, Any]:
+        return service.get_data_package(task_id)
+
+    @app.post("/tasks/{task_id}/data-package")
+    def build_data_package(task_id: str, body: DataPackageRequest) -> dict[str, Any]:
+        return service.build_data_package(task_id, body.modes)
+
+    @app.get("/tasks/{task_id}/data-package/download")
+    def download_data_package(task_id: str):
+        path = service.data_package_file(task_id)
+        return FileResponse(path, media_type="application/zip", filename=f"scopex-data-{task_id}.zip")
 
     if schedules is not None:
         @app.get("/schedules")

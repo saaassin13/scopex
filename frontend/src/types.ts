@@ -136,6 +136,28 @@ export interface Evaluation {
   updated_at: string
 }
 
+export type DataPackageMode = 'image_evidence' | 'image_window' | 'encoder_window' | 'encoder_source_files'
+
+export interface DataPackageOption {
+  mode: DataPackageMode
+  label: string
+  count: number | null
+  recommended: boolean
+}
+
+export interface DataPackageSnapshot {
+  task_id: string
+  available: boolean
+  options: DataPackageOption[]
+  package_ready: boolean
+  download_url?: string | null
+  filename?: string
+  bytes?: number
+  collected_files?: number
+  missing_files?: number
+  package_modes?: DataPackageMode[]
+}
+
 export interface ActivitySnapshot {
   tasks: TaskSnapshot[]
   max_active_tasks: number

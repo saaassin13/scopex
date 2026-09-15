@@ -111,6 +111,8 @@ def main(argv=None) -> int:
     parser.add_argument("--max-active-tasks", type=int, default=2, help="independent task slots; not a GPU throughput guarantee")
     parser.add_argument("--max-queued-tasks", type=int, default=16)
     parser.add_argument("--queue-timeout", type=int, default=600)
+    parser.add_argument("--collection-max-bytes", type=int, default=2 * 1024 * 1024 * 1024)
+    parser.add_argument("--collection-max-files", type=int, default=5000)
     parser.add_argument("--finalizer-timeout", type=int, default=180)
     parser.add_argument("--skill", action="append", default=[])
     parser.add_argument("--no-default-skills", action="store_true")
@@ -194,6 +196,9 @@ def main(argv=None) -> int:
         max_active_tasks=args.max_active_tasks,
         max_queued_tasks=args.max_queued_tasks,
         queue_timeout_s=args.queue_timeout,
+        data_binds=data_binds,
+        collection_max_bytes=args.collection_max_bytes,
+        collection_max_files=args.collection_max_files,
         reconcile_interrupted=True,
     )
     schedules = ScheduleService(data_root / "scheduler", service)
