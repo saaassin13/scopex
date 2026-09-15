@@ -86,3 +86,17 @@ onBeforeUnmount(() => {
     </aside>
   </Teleport>
 </template>
+
+<style scoped>
+.activity-trigger { color: #b9f6d9; background: #14221c; border-color: #365547; }
+.activity-drawer { color: #eef2ff; background: #111820; border-left: 1px solid #33434f; }
+.activity-drawer .muted { color: #acb8c7; }
+.activity-card { background: #1b252f; border-color: #354553; }
+.activity-card a { color: #b9f6d9; }
+.activity-heading h2 { margin: 0; font-size: 24px; }
+.activity-card .ghost-button { color: #eef2ff; border-color: #56616f; }
+@media (max-width: 640px) {
+  .activity-trigger { font-size: 12px; padding: 8px; max-width: 170px; }
+  .activity-drawer { padding: 18px; }
+}
+</style>
