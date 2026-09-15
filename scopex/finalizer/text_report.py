@@ -57,7 +57,11 @@ class TextReportComposer:
         items = [item for item in catalog.items
                  if item.metadata.get("evidence_role") != "working_derived"]
         # Keep original identifiers, including gaps; do not manufacture/remap E refs.
-        evidence = "\n".join(build_evidence_prompt(_single_catalog(catalog, item)) for item in items)
+        # Render the selected catalog once: line Evidence keeps every ref/raw
+        # row, while shared command/source metadata is emitted once per block.
+        # Singleton rendering defeats the existing lossless grouping and can
+        # turn a few KB of data into an over-budget report input.
+        evidence = build_evidence_prompt(_catalog_view(tuple(items)))
         sources = [{"ref": item.ref, "source": item.source,
                     "type": item.metadata.get("evidence_type"),
                     "sha256": item.metadata.get("sha256")} for item in items]
@@ -72,6 +76,10 @@ class TextReportComposer:
             "image_evidence_refs": [], "errors": [],
             "system_prompt_sha256": hashlib.sha256(SYSTEM_PROMPT.encode()).hexdigest(),
             "input_sha256": hashlib.sha256(user.encode()).hexdigest(),
+            "input_chars": len(user), "max_input_chars": self.max_input_chars,
+            "evidence_chars": len(evidence),
+            "evidence_raw_chars": sum(len(item.raw) for item in items),
+            "input_compaction": "grouped_metadata_preserved_evidence",
         }
         def failed(message: str, response: FinalizerResponse | None = None) -> TextReportResult:
             meta["errors"] = [_redact(message, api_key)[:800]]
@@ -133,8 +141,8 @@ class TextReportComposer:
         return finish(response, "complete" if complete else "partial")
 
 
-def _single_catalog(catalog: EvidenceCatalog, item: EvidenceItem) -> EvidenceCatalog:
-    """Read-only prompt view preserving original ref/source/raw identity."""
+def _catalog_view(selected: tuple[EvidenceItem, ...]) -> EvidenceCatalog:
+    """Read-only prompt view; keep order, ref gaps, sources and unmodified rows."""
     class View:
-        items = (item,)
+        items = selected
     return View()  # type: ignore[return-value]
