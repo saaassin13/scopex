@@ -28,6 +28,10 @@ exist; this shortlist is not exhaustive evidence that the rest is normal.
 
 - Check invalid samples and gaps first. Do not interpret discontinuous coverage
   as mechanical movement or certify an empty window as normal.
+- `counter_boundaries` separates a large accumulated count returning near zero
+  in one sample. Do not count that discontinuity as reverse movement. Report the
+  observed boundary; reset, wrap and reinitialization remain possible causes
+  unless an independent lifecycle record distinguishes them.
 - `off_trend_return_counts` identifies an isolated point leaving and rejoining a
   locally consistent trend. It is stronger evidence of a transient recording
   deviation than a large increment alone, but does not identify hardware cause.
@@ -52,7 +56,7 @@ exist; this shortlist is not exhaustive evidence that the rest is normal.
 
 ## Resolve a specific uncertainty
 
-If the initial trace is insufficient, request the process ID once. It returns a
+If the initial trace is insufficient, request one process ID once. It returns a
 more detailed full-span trace from saved data without scanning logs again:
 
 ```bash
@@ -61,10 +65,11 @@ python3 {baseDir}/scripts/encoder_health.py \
 ```
 
 Use an ID actually returned. Do not re-query the old candidate list or repeatedly
-shrink raw-log windows. For a specific reset/read-error question only, use
-log-context with its exact source and relevant keyword. If available evidence
-cannot resolve an uncertainty, state that uncertainty and finish rather than
-repeating a query which provides no new information.
+shrink raw-log windows. Do not use inline Python, grep or sed to dump the saved
+event file or raw encoder trace. The motion report already identifies counter
+boundaries; a hardware cause is outside this data-only check. After the initial
+report and at most one process-ID detail, answer. If that evidence cannot resolve
+an uncertainty, state it and finish rather than repeating a query.
 
 ## Answer
 

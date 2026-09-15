@@ -66,6 +66,23 @@ class EncoderInvalidBoundaryTests(unittest.TestCase):
                 self.assertEqual(facts['positive_spike_candidate_count'], 0)
                 self.assertEqual(report['top_candidates'], [])
 
+    def test_invalid_filtered_value_is_also_a_continuity_boundary(self):
+        with tempfile.TemporaryDirectory() as td:
+            log = Path(td) / 'app.log'
+            log.write_text(
+                '2026-09-14 07:00:00:000 [INFO] Get EncoderVal, raw[100], filtered[100]\n'
+                f'2026-09-14 07:00:00:020 [INFO] Get EncoderVal, raw[110], filtered[{INVALID}]\n'
+                '2026-09-14 07:00:00:040 [INFO] Get EncoderVal, raw[120], filtered[120]\n',
+                encoding='utf-8',
+            )
+            proc = subprocess.run([sys.executable, str(SCRIPT), str(log)], cwd=ROOT,
+                                  capture_output=True, text=True, timeout=20)
+            report = json.loads(proc.stdout)
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertEqual(report['facts']['invalid_samples'], 1)
+            self.assertEqual(report['facts']['raw_filtered_abs_diff_max'], 0)
+            self.assertEqual(report['top_candidates'], [])
+
     def test_recovery_cannot_cross_an_invalid_sample(self):
         rows = samples([100, 110, 120, 130, 80, INVALID, 80, 100, 120, 140])
         facts, events, _, _ = self.detect(rows)

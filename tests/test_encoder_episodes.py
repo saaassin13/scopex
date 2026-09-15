@@ -1,5 +1,6 @@
 """Unknown-input motion counterexamples, independent of field event timestamps."""
 from test_encoder_motion_context import ANALYZER, series, SCRIPT
+from datetime import timedelta
 import json
 import subprocess
 import sys
@@ -13,6 +14,32 @@ def episodes(increments):
 
 
 class EpisodeTests(unittest.TestCase):
+    def test_near_zero_counter_restart_is_a_boundary_not_reverse_motion(self):
+        rows = series([(100, 1000)] * 20)
+        previous = rows[-1]
+        reset = dict(previous, ts=previous['ts'] + timedelta(milliseconds=100),
+                     ts_text=(previous['ts'] + timedelta(milliseconds=100)).strftime('%Y-%m-%d %H:%M:%S:%f'),
+                     count=21, line_no=previous['line_no'] + 1)
+        rows.append(reset)
+        rows.extend(series([(100, 10)] * 20)[1:])
+        # Keep the appended portion chronologically and near the new counter value.
+        for index, row in enumerate(rows[22:], 1):
+            row['ts'] = reset['ts'] + timedelta(milliseconds=100 * index)
+            row['ts_text'] = row['ts'].strftime('%Y-%m-%d %H:%M:%S:%f')
+            row['count'] = 21 + 10 * index
+        boundaries = ANALYZER['counter_continuity_boundaries'](rows)
+        self.assertEqual(len(boundaries), 1)
+        self.assertEqual(boundaries[0]['count_after'], 21)
+        self.assertFalse(any(e['drawdown_counts'] >= 10_000 for e in ANALYZER['motion_episodes'](rows, 500)))
+        _, candidates, _, _ = ANALYZER['detect_count_events'](
+            rows, flat_ms=1000, gap_factor=5, gap_min_ms=500)
+        self.assertFalse(any(e.get('abs_pulse_drop', 0) >= 10_000 for e in candidates))
+
+    def test_large_reverse_that_does_not_return_near_zero_remains_motion(self):
+        rows = series([(100, 1000)] * 20 + [(100, -5000)] + [(100, 100)] * 20)
+        self.assertEqual(ANALYZER['counter_continuity_boundaries'](rows), [])
+        self.assertTrue(any(e['drawdown_counts'] == 5000 for e in ANALYZER['motion_episodes'](rows, 500)))
+
     def test_variable_cadence_constant_rate_has_no_episode(self):
         self.assertEqual(episodes([(20, 20)] * 100 + [(100, 100)] * 30 + [(20, 20)] * 100), [])
 
@@ -79,7 +106,9 @@ class EpisodeTests(unittest.TestCase):
             self.assertEqual(result['episode_count'], 1)
             self.assertNotIn('candidate_event_count', result['facts'])
             self.assertNotIn('top_candidates', result)
-            self.assertEqual(json.loads(saved.read_text())['episodes'][0]['drawdown_counts'], 500)
+            saved_result = json.loads(saved.read_text())
+            self.assertEqual(saved_result['episodes'][0]['drawdown_counts'], 500)
+            self.assertNotIn('events', saved_result)
             self.assertLess(len(proc.stdout), 8000)
 
     def test_saved_episode_query_needs_no_source_logs(self):

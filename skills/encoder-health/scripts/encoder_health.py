@@ -134,12 +134,13 @@ def load_samples(logs: list[Path], start: datetime | None, end: datetime | None,
                 if not _window_ok(ts, start, end):
                     continue
                 value = int(m.group('raw'))
-                invalid = value < 0 or value >= invalid_min
+                filtered = int(m.group('filtered'))
+                invalid = value < 0 or value >= invalid_min or filtered < 0 or filtered >= invalid_min
                 if invalid:
                     invalid_raw += 1
                 raw.append({
                     'ts': ts, 'ts_text': m.group('ts'), 'count': value,
-                    'filtered': int(m.group('filtered')), 'invalid': invalid,
+                    'filtered': filtered, 'invalid': invalid,
                     'line_no': line_no, 'source': str(log), 'file_index': file_index,
                 })
                 raw_here += 1
@@ -149,10 +150,40 @@ def load_samples(logs: list[Path], start: datetime | None, end: datetime | None,
     return main, raw, invalid_raw, per_file
 
 
+def is_near_zero_counter_boundary(a: dict[str, Any], b: dict[str, Any], *, count_key: str = 'count') -> bool:
+    """Recognize a large accumulated count returning close to zero in one sample.
+
+    This is a continuity boundary, not proof of why the counter restarted and
+    not a hardware-health judgement. Keep the rule deliberately structural so
+    ordinary reverse movement remains available to motion analysis.
+    """
+    before, after = a[count_key], b[count_key]
+    return before >= 10_000 and 0 <= after <= 1_000 and before - after >= 10_000
+
+
+def counter_continuity_boundaries(samples: list[dict[str, Any]], *, count_key: str = 'count') -> list[dict[str, Any]]:
+    boundaries = []
+    for a, b in zip(samples, samples[1:]):
+        if a.get('invalid') or b.get('invalid') or not is_near_zero_counter_boundary(a, b, count_key=count_key):
+            continue
+        dt_ms = (b['ts'] - a['ts']).total_seconds() * 1000.0
+        if dt_ms <= 0:
+            continue
+        boundaries.append({
+            'type': 'counter_near_zero_boundary', 'at': b['ts_text'],
+            'count_before': a[count_key], 'count_after': b[count_key],
+            'pulse_delta': b[count_key] - a[count_key], 'dt_ms': round(dt_ms, 3),
+            'source_from': a['source'], 'source_to': b['source'],
+            'line_from': a['line_no'], 'line_to': b['line_no'],
+            'interpretation': 'counter continuity boundary; reset, wrap or reinitialization cause is not determined',
+        })
+    return boundaries
+
+
 def build_pairs(samples: list[dict[str, Any]], *, count_key: str = 'count') -> list[dict[str, Any]]:
     pairs = []
     for seq, (a, b) in enumerate(zip(samples, samples[1:])):
-        if a.get('invalid') or b.get('invalid'):
+        if a.get('invalid') or b.get('invalid') or is_near_zero_counter_boundary(a, b, count_key=count_key):
             continue
         dt_ms = (b['ts'] - a['ts']).total_seconds() * 1000.0
         if dt_ms <= 0:
@@ -642,7 +673,9 @@ def main() -> int:
                 ap.error('episode not found; use an ID returned by the motion report')
             print(json.dumps(episode_view(episode, 64), ensure_ascii=False, separators=(',', ':')))
             return 0
-        events = saved['events']
+        events = saved.get('events')
+        if not isinstance(events, list):
+            ap.error('motion report files require --episode with a returned process ID')
         if args.start:
             events = [e for e in events if parse_time(e.get('end') or e.get('at') or e['start']) >= args.start]
         if args.end:
@@ -724,6 +757,8 @@ def main() -> int:
         'application_samples': len(main_samples),
         'raw_filtered_samples': len(raw_samples),
         'invalid_samples': invalid_raw,
+        'primary_invalid_samples': sum(bool(row.get('invalid')) for row in primary_samples),
+        'raw_filtered_invalid_samples': invalid_raw,
         'first_ts': valid_primary_samples[0]['ts_text'] if valid_primary_samples else None,
         'last_ts': valid_primary_samples[-1]['ts_text'] if valid_primary_samples else None,
         'candidate_event_count': sum(row['type'] != 'flat_count_candidate' for row in candidates),
@@ -733,6 +768,9 @@ def main() -> int:
         'raw_filtered_abs_diff_median': round(median([float(v) for v in raw_filtered_abs]), 3) if raw_filtered_abs else None,
         'raw_filtered_abs_diff_max': max(raw_filtered_abs) if raw_filtered_abs else None,
     })
+
+    counter_boundaries = counter_continuity_boundaries(primary_samples)
+    facts['counter_boundary_count'] = len(counter_boundaries)
 
     top_candidates = select_events(candidates, args.top_events)
     result = {
@@ -801,8 +839,11 @@ def main() -> int:
         result = {
             'scopex_role': 'business_facts', 'source': 'encoder-health', 'schema': 5,
             'facts': {k: facts[k] for k in ('primary_stream', 'samples_in_window', 'first_ts', 'last_ts',
-                'median_sample_dt_ms', 'sampling_gap_count', 'invalid_samples') if k in facts},
+                'median_sample_dt_ms', 'sampling_gap_count', 'primary_invalid_samples',
+                'raw_filtered_invalid_samples', 'counter_boundary_count') if k in facts},
             'episode_count': len(episodes),
+            'counter_boundaries': counter_boundaries[:8],
+            'counter_boundaries_omitted': max(0, len(counter_boundaries) - 8),
             'episodes': [episode_view(e, 16) for e in ordered[:3]],
             'episodes_omitted': max(0, len(episodes) - 3),
             'limitations': [
@@ -814,7 +855,9 @@ def main() -> int:
         }
     if args.events_out:
         args.events_out.parent.mkdir(parents=True, exist_ok=True)
-        args.events_out.write_text(json.dumps({'schema': 4, 'events': candidates, 'episodes': episodes}, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
+        saved = ({'schema': 5, 'episodes': episodes, 'counter_boundaries': counter_boundaries}
+                 if args.motion_report else {'schema': 4, 'events': candidates})
+        args.events_out.write_text(json.dumps(saved, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
         result['events_out'] = str(args.events_out)
     if args.out:
         args.out.parent.mkdir(parents=True, exist_ok=True)
