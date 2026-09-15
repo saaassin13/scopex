@@ -130,8 +130,8 @@ set -a
 set +a
 export SCOPEX_VPN_IP="$(ip -4 -o addr show dev "$SCOPEX_VPN_INTERFACE" scope global | awk 'NR==1 {split($4,a,"/"); print a[1]}')"
 export SCOPEX_UID="$(id -u)" SCOPEX_GID="$(id -g)" SCOPEX_DOCKER_GID="$(stat -c %g /var/run/docker.sock)"
-docker compose --env-file /opt/ScalingRobotics/scopex/config/edge.env -f deploy/edge/compose.yaml ps
-docker compose --env-file /opt/ScalingRobotics/scopex/config/edge.env -f deploy/edge/compose.yaml logs --tail 100 scopex vllm
+docker compose --env-file /opt/ScalingRobotics/scopex/config/edge.env --env-file /opt/ScalingRobotics/scopex/config/edge.runtime.env -f deploy/edge/compose.yaml ps
+docker compose --env-file /opt/ScalingRobotics/scopex/config/edge.env --env-file /opt/ScalingRobotics/scopex/config/edge.runtime.env -f deploy/edge/compose.yaml logs --tail 100 scopex vllm
 ```
 
 ## 6. 后续更新：Python、前端和 Skill

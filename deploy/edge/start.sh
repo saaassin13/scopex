@@ -4,6 +4,7 @@ umask 077
 
 ROOT="${SCOPEX_ROOT:-/opt/ScalingRobotics/scopex}"
 CONFIG="$ROOT/config/edge.env"
+RUNTIME_CONFIG="$ROOT/config/edge.runtime.env"
 COMPOSE="$ROOT/app/deploy/edge/compose.yaml"
 
 if [ ! -f "$CONFIG" ]; then
@@ -30,6 +31,9 @@ SCOPEX_UID="$(id -u)"
 SCOPEX_GID="$(id -g)"
 SCOPEX_DOCKER_GID="$(stat -c %g /var/run/docker.sock)"
 export SCOPEX_UID SCOPEX_GID SCOPEX_DOCKER_GID
+printf 'SCOPEX_VPN_IP=%s\nSCOPEX_UID=%s\nSCOPEX_GID=%s\nSCOPEX_DOCKER_GID=%s\n' \
+  "$SCOPEX_VPN_IP" "$SCOPEX_UID" "$SCOPEX_GID" "$SCOPEX_DOCKER_GID" > "$RUNTIME_CONFIG"
+chmod 600 "$RUNTIME_CONFIG"
 
 for directory in "$SCOPEX_APP_DIR" "$SCOPEX_MODEL_DIR" "$COWDISINFECT_LOG_DIR" "$LEFT_CAMERA_DIR"; do
   [ -d "$directory" ] || { echo "missing directory: $directory" >&2; exit 1; }
@@ -45,7 +49,7 @@ docker compose --env-file "$CONFIG" -f "$COMPOSE" config --quiet
 docker compose --env-file "$CONFIG" -f "$COMPOSE" up -d
 
 for _ in $(seq 1 90); do
-  curl -fsS --max-time 2 "http://$SCOPEX_VPN_IP:8787/health" >/dev/null && {
+  curl -fsS --max-time 2 "http://$SCOPEX_VPN_IP:8787/health" >/dev/null 2>&1 && {
     echo "ScopeX: http://$SCOPEX_VPN_IP:8787"
     exit 0
   }
