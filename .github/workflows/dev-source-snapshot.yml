@@ -1,0 +1,20 @@
+name: development-source-snapshot
+on:
+  pull_request:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  source:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Archive tracked source only
+        run: git archive --format=zip HEAD -o /tmp/scopex-source.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: development-source
+          path: /tmp/scopex-source.zip
+          retention-days: 1
