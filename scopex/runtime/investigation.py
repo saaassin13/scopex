@@ -428,6 +428,9 @@ class InvestigationCoordinator:
                 "normalizations": list(result.normalizations),
                 "image_evidence_refs": list(result.image_evidence_refs),
                 "finalizer_retry_count": result.retry_count,
+                # result.json is already included in review exports. Diagnostics
+                # stay separate from validated Claims and the human report.
+                "finalizer_attempts": list(result.attempts),
                 "investigation_reasons": list(self._finalization_reasons),
                 "task_state": published_state.value,
             },
