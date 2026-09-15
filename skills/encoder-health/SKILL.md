@@ -65,10 +65,17 @@ python3 {baseDir}/scripts/encoder_health.py --inspect-events /task-scratch/encod
    amplitude. Without a normal reference or motion command, describe the observed
    process and leave its acceptability uncertain. Do not automatically dismiss
    every stop-adjacent reversal either.
-5. **Resolve meaningful candidates.** Use `log-context` on explicit source/time
-   anchors when needed to distinguish a normal stop/reset from unexplained
-   behavior. Compare raw/filtered near the same event where useful. Whole-hour
-   raw/filtered negative totals do not prove that a specific event propagated.
+5. **Resolve meaningful candidates.** Reuse the motion context already returned;
+   querying the same saved event again does not add raw samples. If the motion
+   shape remains unclear, inspect one event first with `log-context`, using its
+   source file and exact timestamp, `--keyword EncoderVal --before 0 --after 0
+   --max-lines 20 --max-chars 6000` and a narrow `--center`/`--window-s` window.
+   File paths are positional, not `--files`. A broad unfiltered window can fill
+   its line budget before reaching the event. Check returned timestamps and
+   truncation before interpreting it; then narrow or inspect the missing part.
+   Query reset/read-error terms separately only when that distinction matters.
+   Compare raw/filtered near the same event where useful. Whole-hour raw/filtered
+   negative totals do not prove that a specific event propagated.
 
 An isolated drop and catch-up is a data-glitch/reversal candidate; smooth
 multi-sample reverse motion is a different pattern. `recovered` checks 80%

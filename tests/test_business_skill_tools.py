@@ -21,6 +21,38 @@ def run_script(path: Path, *args: str):
 
 
 class BusinessSkillToolTests(unittest.TestCase):
+    def test_log_context_character_budget_keeps_complete_raw_rows_and_json(self):
+        script = ROOT / 'skills/log-context/scripts/log_context.py'
+        with tempfile.TemporaryDirectory() as td:
+            log = Path(td) / 'app.log'
+            rows = [f'2026-09-14 07:00:01:{i:03d} EncoderVal ' + '测量值' * 100 for i in range(120)]
+            log.write_text('\n'.join(rows), encoding='utf-8')
+            proc = run_script(script, str(log), '--keyword', 'EncoderVal', '--max-lines', '120')
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertLessEqual(len(proc.stdout), 6000)
+            data = json.loads(proc.stdout)
+            self.assertTrue(data['output_limited'])
+            self.assertTrue(data['truncated'])
+            returned = data['sources'][0]['lines']
+            self.assertGreater(len(returned), 0)
+            self.assertEqual(data['selected_lines'], len(returned))
+            for item in returned:
+                self.assertEqual(item['raw'], rows[item['line_no'] - 1])
+
+    def test_log_context_filtered_event_survives_dense_unrelated_prefix(self):
+        script = ROOT / 'skills/log-context/scripts/log_context.py'
+        with tempfile.TemporaryDirectory() as td:
+            log = Path(td) / 'app.log'
+            noise = ['2026-09-14 07:00:00:000 camera trace'] * 200
+            target = '2026-09-14 07:00:01:000 EncoderVal [17]'
+            log.write_text('\n'.join(noise + [target]), encoding='utf-8')
+            proc = run_script(script, str(log), '--center', '2026-09-14 07:00:01:000',
+                              '--window-s', '1', '--keyword', 'EncoderVal', '--before', '0', '--after', '0')
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            data = json.loads(proc.stdout)
+            self.assertEqual(data['sources'][0]['lines'][0]['raw'], target)
+            self.assertFalse(data['truncated'])
+
     def test_nipple_stats_uses_final_2d_frame_caps_at_four_and_keeps_details_out_of_stdout(self):
         script = ROOT / 'skills/nipple-recognition-analysis/scripts/nipple_stats.py'
         with tempfile.TemporaryDirectory() as td:

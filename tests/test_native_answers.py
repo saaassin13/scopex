@@ -89,6 +89,22 @@ class NativeAnswerTests(unittest.TestCase):
             service, tid = self.run_task(Path(td), meta={"aborted": True})
             self.assertFalse(service.get_result(tid)["result"]["valid"])
 
+    def test_context_overflow_notice_is_not_an_assistant_draft(self):
+        with tempfile.TemporaryDirectory() as td:
+            service, tid = self.run_task(Path(td), text="Context overflow: prompt too large for the model.",
+                                        meta={"error": {"kind": "incomplete_turn"},
+                                              "livenessState": "abandoned", "replayInvalid": True})
+            result = service.get_result(tid)["result"]
+            self.assertEqual(result["report_text"], "")
+            self.assertEqual(result["report_meta"]["status"], "unavailable")
+            self.assertEqual(service.get_task(tid)["last_reason"], "native_answer_unavailable")
+
+    def test_error_preserves_explicit_assistant_draft(self):
+        outcome = parse_cli_outcome(json.dumps({"payloads": [{"text": "framework error"}],
+            "meta": {"error": {"kind": "incomplete_turn"}, "finalAssistantVisibleText": "已检查局部数据"}}))
+        self.assertEqual(outcome.answer, "已检查局部数据")
+        self.assertFalse(outcome.completed)
+
     def test_native_length_stop_keeps_partial_answer_not_the_truncation_notice(self):
         with tempfile.TemporaryDirectory() as td:
             service, tid = self.run_task(Path(td), text="Output truncated.",

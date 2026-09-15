@@ -1,6 +1,23 @@
 # 原生回答与编码器、图片 Skill 修正
 
-状态：2026-09-15，`feature/agent-native-results` 开发分支；尚未提交、合入或部署。用户已批准正常任务直接交付 OpenClaw 答案的方向。
+状态：2026-09-15，`feature/agent-native-results` 开发分支。首批实现已在 `ae846f6` 提交，用户提供的现场任务确认运行该版本；下述编码器上下文修复仍未提交或部署。用户已批准正常任务直接交付 OpenClaw 答案的方向。
+
+## 现场追加：task-b9ef01e82ab2 上下文溢出
+
+依据为用户提供的复盘 ZIP，以及 workstation 对该任务 `agent.stdout.txt`、`agent.stderr.txt` 和 wire metadata 的只读核对。
+
+- 该任务运行 390 秒，没有产生业务结论。前 7 次模型调用成功，第 8 次 HTTP 400：输入至少 30721 tokens，加请求输出 2048，超过 32768 上限。这里的“至少”是服务端错误原文，不能解释成只超了一个 token。
+- Agent 先分析一次，再查询两个保存的事件窗口；随后调用日志工具时误用不存在的 `--files` 参数，两个调用均失败，多花一轮纠错。
+- 修正参数后，两次无关键词的 120 行日志输出分别为 15634、15998 字符，且已截断。高频混合日志从窗口起点填满额度，不能保证覆盖目标事件。下一次模型请求即溢出，未观察到成功的原生恢复。之前引用原生文档的恢复能力不能当作该部署已经验证的兜底。
+- 框架将英文 overflow 通知放入普通 payload，ScopeX 因其非空误称为“草稿”；任务 FAILED 判定本身正确。
+
+本次修正：日志工具默认 40 行、最多 6000 字符（可显式设 1024–12000），紧凑 JSON，超限删除完整行并标记 `output_limited/truncated`，保留原始行内容与行号；两个 Skill 明确位置参数、精确时间与关键词、逐次复核和截断处理。error envelope 仅在明确提供 `finalAssistantVisibleText` 时保留草稿，普通框架提示不再当回答。
+
+验证：`PYTHONPATH=tests python3 -m unittest test_business_skill_tools test_native_answers test_openclaw_runner_outcome test_encoder_motion_context -q`，31 项通过。只读执行新日志脚本（标准输入，不落远端文件），对 13:28:43.258、13:26:08.741 各 ±0.15 秒、关键词 EncoderVal、20 行，分别输出 4111/4035 字符，均覆盖目标时间且如实标记截断。该片段验证不等于完整运动过程判定。
+
+Codex skill-creator 的通用 frontmatter 校验器拒绝项目原有 OpenClaw `user-invocable` 字段；保留该原生字段，不将这项校验记为通过。脚本回归通过，新增命令参数与实际 argparse 对齐。
+
+未验证：部署后完整 Agent 重跑、业务异常判别准确率、其他长任务的原生 overflow 恢复。字符上限减少本次输入膨胀，不保证任意多轮任务永不溢出。本轮未改模型/上下文/压缩参数，未提交、推送或部署；无持久测试资源，用户 ZIP 与截图原位保留。
 
 本文件覆盖早期文档中“所有业务任务必经 TextReportComposer”与默认主动 compaction 的描述；权限、隔离、时间锚点、离线调度和并发边界不变。现场原因见 [实机复盘](reviews/2026-09-15-workstation-findings-and-proposal.md)。
 

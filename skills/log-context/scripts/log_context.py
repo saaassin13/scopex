@@ -51,7 +51,8 @@ def main() -> int:
     ap.add_argument('--regex', action='store_true')
     ap.add_argument('--before', type=int, default=3)
     ap.add_argument('--after', type=int, default=3)
-    ap.add_argument('--max-lines', type=int, default=200)
+    ap.add_argument('--max-lines', type=int, default=40)
+    ap.add_argument('--max-chars', type=int, default=6000)
     args = ap.parse_args()
 
     if args.center and (args.start or args.end):
@@ -60,6 +61,8 @@ def main() -> int:
         ap.error('at least one time boundary or --keyword is required')
     if args.max_lines <= 0:
         ap.error('--max-lines must be positive')
+    if not 1024 <= args.max_chars <= 12000:
+        ap.error('--max-chars must be between 1024 and 12000')
 
     patterns: list[re.Pattern[str]] = []
     if args.regex:
@@ -156,13 +159,34 @@ def main() -> int:
             'before': args.before,
             'after': args.after,
             'max_lines': args.max_lines,
+            'max_chars': args.max_chars,
         },
         'anchors': total_anchors,
         'selected_lines': total_selected,
         'truncated': global_truncated,
         'sources': output,
     }
-    print(json.dumps(result, ensure_ascii=False, indent=2, allow_nan=False))
+    # Bound the serialized payload, not just its line count. Keep raw rows whole
+    # and JSON parseable; the caller must narrow a truncated query.
+    def encode() -> str:
+        return json.dumps(result, ensure_ascii=False, separators=(',', ':'), allow_nan=False)
+
+    result['output_limited'] = False
+    while len(encode()) + 1 > args.max_chars:
+        populated = [source for source in output if source.get('lines')]
+        if not populated:
+            ap.error('query metadata exceeds --max-chars; use fewer files or shorter keywords')
+        source = populated[-1]
+        source['lines'].pop()
+        source['truncated'] = True
+        result['selected_lines'] -= 1
+        result['truncated'] = True
+        result['output_limited'] = True
+    # Anchor counts describe returned evidence, not unseen matches in the file.
+    for source in output:
+        source['anchors'] = sum(item['anchor'] for item in source['lines'])
+    result['anchors'] = sum(source['anchors'] for source in output)
+    print(encode())
     return 0 if total_anchors else 1
 
 

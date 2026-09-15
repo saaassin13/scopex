@@ -125,10 +125,16 @@ def parse_cli_outcome(text: str) -> CliOutcome:
         "stopReason": stop_reason,
     }
     partial_text = meta.get("finalAssistantVisibleText") if stop_reason == "length" else None
+    answer = partial_text if isinstance(partial_text, str) and partial_text.strip() else visible[-1] if visible else None
+    if meta.get("error") is not None:
+        # Error envelopes may put a framework notice in ordinary text payloads.
+        # Only an explicitly identified assistant draft is safe to publish.
+        draft = meta.get("finalAssistantVisibleText")
+        answer = draft if isinstance(draft, str) and draft.strip() else None
     return CliOutcome(
         blockers=tuple(blockers),
         warnings=tuple(warnings),
-        answer=partial_text if isinstance(partial_text, str) and partial_text.strip() else visible[-1] if visible else None,
+        answer=answer,
         visible_payloads=len(visible),
         flags=flags,
     )
