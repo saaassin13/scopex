@@ -111,6 +111,7 @@ services:
       - "16"
       - --queue-timeout
       - "600"
+      - --enable-compaction
       - --enable-view-image
     read_only: true
     tmpfs:

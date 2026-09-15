@@ -56,7 +56,7 @@ exist; this shortlist is not exhaustive evidence that the rest is normal.
 
 ## Resolve a specific uncertainty
 
-If the initial trace is insufficient, request one process ID once. It returns a
+If the initial trace is insufficient, request the relevant process ID. It returns a
 more detailed full-span trace from saved data without scanning logs again:
 
 ```bash
@@ -66,10 +66,12 @@ python3 {baseDir}/scripts/encoder_health.py \
 
 Use an ID actually returned. Do not re-query the old candidate list or repeatedly
 shrink raw-log windows. Do not use inline Python, grep or sed to dump the saved
-event file or raw encoder trace. The motion report already identifies counter
-boundaries; a hardware cause is outside this data-only check. After the initial
-report and at most one process-ID detail, answer. If that evidence cannot resolve
-an uncertainty, state it and finish rather than repeating a query.
+event file or raw encoder trace. The motion report includes bounded follow-up observations for counter
+boundaries; distinguish a return toward the previous level from continued low
+counts, and treat insufficient follow-up as unresolved; a hardware cause is outside this data-only check. Query additional IDs only for distinct unresolved questions that could change the
+conclusion. Do not repeat an unchanged query. Once available evidence resolves the
+question, or further queries provide no new information, answer with any remaining
+uncertainty.
 
 ## Answer
 

@@ -161,9 +161,36 @@ def is_near_zero_counter_boundary(a: dict[str, Any], b: dict[str, Any], *, count
     return before >= 10_000 and 0 <= after <= 1_000 and before - after >= 10_000
 
 
+def counter_followup(samples, index, *, count_key='count'):
+    """Describe bounded observations, without assigning a reset or hardware cause."""
+    a, b = samples[index:index + 2]
+    observed = []
+    previous = b
+    for row in samples[index + 2:]:
+        dt = (row['ts'] - previous['ts']).total_seconds() * 1000
+        elapsed = (row['ts'] - b['ts']).total_seconds() * 1000
+        if row.get('invalid') or dt <= 0 or dt > 500 or elapsed > 2000:
+            break
+        observed.append(row)
+        previous = row
+    drop = a[count_key] - b[count_key]
+    returned = next((r for r in observed if r[count_key] >= a[count_key] - 0.2 * drop), None)
+    return {
+        'pattern': ('return_toward_previous_level' if returned else
+                    'stays_near_zero_in_observed_context' if len(observed) >= 2 and
+                    all(0 <= r[count_key] <= 1000 for r in observed) else 'unresolved'),
+        'following_samples': len(observed),
+        'observed_ms': (observed[-1]['ts'] - b['ts']).total_seconds() * 1000 if observed else 0,
+        'return_after_ms': (returned['ts'] - b['ts']).total_seconds() * 1000 if returned else None,
+        'next_count': observed[0][count_key] if observed else None,
+        'last_count': observed[-1][count_key] if observed else None,
+        'limits': 'At most 2000ms, stops at invalid samples or gaps above 500ms; 80% return is descriptive, not proof of normality.',
+    }
+
+
 def counter_continuity_boundaries(samples: list[dict[str, Any]], *, count_key: str = 'count') -> list[dict[str, Any]]:
     boundaries = []
-    for a, b in zip(samples, samples[1:]):
+    for index, (a, b) in enumerate(zip(samples, samples[1:])):
         if a.get('invalid') or b.get('invalid') or not is_near_zero_counter_boundary(a, b, count_key=count_key):
             continue
         dt_ms = (b['ts'] - a['ts']).total_seconds() * 1000.0
@@ -171,6 +198,7 @@ def counter_continuity_boundaries(samples: list[dict[str, Any]], *, count_key: s
             continue
         boundaries.append({
             'type': 'counter_near_zero_boundary', 'at': b['ts_text'],
+            'followup': counter_followup(samples, index, count_key=count_key),
             'count_before': a[count_key], 'count_after': b[count_key],
             'pulse_delta': b[count_key] - a[count_key], 'dt_ms': round(dt_ms, 3),
             'source_from': a['source'], 'source_to': b['source'],
@@ -183,8 +211,15 @@ def counter_continuity_boundaries(samples: list[dict[str, Any]], *, count_key: s
 def build_pairs(samples: list[dict[str, Any]], *, count_key: str = 'count') -> list[dict[str, Any]]:
     pairs = []
     for seq, (a, b) in enumerate(zip(samples, samples[1:])):
-        if a.get('invalid') or b.get('invalid') or is_near_zero_counter_boundary(a, b, count_key=count_key):
+        if a.get('invalid') or b.get('invalid'):
             continue
+        if is_near_zero_counter_boundary(a, b, count_key=count_key):
+            followup = counter_followup(samples, seq, count_key=count_key)
+            # Keep an immediate return connected so off-trend detection can
+            # inspect both sides. Other boundaries retain their own evidence.
+            if not (followup['pattern'] == 'return_toward_previous_level' and
+                    followup['next_count'] >= a[count_key] - 0.2 * (a[count_key] - b[count_key])):
+                continue
         dt_ms = (b['ts'] - a['ts']).total_seconds() * 1000.0
         if dt_ms <= 0:
             continue
@@ -251,13 +286,15 @@ def motion_context(pairs, index, direction, gap_threshold, window_ms=2000.0):
 def detect_count_events(samples: list[dict[str, Any]], *, flat_ms: float, gap_factor: float, gap_min_ms: float,
                         recovery_ms: float = 1000.0):
     pairs = build_pairs(samples)
-    intervals = [p['dt_ms'] for p in pairs]
+    time_pairs = [{'a': a, 'b': b, 'dt_ms': (b['ts'] - a['ts']).total_seconds() * 1000}
+                  for a, b in zip(samples, samples[1:]) if b['ts'] > a['ts']]
+    intervals = [p['dt_ms'] for p in time_pairs]
     median_dt = median(intervals)
     gap_threshold = max(gap_min_ms, (median_dt or gap_min_ms) * gap_factor)
 
     events: list[dict[str, Any]] = []
     gap_count = 0
-    for p in pairs:
+    for p in time_pairs:
         if p['dt_ms'] > gap_threshold:
             gap_count += 1
             events.append({

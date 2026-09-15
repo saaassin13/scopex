@@ -14,6 +14,28 @@ def episodes(increments):
 
 
 class EpisodeTests(unittest.TestCase):
+    def test_gap_at_counter_boundary_remains_a_sampling_gap(self):
+        rows = series([(100, 1000)] * 20 + [(10000, -20979)])
+        facts, events, _, _ = ANALYZER['detect_count_events'](
+            rows, flat_ms=1000, gap_factor=5, gap_min_ms=500)
+        self.assertEqual(facts['sampling_gap_count'], 1)
+        self.assertTrue(any(e['type'] == 'sampling_gap' and e['dt_ms'] == 10000 for e in events))
+
+    def test_near_zero_single_point_preserves_off_trend_detection(self):
+        rows = series([(100, 100)] * 200 + [(100, -20980), (100, 21180)] + [(100, 100)] * 20)
+        boundary = ANALYZER['counter_continuity_boundaries'](rows)[0]
+        self.assertEqual(boundary['followup']['pattern'], 'return_toward_previous_level')
+        self.assertTrue(any(e['off_trend_return_counts'] > 20000
+                            for e in ANALYZER['motion_episodes'](rows, 500)))
+
+    def test_counter_followup_does_not_cross_gap_or_invalid_sample(self):
+        for invalid, dt in ((True, 100), (False, 10000)):
+            rows = series([(100, 1000)] * 20 + [(100, -20979), (dt, 21000)])
+            rows[-1]['invalid'] = invalid
+            boundary = ANALYZER['counter_continuity_boundaries'](rows)[0]
+            self.assertEqual(boundary['followup']['pattern'], 'unresolved')
+            self.assertEqual(boundary['followup']['following_samples'], 0)
+
     def test_near_zero_counter_restart_is_a_boundary_not_reverse_motion(self):
         rows = series([(100, 1000)] * 20)
         previous = rows[-1]

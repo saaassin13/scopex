@@ -58,6 +58,7 @@ class EdgeDeploymentTests(unittest.TestCase):
     def test_runtime_uses_the_device_docker_client(self):
         compose = (ROOT / "deploy" / "edge" / "compose.yaml").read_text()
         self.assertIn("/usr/bin/docker:/usr/local/bin/docker:ro", compose)
+        self.assertIn("      - --enable-compaction", compose)
 
 if __name__ == "__main__":
     unittest.main()
