@@ -42,6 +42,16 @@ const evaluationOptions = [
   ['other', '其他'],
 ] as const
 
+const textReport = computed(() => {
+  const value = result.value?.result?.report_text
+  return typeof value === 'string' && value.trim() ? value : null
+})
+const textMeta = computed(() => {
+  const value = result.value?.result?.report_meta
+  return value && typeof value === 'object' ? value as Record<string, unknown> : null
+})
+const isTextResult = computed(() => result.value?.result?.version === 2)
+const isQueued = computed(() => task.value?.state === 'QUEUED')
 const isRunning = computed(() => task.value?.state === 'RUNNING')
 const isPaused = computed(() => task.value?.state === 'PAUSED')
 const isTerminal = computed(() => ['COMPLETED', 'FAILED', 'CANCELLED'].includes(task.value?.state ?? ''))
@@ -113,6 +123,12 @@ function friendlyReason(reason: string) {
   const labels: Record<string, string> = {
     investigation_turn_incomplete: 'Agent 调查过程未正常结束，因此没有形成可信的最终结果。',
     investigation_completed_without_evidence: '这次业务任务没有形成可审计事实，因此没有发布诊断结论。',
+    text_report_partial: '调查已形成依据，但报告不完整；下方正文只能作为未完成草稿。',
+    text_report_unavailable: '调查已形成依据，但文字报告未能生成；业务依据和执行记录已保留。',
+    interrupted_on_restart: '服务重启中断了本次执行，没有自动重跑。',
+    missed_on_restart: '排队任务在重启后已过期，没有补跑。',
+    queue_expired: '超过排队等待期限，任务没有开始执行。',
+    runtime_setup_failed: '任务运行环境准备失败，未完成调查。',
     fresh_structured_finalizer_failed: '调查已经形成事实依据，但最终结构化整理失败。',
     budget_reached_without_evidence: '任务达到运行预算前仍未形成可发布事实。',
     runtime_guard_reached_without_evidence: '运行时安全边界终止了调查，且没有形成可发布事实。',
@@ -121,8 +137,8 @@ function friendlyReason(reason: string) {
 }
 
 const resultProblem = computed(() => {
-  if (!isTerminal.value || report.value || answer.value || conversationAnswer.value || result.value?.rendered) return ''
-  const reason = lastTaskFailed.value?.data?.reason
+  if (!isTerminal.value || textReport.value || report.value || answer.value || conversationAnswer.value || result.value?.rendered) return ''
+  const reason = lastTaskFailed.value?.data?.reason || task.value?.last_reason
   return typeof reason === 'string' && reason ? friendlyReason(reason) : '任务已结束，但没有形成可展示结果。'
 })
 
@@ -179,8 +195,8 @@ function eventTitle(event: ProgressEvent): string {
   }
   if (event.type === 'TOOL_RESULT') return `${tool || '工具'} · 返回结果`
   if (event.type === 'EVIDENCE_ADDED') return '新增内部证据'
-  if (event.type === 'FINALIZATION_STARTED') return '正在校准事实与结论'
-  if (event.type === 'FINALIZATION_COMPLETED') return '可信结论已生成'
+  if (event.type === 'FINALIZATION_STARTED') return '正在整理结果报告'
+  if (event.type === 'FINALIZATION_COMPLETED') return '结果报告已生成'
   if (event.type === 'TASK_COMPLETED') return '任务完成'
   if (event.type === 'TASK_FAILED') return '任务失败'
   if (event.type === 'TASK_STARTED') return '任务开始'
@@ -200,7 +216,10 @@ function eventSummary(event: ProgressEvent): string {
   return ''
 }
 
+let refreshing = false
 async function refresh() {
+  if (refreshing) return
+  refreshing = true
   try {
     task.value = await api.getTask(taskId.value)
     const eventResponse = await api.getEvents(taskId.value, cursor.value)
@@ -218,6 +237,17 @@ async function refresh() {
         feedbackNote.value = evaluation.value.note
       }
     }
+  } catch (exc) {
+    error.value = exc instanceof Error ? exc.message : String(exc)
+  } finally {
+    refreshing = false
+  }
+}
+
+async function cancelQueued() {
+  try {
+    task.value = await api.cancelQueued(taskId.value)
+    await refresh()
   } catch (exc) {
     error.value = exc instanceof Error ? exc.message : String(exc)
   }
@@ -283,7 +313,9 @@ onBeforeUnmount(() => timer && window.clearInterval(timer))
           <span>触发：{{ task?.trigger_type === 'schedule' ? '定时' : '手动' }}</span>
           <span>开始：{{ fmt(task?.started_at) }}</span>
           <span>结束：{{ fmt(task?.finished_at) }}</span>
-          <span>耗时：{{ durationText(task?.duration_ms) }}</span>
+          <span>执行耗时：{{ durationText(task?.duration_ms) }}</span>
+          <span v-if="task?.queue_wait_ms != null">准入等待：{{ durationText(task.queue_wait_ms) }}</span>
+          <span v-if="task?.total_duration_ms != null">总耗时：{{ durationText(task.total_duration_ms) }}</span>
           <span v-if="task?.scheduled_for">计划：{{ fmt(task.scheduled_for) }}</span>
         </div>
       </div>
@@ -300,11 +332,18 @@ onBeforeUnmount(() => timer && window.clearInterval(timer))
               <div class="eyebrow">RESULT</div>
               <h2>{{ isConversation ? '回答' : '任务结果' }}</h2>
             </div>
-            <span v-if="report" class="trust-badge">Validated Report</span>
+            <span v-if="textReport" class="trust-badge">{{ textMeta?.status === 'complete' ? '文字报告' : '未完成草稿' }}</span>
+            <span v-else-if="report" class="trust-badge">历史结构化报告</span>
             <span v-else-if="answer" class="trust-badge">Fallback</span>
           </div>
 
-          <div v-if="conversationAnswer" class="conversation-answer">
+          <div v-if="textReport" class="text-report">
+            <p v-if="textMeta?.status !== 'complete'" class="error-banner">报告不完整，不作为完整交付；已有业务依据保留。</p>
+            <p v-if="Array.isArray(textMeta?.unresolved_citation_refs) && textMeta.unresolved_citation_refs.length" class="error-banner">部分正文引用无法对应来源，需要人工核实。</p>
+            <div class="report-prose">{{ textReport }}</div>
+            <p class="muted">来源可追溯不代表所有语义、数字和因果关系均已自动验证。</p>
+          </div>
+          <div v-else-if="conversationAnswer" class="conversation-answer">
             <p>{{ conversationAnswer }}</p>
           </div>
 
@@ -380,7 +419,7 @@ onBeforeUnmount(() => timer && window.clearInterval(timer))
               <pre class="result-text">{{ technicalProblem }}</pre>
             </details>
           </div>
-          <div v-else class="empty-state">执行结束后显示结果。</div>
+          <div v-else class="empty-state">{{ isQueued ? '已进入等待队列，尚未开始分析。' : '执行结束后显示结果。' }}</div>
         </section>
 
         <section v-if="isTerminal" class="panel feedback-panel">
@@ -442,11 +481,12 @@ onBeforeUnmount(() => timer && window.clearInterval(timer))
           <h2>任务控制</h2>
           <textarea v-model="instruction" rows="4" placeholder="追加方向，例如：只检查编码器原始值，不要继续检查图片。"></textarea>
           <div class="control-actions">
+            <button v-if="isQueued" class="danger-button" @click="cancelQueued">取消排队</button>
             <button v-if="isRunning" class="secondary-button" :disabled="actionBusy" @click="perform('steer')">Steer</button>
-            <button v-if="isRunning" class="danger-button" :disabled="actionBusy" @click="perform('stop')">Stop</button>
+            <button v-if="isRunning" class="danger-button" :disabled="actionBusy" @click="perform('stop')">暂停</button>
             <button v-if="isPaused" class="primary-button" :disabled="actionBusy" @click="perform('resume')">Resume</button>
           </div>
-          <p class="muted">Stop 在安全模型请求边界生效；已完成工具结果会保留。</p>
+          <p class="muted">暂停在安全模型请求边界生效；结果会保留。当前暂停任务仍保留执行名额。</p>
         </section>
 
         <section class="panel evidence-panel compact-evidence">
@@ -456,7 +496,14 @@ onBeforeUnmount(() => timer && window.clearInterval(timer))
               <span class="muted">{{ report ? report.facts.length : fallbackUserFacts.length }}</span>
             </summary>
 
-            <template v-if="report">
+            <template v-if="isTextResult">
+              <p class="muted">以下是本次实际取得的依据，不是模型逐句校验结论。</p>
+              <details v-for="item in fallbackUserFacts" :key="item.ref" class="evidence-card">
+                <summary>{{ item.ref }} · {{ item.source }}</summary>
+                <pre class="result-text">{{ item.raw }}</pre>
+              </details>
+            </template>
+            <template v-else-if="report">
               <div v-if="!report.facts.length" class="empty-state">当前报告没有可单独列出的观察事实。</div>
               <article v-for="item in report.facts" :key="`rf-${item.text}`" class="evidence-card report-fact-card">
                 <p>{{ item.text }}</p>

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { RouterLink, RouterView } from 'vue-router'
+import ActivityPanel from './components/ActivityPanel.vue'
 </script>
 
 <template>
@@ -16,13 +17,10 @@ import { RouterLink, RouterView } from 'vue-router'
         <RouterLink to="/">任务与对话</RouterLink>
         <RouterLink to="/schedules">定时任务</RouterLink>
       </nav>
-      <div class="topbar-meta">
-        <span class="status-dot"></span>
-        Local Runtime
-      </div>
+      <ActivityPanel />
     </header>
     <main class="page-shell">
-      <RouterView />
+      <RouterView :key="$route.fullPath" />
     </main>
   </div>
 </template>

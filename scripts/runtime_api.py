@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import fcntl
 import ipaddress
 import os
 from pathlib import Path
@@ -95,7 +96,11 @@ def main(argv=None) -> int:
     parser.add_argument("--timeout", type=int, default=600)
     parser.add_argument("--max-requests", type=int, default=16)
     parser.add_argument("--max-tokens", type=int, default=2048)
-    parser.add_argument("--finalizer-max-tokens", type=int, default=768)
+    parser.add_argument("--finalizer-max-tokens", type=int, default=768, help="legacy finalizer compatibility only")
+    parser.add_argument("--report-max-tokens", type=int, default=2048)
+    parser.add_argument("--max-active-tasks", type=int, default=2, help="independent task slots; not a GPU throughput guarantee")
+    parser.add_argument("--max-queued-tasks", type=int, default=16)
+    parser.add_argument("--queue-timeout", type=int, default=600)
     parser.add_argument("--finalizer-timeout", type=int, default=180)
     parser.add_argument("--skill", action="append", default=[])
     parser.add_argument("--no-default-skills", action="store_true")
@@ -108,7 +113,19 @@ def main(argv=None) -> int:
     if not 1 <= args.port <= 65535:
         raise ValueError("port must be between 1 and 65535")
 
+    if args.max_active_tasks > 1 and args.exec_host != "sandbox":
+        raise ValueError("parallel product runs require isolated sandbox execution")
     os.umask(0o077)
+    data_root = args.data_root.expanduser().resolve()
+    data_root.mkdir(parents=True, exist_ok=True)
+    # The in-process admission queue has exactly one owner. Do not run multiple
+    # uvicorn workers against this state root or reconcile another live process.
+    runtime_lock = (data_root / ".runtime.lock").open("a")
+    try:
+        fcntl.flock(runtime_lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError as exc:
+        runtime_lock.close()
+        raise ValueError("another ScopeX Runtime owns this data-root") from exc
     api_key = os.environ.get(args.api_key_env, "")
     if "\n" in api_key or "\r" in api_key:
         raise ValueError("invalid API key environment value")
@@ -141,6 +158,7 @@ def main(argv=None) -> int:
         max_requests=args.max_requests,
         max_tokens=args.max_tokens,
         finalizer_max_tokens=args.finalizer_max_tokens,
+        report_max_tokens=args.report_max_tokens,
         finalizer_timeout_s=args.finalizer_timeout,
         skills=skills,
         data_binds=data_binds,
@@ -156,6 +174,10 @@ def main(argv=None) -> int:
         audit_root=data_root / "tasks",
         coordinator_factory=factory.coordinator,
         finalizer_factory=factory.finalizer,
+        max_active_tasks=args.max_active_tasks,
+        max_queued_tasks=args.max_queued_tasks,
+        queue_timeout_s=args.queue_timeout,
+        reconcile_interrupted=True,
     )
     schedules = ScheduleService(data_root / "scheduler", service)
     static_dir = args.web_dist.expanduser().resolve()
@@ -180,6 +202,8 @@ def main(argv=None) -> int:
         f"finalizer_timeout={config.finalizer_timeout_s}s",
         flush=True,
     )
+    print(f"report: text-v2; active task slots={args.max_active_tasks}; queue={args.max_queued_tasks}; queue timeout={args.queue_timeout}s", flush=True)
+    print("Model requests may overlap; vLLM batching capacity must be verified separately.", flush=True)
     print(f"view_image: {'enabled' if config.enable_view_image else 'disabled'}", flush=True)
     print(f"progress_card: {'enabled' if config.enable_progress_card else 'disabled'}", flush=True)
     print(f"compaction: {'enabled' if config.enable_compaction else 'disabled'}", flush=True)
@@ -192,7 +216,10 @@ def main(argv=None) -> int:
         print("data binds: none (catalog host paths are absent or auto-mount disabled)", flush=True)
     print(f"web: {static_dir if static_dir.is_dir() else 'not built; API-only mode'}", flush=True)
 
-    uvicorn.run(app, host=args.host, port=args.port, log_level="info", access_log=False)
+    try:
+        uvicorn.run(app, host=args.host, port=args.port, log_level="info", access_log=False)
+    finally:
+        runtime_lock.close()
     return 0
 
 

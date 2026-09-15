@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from collections import deque
 from datetime import datetime, timezone
 import json
 from pathlib import Path
@@ -14,6 +15,7 @@ import zipfile
 
 from scopex.agent.runtime import OpenClawTurnResult
 from scopex.agent.trace import load_audit_trace
+from scopex.evidence.catalog import EvidenceCatalog
 from scopex.events.progress import EventSink, InMemoryEventSink
 from scopex.finalizer.structured import StructuredFinalizer
 from scopex.runtime.investigation import InvestigationCoordinator
@@ -63,11 +65,13 @@ _BUSINESS_COMMAND_MARKERS = (
 class TaskHandle:
     task: Task
     session: Session
-    coordinator: InvestigationCoordinator
+    coordinator: InvestigationCoordinator | None
     audit: RuntimeAudit
     memory_events: InMemoryEventSink
     thread: threading.Thread | None = None
     turn_index: int = 0
+    queued_at: float | None = None
+    cleaned: bool = False
     lock: threading.RLock = field(default_factory=threading.RLock)
 
     def next_turn_name(self) -> str:
@@ -99,7 +103,17 @@ class TaskService:
         finalizer_factory: FinalizerFactory,
         work_root: Path | None = None,
         export_root: Path | None = None,
+        max_active_tasks: int = 1,
+        max_queued_tasks: int = 0,
+        queue_timeout_s: float = 600.0,
+        reconcile_interrupted: bool = False,
     ) -> None:
+        if isinstance(max_active_tasks, bool) or not isinstance(max_active_tasks, int) or not 1 <= max_active_tasks <= 4:
+            raise ValueError("max_active_tasks must be 1..4")
+        if isinstance(max_queued_tasks, bool) or not isinstance(max_queued_tasks, int) or not 0 <= max_queued_tasks <= 64:
+            raise ValueError("max_queued_tasks must be 0..64")
+        if not 1 <= queue_timeout_s <= 3600:
+            raise ValueError("queue_timeout_s must be 1..3600")
         self.store = AuditStore(Path(audit_root))
         self.work_root = Path(work_root) if work_root is not None else self.store.root.parent / "work"
         self.export_root = Path(export_root) if export_root is not None else self.store.root.parent / "exports"
@@ -107,13 +121,26 @@ class TaskService:
         self.finalizer_factory = finalizer_factory
         self._lock = threading.RLock()
         self._handles: dict[str, TaskHandle] = {}
-        self._active_task_id: str | None = None
+        self.max_active_tasks = max_active_tasks
+        self.max_queued_tasks = max_queued_tasks
+        self.queue_timeout_s = queue_timeout_s
+        self._active_ids: set[str] = set()
+        self._queue: deque[str] = deque()
+        self._shutdown_event = threading.Event()
+        self._build_commit = self._git_head()
+        if reconcile_interrupted:
+            self._reconcile_interrupted()
+        self._queue_thread: threading.Thread | None = None
+        if max_queued_tasks:
+            self._queue_thread = threading.Thread(target=self._queue_watch, name="scopex-admission", daemon=True)
+            self._queue_thread.start()
 
     @property
     def active_task_id(self) -> str | None:
+        # Compatibility only. Product clients must use /activity for the full set.
         with self._lock:
-            self._release_terminal_active_locked()
-            return self._active_task_id
+            return next((key for key in sorted(self._active_ids)
+                         if not self._handles[key].task.terminal), None)
 
     def create_task(
         self,
@@ -135,18 +162,27 @@ class TaskService:
         if trigger_type == "schedule" and mode != "task":
             raise ValueError("scheduled runs must use audited task mode")
         with self._lock:
-            self._release_terminal_active_locked()
-            if self._active_task_id is not None:
-                active = self._handles.get(self._active_task_id)
-                state = active.task.state.value if active is not None else "UNKNOWN"
-                raise TaskBusyError(f"active task {self._active_task_id} is {state}")
+            if self._shutdown_event.is_set():
+                raise TaskBusyError("service is shutting down")
+            self._dispatch_locked()
+            if schedule_id and any(not h.task.terminal and h.task.schedule_id == schedule_id
+                                   for h in self._handles.values()):
+                raise TaskBusyError("same schedule already has an active or queued run")
+            full = len(self._active_ids) >= self.max_active_tasks
+            if full and len(self._queue) >= self.max_queued_tasks:
+                raise TaskBusyError("execution capacity and bounded queue are full")
+            if agent_id and any((not h.task.terminal or h.worker_alive)
+                                and h.task.metadata.get("agent_id") == agent_id
+                                for h in self._handles.values()):
+                raise TaskConflictError("same agent/session cannot run concurrently")
 
             task_id = "task-" + uuid.uuid4().hex[:12]
             resolved_agent_id = agent_id or ("sxapi" + uuid.uuid4().hex[:8])
             resolved_session_key = session_key or f"agent:{resolved_agent_id}:{task_id}"
             if not resolved_session_key.startswith(f"agent:{resolved_agent_id}:"):
                 raise ValueError("session_key does not belong to agent_id")
-            task_metadata = {"agent_id": resolved_agent_id}
+            task_metadata = {"agent_id": resolved_agent_id, "scopex_commit_at_start": self._build_commit,
+                             "max_active_tasks": self.max_active_tasks}
             if metadata:
                 task_metadata.update(metadata)
             if mode == "conversation" and not task_metadata.get("conversation_id"):
@@ -166,12 +202,18 @@ class TaskService:
             memory_events = InMemoryEventSink()
             events = AuditEventSink(self.store, downstream=memory_events)
             audit = RuntimeAudit(self.store, task_id)
-            coordinator = self.coordinator_factory(task, session, events, audit)
-            handle = TaskHandle(task, session, coordinator, audit, memory_events)
+            # Queued tasks have no Runtime, sandbox or host snapshot yet.
+            handle = TaskHandle(task, session, None, audit, memory_events)
             self._handles[task_id] = handle
-            self._active_task_id = task_id
-            audit.snapshot_control(task, session, coordinator.catalog)
-            self._start_worker_locked(handle, self._run_initial, "initial")
+            audit.snapshot_control(task, session, EvidenceCatalog(task.id, task.session_key))
+            if full:
+                task.transition(TaskState.QUEUED, reason="execution_capacity")
+                handle.queued_at = time.monotonic()
+                self._queue.append(task_id)
+                events.emit(task.id, "TASK_QUEUED")
+                audit.persist_task(task)
+            else:
+                self._launch_locked(handle)
             return task.snapshot()
 
     def create_auto_run(self, message: str) -> dict:
@@ -284,7 +326,7 @@ class TaskService:
                 slot["completed"] += 1
             elif state in {"FAILED", "CANCELLED"}:
                 slot["failed"] += 1
-            elif state in {"CREATED", "RUNNING", "PAUSING", "PAUSED", "FINALIZING"}:
+            elif state in {"CREATED", "QUEUED", "RUNNING", "PAUSING", "PAUSED", "FINALIZING"}:
                 slot["running"] += 1
             if row.get("trigger_type") == "schedule":
                 slot["scheduled"] += 1
@@ -300,8 +342,7 @@ class TaskService:
             handle = self._handles.get(task_id)
             if handle is not None and handle.worker_alive:
                 raise TaskConflictError("task cleanup is still running; retry deletion shortly")
-            if self._active_task_id == task_id:
-                self._active_task_id = None
+            self._active_ids.discard(task_id)
             self._handles.pop(task_id, None)
 
         task_dir = self.store.existing_task_dir(task_id)
@@ -414,7 +455,8 @@ class TaskService:
             "task.json", "session.json", "result.json", "answer.json", "claims.json",
             "evidence.json", "events.jsonl", "final.txt", "evaluation.json",
             "runtime-limit.json", "runtime-guard.json", "investigation-error.json",
-            "worker-error.json", "cleanup.json",
+            "worker-error.json", "cleanup.json", "report.md", "report-meta.json",
+            "report.json", "report-error.json",
         )
         included = [name for name in allow if (task_dir / name).is_file()]
         runtime_context = self._review_runtime_context(task_dir)
@@ -440,7 +482,8 @@ class TaskService:
     def _review_runtime_context(self, task_dir: Path) -> dict:
         task = self.store.read_json(task_dir.name, "task.json")
         context = {
-            "scopex_commit": self._git_head(),
+            "scopex_commit": (task.get("metadata") or {}).get("scopex_commit_at_start"),
+            "export_commit": self._git_head(),
             "model_id": None,
             "agent_id": (task.get("metadata") or {}).get("agent_id") if isinstance(task, dict) else None,
             "mode": task.get("mode") if isinstance(task, dict) else None,
@@ -473,7 +516,13 @@ class TaskService:
     def shutdown(self, timeout_s: float = 10.0) -> None:
         timeout_s = max(0.0, float(timeout_s))
         deadline = time.monotonic() + timeout_s
+        self._shutdown_event.set()
+        if self._queue_thread is not None:
+            self._queue_thread.join(timeout=max(0.0, deadline - time.monotonic()))
         with self._lock:
+            for task_id in list(self._queue):
+                self._cancel_unstarted_locked(self._handles[task_id], "server_shutdown")
+            self._queue.clear()
             handles = list(self._handles.values())
             for handle in handles:
                 if handle.task.state is TaskState.RUNNING:
@@ -490,12 +539,16 @@ class TaskService:
             for handle in handles:
                 if handle.worker_alive:
                     continue
-                if not handle.task.terminal:
+                if not handle.task.terminal and handle.coordinator is not None:
                     handle.coordinator.controller.cancel("server_shutdown")
                     handle.audit.snapshot_control(handle.task, handle.session, handle.coordinator.catalog)
                     self._cleanup_terminal_locked(handle)
+                    self._active_ids.discard(handle.task.id)
 
     def _run_initial(self, handle: TaskHandle, _unused: str) -> None:
+        if handle.coordinator is None:
+            events = AuditEventSink(self.store, downstream=handle.memory_events)
+            handle.coordinator = self.coordinator_factory(handle.task, handle.session, events, handle.audit)
         turn = handle.coordinator.start(handle.task.user_request, turn_name=handle.next_turn_name())
         self._drive_after_turn(handle, turn)
 
@@ -714,21 +767,33 @@ class TaskService:
                 target(handle, arg)
             except Exception as exc:
                 if not handle.task.terminal:
-                    handle.coordinator.controller.fail("runtime_api_worker_exception")
+                    if handle.coordinator is not None:
+                        handle.coordinator.controller.fail("runtime_api_worker_exception")
+                    else:
+                        handle.task.transition(TaskState.FAILED, reason="runtime_setup_failed")
                 handle.audit.store.write_json(handle.task.id, "worker-error.json", {
                     "type": type(exc).__name__, "message": str(exc)[:800],
                 })
-                handle.audit.snapshot_control(handle.task, handle.session, handle.coordinator.catalog)
+                handle.audit.persist_task(handle.task)
             finally:
+                # Cleanup outside admission lock; never block other tasks' model/tool progress.
+                if handle.task.terminal:
+                    self._cleanup_terminal_locked(handle)
                 with self._lock:
                     if handle.task.terminal:
-                        self._cleanup_terminal_locked(handle)
+                        self._active_ids.discard(handle.task.id)
+                    self._dispatch_locked()
 
         thread = threading.Thread(target=run, name=f"scopex-task-{handle.task.id}", daemon=True)
         handle.thread = thread
         thread.start()
 
     def _cleanup_terminal_locked(self, handle: TaskHandle) -> None:
+        if handle.cleaned:
+            return
+        handle.cleaned = True
+        if handle.coordinator is None:
+            return
         try:
             cleanup = handle.coordinator.close()
             self.store.write_json(handle.task.id, "cleanup.json", {
@@ -738,15 +803,102 @@ class TaskService:
             self.store.write_json(handle.task.id, "cleanup.json", {
                 "error": type(exc).__name__ + ": " + str(exc)[:500],
             })
-        if self._active_task_id == handle.task.id:
-            self._active_task_id = None
+    def _launch_locked(self, handle: TaskHandle) -> None:
+        if handle.task.state is TaskState.QUEUED:
+            handle.task.transition(TaskState.CREATED, reason="admitted")
+        handle.task.metadata["admitted_at"] = datetime.now(timezone.utc).isoformat()
+        handle.audit.persist_task(handle.task)
+        self._active_ids.add(handle.task.id)
+        try:
+            self._start_worker_locked(handle, self._run_initial, "initial")
+        except Exception:
+            self._active_ids.discard(handle.task.id)
+            handle.task.transition(TaskState.FAILED, reason="worker_start_failed")
+            handle.audit.persist_task(handle.task)
+            raise
 
-    def _release_terminal_active_locked(self) -> None:
-        if self._active_task_id is None:
+    def _dispatch_locked(self) -> None:
+        if self._shutdown_event.is_set():
             return
-        handle = self._handles.get(self._active_task_id)
-        if handle is None or handle.task.terminal:
-            self._active_task_id = None
+        now = time.monotonic()
+        for task_id in tuple(self._queue):
+            handle = self._handles[task_id]
+            if handle.queued_at is not None and now - handle.queued_at >= self.queue_timeout_s:
+                self._queue.remove(task_id)
+                self._cancel_unstarted_locked(handle, "queue_expired")
+        while self._queue and len(self._active_ids) < self.max_active_tasks:
+            task_id = self._queue.popleft()
+            handle = self._handles[task_id]
+            if not handle.task.terminal:
+                self._launch_locked(handle)
+
+    def _queue_watch(self) -> None:
+        while not self._shutdown_event.wait(1.0):
+            with self._lock:
+                self._dispatch_locked()
+
+    def _cancel_unstarted_locked(self, handle: TaskHandle, reason: str) -> None:
+        handle.task.transition(TaskState.CANCELLED, reason=reason)
+        handle.audit.persist_task(handle.task)
+        AuditEventSink(self.store, downstream=handle.memory_events).emit(
+            handle.task.id, "TASK_CANCELLED", reason=reason)
+
+    def cancel_queued(self, task_id: str) -> dict:
+        with self._lock:
+            handle = self._live_handle(task_id)
+            if handle.task.state is not TaskState.QUEUED:
+                raise TaskConflictError("only queued, unstarted tasks can use cancel-queued")
+            self._queue.remove(task_id)
+            self._cancel_unstarted_locked(handle, "user_cancelled_queue")
+            return handle.task.snapshot()
+
+    def activity(self) -> dict:
+        """Global bounded live metadata, independent of date and business data."""
+        with self._lock:
+            positions = {key: i + 1 for i, key in enumerate(self._queue)}
+            rows = []
+            for handle in self._handles.values():
+                if handle.task.terminal:
+                    continue
+                row = handle.task.snapshot()
+                row["queue_position"] = positions.get(handle.task.id)
+                events = handle.memory_events.events
+                last = next((x for x in reversed(events) if x.type.value in {
+                    "MODEL_REQUEST", "TOOL_CALL", "TOOL_RESULT", "FINALIZATION_STARTED"}), None)
+                row["latest_activity"] = None if last is None else {
+                    "type": last.type.value, "at": last.created_at,
+                    "tool": str(last.data.get("tool", ""))[:60],
+                    "title": str(last.data.get("title", ""))[:160],
+                }
+                rows.append(row)
+            rows.sort(key=lambda x: (x["state"] == "QUEUED", x["created_at"]))
+            return {
+                "tasks": rows, "max_active_tasks": self.max_active_tasks,
+                "max_queued_tasks": self.max_queued_tasks,
+                "occupied_slots": len(self._active_ids),
+                "running_count": sum(x["state"] not in {"QUEUED", "PAUSED"} for x in rows),
+                "queued_count": len(self._queue),
+                "paused_count": sum(x["state"] == "PAUSED" for x in rows),
+                "scopex_commit": self._build_commit,
+            }
+
+    def _reconcile_interrupted(self) -> None:
+        # Called only by the single-owner product server. Never execute, replay or
+        # clean arbitrary old containers on startup. Historical evidence is intact.
+        for task_id in self.store.list_task_ids():
+            try:
+                row = self.store.read_json(task_id, "task.json")
+            except (OSError, ValueError):
+                continue
+            if not isinstance(row, dict) or row.get("state") not in {"CREATED", "QUEUED", "RUNNING", "PAUSING", "PAUSED", "FINALIZING"}:
+                continue
+            old = row["state"]
+            row.update(state="CANCELLED" if old == "QUEUED" else "FAILED",
+                       last_reason="missed_on_restart" if old == "QUEUED" else "interrupted_on_restart",
+                       finished_at=datetime.now(timezone.utc).isoformat())
+            row["updated_at"] = row["finished_at"]
+            row["duration_ms"] = None  # Actual interruption time is unknown.
+            self.store.write_json(task_id, "task.json", row)
 
     def _live_handle(self, task_id: str) -> TaskHandle:
         with self._lock:
