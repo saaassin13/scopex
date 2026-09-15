@@ -28,23 +28,33 @@ cd /opt/ScalingRobotics/scopex/app
 /opt/ScalingRobotics/scopex/config/edge.env
 ```
 
-修改设备路径、VPN 网卡、图片数量和镜像版本：
+当前 `10.200.0.7` 使用默认配置，无需修改。其他设备首次部署时检查：
 
 ```bash
 vi /opt/ScalingRobotics/scopex/config/edge.env
 /opt/ScalingRobotics/scopex/app/deploy/edge/start.sh
 ```
 
-常用变量：
+按设备检查：
 
 ```text
-SCOPEX_MODEL_DIR       模型目录
-SCOPEX_VPN_INTERFACE  WireGuard 网卡，默认 wg0
-SCOPEX_IMAGE_LIMIT    单次 Prompt 图片上限
-VLLM_IMAGE            vLLM 镜像
-SCOPEX_RUNTIME_IMAGE  Runtime 镜像
-SCOPEX_SANDBOX_IMAGE  Analysis Sandbox 镜像
+SCOPEX_MODEL_DIR       默认 /opt/ScalingRobotics/scopex/model/Qwen3.8-27B-NVFP4
+SCOPEX_VPN_INTERFACE  默认 wg0；脚本自动读取该网卡的 IPv4
+COWDISINFECT_LOG_DIR   默认 /opt/ScalingRobotics/CowDisinfect/Log
+LEFT_CAMERA_DIR        默认 /opt/ScalingRobotics/CowDisinfect/GrabbedImages/LeftCamera
 ```
+
+当前产品默认值，通常不要修改：
+
+```text
+SCOPEX_IMAGE_LIMIT    12；同时用于 vLLM 和 ScopeX
+VLLM_IMAGE            nvcr.io/nvidia/vllm:26.08-py3
+SCOPEX_RUNTIME_IMAGE  scopex-runtime:2026.09.15
+SCOPEX_SANDBOX_IMAGE  scopex-sandbox-analysis:2026.09.15
+SCOPEX_API_KEY        空；本地 vLLM 启用鉴权时才填写
+```
+
+只有路径、VPN 网卡或导入的镜像标签与默认值不一致时才必须修改。
 
 配置模板：
 

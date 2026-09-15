@@ -48,6 +48,7 @@ class EdgeDeploymentTests(unittest.TestCase):
             self.assertIn("http://10.200.0.77:8787", run.stdout)
             self.assertTrue((edge_root / "config" / "edge.env").is_file())
             self.assertEqual((edge_root / "config" / "edge.env").stat().st_mode & 0o777, 0o600)
+            self.assertIn("SCOPEX_IMAGE_LIMIT=12", (edge_root / "config" / "edge.env").read_text())
             self.assertTrue((edge_root / "data" / "runtime-api").is_dir())
             self.assertIn("compose", calls.read_text())
 
