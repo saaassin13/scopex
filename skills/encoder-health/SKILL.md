@@ -1,13 +1,15 @@
 ---
 name: encoder-health
-description: Assess encoder motion over a requested window, distinguishing ordinary starts, stops and rebound from off-trend jumps and unusual motion processes.
+description: Assess encoder motion over a requested window, distinguishing allowed forward/reverse motion, stops, rebound and counter resets from off-trend jumps and unusual motion processes.
 user-invocable: true
 ---
 
 # Encoder motion diagnosis
 
 Decide whether the supplied window contains unexplained deviations. Its normality
-is unknown. A negative increment, a stop or a statistical outlier alone is not a fault.
+is unknown. Forward motion, sustained reverse motion, stops, rebound, and resetting the counter
+to zero followed by renewed accumulation are allowed operation. Neither a large
+reverse displacement nor a reset nor rarity within this window establishes a fault.
 
 ## Analyze once
 
@@ -28,10 +30,12 @@ exist; this shortlist is not exhaustive evidence that the rest is normal.
 
 - Check invalid samples and gaps first. Do not interpret discontinuous coverage
   as mechanical movement or certify an empty window as normal.
-- `counter_boundaries` separates a large accumulated count returning near zero
-  in one sample. Do not count that discontinuity as reverse movement. Report the
-  observed boundary; reset, wrap and reinitialization remain possible causes
-  unless an independent lifecycle record distinguishes them.
+- `counter_boundaries` marks possible resets, including low counts reaching zero.
+  Resetting and accumulating again, or staying stopped at zero, are allowed.
+  Exclude the cross-boundary difference from reverse displacement/speed. A
+  rapid drop then jump back to the old trend is different: inspect off-trend
+  evidence. Smooth reverse travel to zero can also occur; counts alone do not
+  prove a reset. Insufficient follow-up is uncertainty, not an anomaly.
 - `off_trend_return_counts` identifies an isolated point leaving and rejoining a
   locally consistent trend. It is stronger evidence of a transient recording
   deviation than a large increment alone, but does not identify hardware cause.
@@ -41,11 +45,14 @@ exist; this shortlist is not exhaustive evidence that the rest is normal.
   a stationary tail supports rebound; it does not establish an allowable amplitude.
 - A persistent forward rate transition is also included. Determine whether its
   shape supports an ordinary start/change of speed or an unexplained discontinuity.
-- Comparisons use processes with the same observed pre/post state and jump type.
-  Peer median and robust deviation are computed only with at least five peers.
-  These are unverified same-window references, not device specifications. A large
-  deviation needs interpretation; identical behavior across the window can still
-  be faulty. Do not invent calibration, speed limits or a normal rebound threshold.
+- `motion_pattern` describes observed direction/shape, not the commanded
+  operating mode. Never compare long reverse travel against small rebound and
+  call the larger displacement abnormal. Reverse distance/duration are descriptive
+  only; the script no longer scores them as statistical faults. Off-trend
+  comparisons, when available, are unverified references, not hardware limits.
+- Diagnose observable data problems (gaps, invalid readings, isolated off-trend
+  jumps). Whether a smooth forward/reverse/stop action was intended requires
+  command/business-state evidence. Absence of that evidence is not a fault.
 - The 2000ms grouping/context horizon is an analysis setting, not a business
   threshold. `context_complete=false` means a boundary prevents that context;
   even true does not prove the full physical start/stop cycle is captured.
@@ -77,7 +84,11 @@ uncertainty.
 
 Lead with observed unexplained deviations, behavior consistent with ordinary
 operation, or a specific unresolved distinction. Report the important process
-times, measured shape and comparison evidence. Group one motion process once.
+times, measured shape and comparison evidence. Use time + phenomenon in the
+answer; M IDs are optional lookup references, not fault codes. Group one motion
+process once. Do not headline "significant anomaly" and then admit the only
+evidence is a possibly normal reverse journey or reset. Do not certify omitted
+processes as normal.
 Do not equate candidate counts with anomaly counts or diagnose hardware from
 these counts alone. Use counts and counts/s unless calibration is verified.
 

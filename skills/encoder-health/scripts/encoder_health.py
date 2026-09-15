@@ -170,7 +170,7 @@ def is_near_zero_counter_boundary(a: dict[str, Any], b: dict[str, Any], *, count
     ordinary reverse movement remains available to motion analysis.
     """
     before, after = a[count_key], b[count_key]
-    return before >= 10_000 and 0 <= after <= 1_000 and before - after >= 10_000
+    return before > after and (after == 0 or (0 < after <= 1_000 and before - after >= 10_000))
 
 
 def counter_followup(samples, index, *, count_key='count'):
@@ -186,17 +186,26 @@ def counter_followup(samples, index, *, count_key='count'):
         observed.append(row)
         previous = row
     drop = a[count_key] - b[count_key]
-    returned = next((r for r in observed if r[count_key] >= a[count_key] - 0.2 * drop), None)
+    # A return to the old value through ordinary accumulation is not a glitch.
+    # Only an immediate, disproportionate return is kept connected for the
+    # stricter two-sided off-trend detector.
+    next_count = observed[0][count_key] if observed else None
+    later_rates = [abs((y[count_key] - x[count_key]) / (y['ts'] - x['ts']).total_seconds())
+                   for x, y in zip(observed, observed[1:])]
+    return_rate = ((next_count - b[count_key]) / (observed[0]['ts'] - b['ts']).total_seconds()) if observed else 0
+    immediate_return = bool(observed and next_count >= a[count_key] - .2 * drop and
+                            return_rate > 8 * max(1, statistics.median(later_rates) if later_rates else 1))
+    accumulating = len(observed) >= 2 and all(y[count_key] >= x[count_key]
+                      for x, y in zip([b] + observed, observed))
     return {
-        'pattern': ('return_toward_previous_level' if returned else
-                    'stays_near_zero_in_observed_context' if len(observed) >= 2 and
-                    all(0 <= r[count_key] <= 1000 for r in observed) else 'unresolved'),
+        'pattern': ('return_toward_previous_level' if immediate_return else
+                    'restart_or_stop_compatible' if accumulating else 'unresolved'),
         'following_samples': len(observed),
         'observed_ms': (observed[-1]['ts'] - b['ts']).total_seconds() * 1000 if observed else 0,
-        'return_after_ms': (returned['ts'] - b['ts']).total_seconds() * 1000 if returned else None,
-        'next_count': observed[0][count_key] if observed else None,
+        'return_after_ms': (observed[0]['ts'] - b['ts']).total_seconds() * 1000 if immediate_return else None,
+        'next_count': next_count,
         'last_count': observed[-1][count_key] if observed else None,
-        'limits': 'At most 2000ms, stops at invalid samples or gaps above 500ms; 80% return is descriptive, not proof of normality.',
+        'limits': 'At most 2000ms, stops at invalid samples or gaps above 500ms. Reset and subsequent accumulation/stop are allowed; this pattern alone is not a fault or proof of reset.',
     }
 
 
@@ -215,7 +224,7 @@ def counter_continuity_boundaries(samples: list[dict[str, Any]], *, count_key: s
             'pulse_delta': b[count_key] - a[count_key], 'dt_ms': round(dt_ms, 3),
             'source_from': a['source'], 'source_to': b['source'],
             'line_from': a['line_no'], 'line_to': b['line_no'],
-            'interpretation': 'counter continuity boundary; reset, wrap or reinitialization cause is not determined',
+            'interpretation': 'possible reset boundary (reset is allowed operation), not a reverse displacement or fault; isolated returns require off-trend checks',
         })
     return boundaries
 
@@ -621,7 +630,7 @@ def motion_episodes(samples, gap_threshold, settle_ms=2000.0):
                 zero_ms = sum(p['dt_ms'] for p in part if p['delta'] == 0)
                 speeds = [p['delta'] * 1000 / p['dt_ms'] for p in part]
                 return {'observed_ms': round(duration, 3),
-                        'state': 'stationary' if zero_ms == duration else 'mixed' if min(speeds) < 0 else 'forward',
+                        'state': 'stationary' if zero_ms == duration else 'reverse' if max(speeds) <= 0 else 'mixed' if min(speeds) < 0 else 'forward',
                         'rate_first': round(speeds[0], 3), 'rate_last': round(speeds[-1], 3),
                         'rate_median': round(statistics.median(speeds), 3)}
             episodes.append({
@@ -629,6 +638,10 @@ def motion_episodes(samples, gap_threshold, settle_ms=2000.0):
                 'start': core[0]['a']['ts_text'], 'end': core[-1]['b']['ts_text'],
                 'duration_ms': round(sum(p['dt_ms'] for p in core), 3),
                 'drawdown_counts': drawdown,
+                'motion_pattern': ('off_trend_return' if any(i in jumps for i in group) else
+                                   'reverse_motion' if all(p['delta'] <= 0 for p in core) else
+                                   'mixed_direction_motion' if reverse_lobes else 'forward_or_stop_transition'),
+                'interpretation': 'Forward, reverse, stop and their transitions are allowed; displacement and duration do not establish a fault.',
                 'rate_transition_observed': any(i in transitions for i in group),
                 'reverse_duration_ms': round(sum(p['dt_ms'] for p in core if p['delta'] < 0), 3),
                 'negative_lobes': reverse_lobes,
@@ -644,12 +657,13 @@ def motion_episodes(samples, gap_threshold, settle_ms=2000.0):
             b = abs(other['before'].get('rate_median', 0))
             return (a == b == 0) or (min(a, b) > 0 and max(a, b) / min(a, b) <= 2)
         peers = [e for e in episodes if e is not episode and comparable_rate(e)
+                 and e['motion_pattern'] == episode['motion_pattern']
                  and e['before']['state'] == episode['before']['state']
                  and e['after']['state'] == episode['after']['state']
                  and bool(e['off_trend_return_counts']) == bool(episode['off_trend_return_counts'])]
         comparisons = {}
-        if len(peers) >= 5:
-            for key in ('drawdown_counts', 'duration_ms'):
+        if len(peers) >= 5 and episode['off_trend_return_counts']:
+            for key in ('off_trend_return_counts',):
                 values = [e[key] for e in peers]
                 center = statistics.median(values)
                 scale = max(1.0, mad(values) * 1.4826)
@@ -657,6 +671,7 @@ def motion_episodes(samples, gap_threshold, settle_ms=2000.0):
                                     'robust_deviation': round((episode[key] - center) / scale, 3)}
         peer_center = statistics.median([p['drawdown_counts'] for p in peers]) if peers else 0
         episode['comparison'] = {'peer_count': len(peers), 'reference': 'same_window_observed_not_verified_normal',
+                                 'limits': 'No fault ranking by reverse displacement/duration; peers are not commanded motion cycles.',
                                  'features': comparisons,
                                  'examples': [{'id': e['id'], 'drawdown_counts': e['drawdown_counts'],
                                                'duration_ms': e['duration_ms']} for e in

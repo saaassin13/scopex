@@ -14,6 +14,26 @@ def episodes(increments):
 
 
 class EpisodeTests(unittest.TestCase):
+    def test_small_counter_reset_then_accumulation_is_not_reverse_or_glitch(self):
+        rows = series([(100, 10)] * 20 + [(100, -1200)] + [(100, 100)] * 30)
+        boundary = ANALYZER['counter_continuity_boundaries'](rows)[0]
+        self.assertEqual(boundary['followup']['pattern'], 'restart_or_stop_compatible')
+        result = ANALYZER['motion_episodes'](rows, 500)
+        self.assertFalse(any(e['drawdown_counts'] >= 1200 or e['off_trend_return_counts'] for e in result))
+
+    def test_small_counter_single_zero_dip_still_detected(self):
+        rows = series([(100, 10)] * 20 + [(100, -1200), (100, 1220)] + [(100, 10)] * 30)
+        self.assertTrue(any(e['off_trend_return_counts'] >= 1200
+                            for e in ANALYZER['motion_episodes'](rows, 500)))
+
+    def test_long_reverse_motion_is_not_scored_as_abnormal_drawdown(self):
+        rows = series([(100, 100)] * 200 + [(100, -60)] * 120 + [(100, 0)] * 30 + [(100, 50)] * 30)
+        result = ANALYZER['motion_episodes'](rows, 500)
+        reverse = max(result, key=lambda e: e['drawdown_counts'])
+        self.assertEqual(reverse['drawdown_counts'], 7200)
+        self.assertEqual(reverse['off_trend_return_counts'], 0)
+        self.assertNotIn('drawdown_counts', reverse['comparison']['features'])
+
     def test_gap_at_counter_boundary_remains_a_sampling_gap(self):
         rows = series([(100, 1000)] * 20 + [(10000, -20979)])
         facts, events, _, _ = ANALYZER['detect_count_events'](
@@ -109,7 +129,7 @@ class EpisodeTests(unittest.TestCase):
             data += [(100, -drop)] + [(100, 10)] * 40
         result = episodes(data)
         extreme = max(result, key=lambda e: e['drawdown_counts'])
-        self.assertGreater(extreme['comparison']['features']['drawdown_counts']['robust_deviation'], 8)
+        self.assertNotIn('drawdown_counts', extreme['comparison']['features'])
         self.assertIn('not_verified_normal', extreme['comparison']['reference'])
 
     def test_one_count_quantization_is_not_off_trend_jump(self):
