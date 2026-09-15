@@ -180,8 +180,11 @@ def create_app(
     def list_tasks(
         mode: Annotated[str | None, Query()] = None,
         day: Annotated[str | None, Query()] = None,
+        schedule_id: Annotated[str | None, Query()] = None,
+        limit: Annotated[int | None, Query(ge=1, le=200)] = None,
+        offset: Annotated[int, Query(ge=0)] = 0,
     ) -> dict[str, Any]:
-        return {"tasks": service.list_tasks(mode=mode, day=day)}
+        return {"tasks": service.list_tasks(mode=mode, day=day, schedule_id=schedule_id, limit=limit, offset=offset)}
 
     @app.get("/tasks/calendar")
     def task_calendar(month: Annotated[str, Query(pattern=r"^\d{4}-\d{2}$")]) -> dict[str, Any]:

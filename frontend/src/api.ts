@@ -41,10 +41,13 @@ export const api = {
   health: () => request<{ status: string; active_task_id: string | null }>('/health'),
   createRun: (message: string) =>
     request<TaskSnapshot>('/runs', { method: 'POST', body: JSON.stringify({ message }) }),
-  listTasks: (options?: { mode?: 'task' | 'conversation' | 'auto'; day?: string }) => {
+  listTasks: (options?: { mode?: 'task' | 'conversation' | 'auto'; day?: string; schedule_id?: string; limit?: number; offset?: number }) => {
     const params = new URLSearchParams()
     if (options?.mode) params.set('mode', options.mode)
     if (options?.day) params.set('day', options.day)
+    if (options?.schedule_id) params.set('schedule_id', options.schedule_id)
+    if (options?.limit) params.set('limit', String(options.limit))
+    if (options?.offset) params.set('offset', String(options.offset))
     const query = params.toString()
     return request<{ tasks: TaskSnapshot[] }>(query ? `/tasks?${query}` : '/tasks')
   },

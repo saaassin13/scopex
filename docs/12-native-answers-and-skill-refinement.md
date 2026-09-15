@@ -132,3 +132,11 @@ workstation 只读回放：2026-09-14 12/13 点，各 32904/32768 个应用采�
 检查发现此前仅返回 matching_count=0，未明确要求结束。现已在通用 runtime prompt 和 data-locator Skill 加入：固定窗口定位为空或业务工具窗口内零记录，立即报告无数据并结束本次运行；不改时间、来源，不轮询重试，除非用户显式要求兜底。未来定时触发不受影响。目录缺失返回 source_unavailable，与 no_data 区分；读取/解析错误也不得解释成正常或无数据。
 
 验证 `PYTHONPATH=tests python3 -m unittest test_data_locator_sampling test_runtime_message_contract test_schedules -q`：15 项通过。当前为 OpenClaw 指令与工具结果契约，未新增自定义循环拦截；尚未实测模型在定时空窗口下的完整退出行为。未部署。
+
+### 定时任务执行历史快捷入口
+
+定时任务名称及“执行历史”链接进入 `/schedules/:id/history`，按 schedule_id 查询全部日期执行记录，最新优先，每页 50 条；显示状态、执行时间、计划时间、耗时，点击打开原结果详情，详情可返回对应定时任务历史。包含该定时任务的立即执行记录。现有普通历史不变，未改存储或调度行为。
+
+GET /tasks 增加可选 schedule_id、limit(1..200)、offset 参数，先过滤后分页。沿用文件存储枚举，分页限制响应与渲染量，尚未引入磁盘查询索引；超大量历史时磁盘扫描仍有成本。
+
+16 项 API/定时任务相关测试通过；Vue 类型检查/Vite 构建通过；本机合成 52 条记录实际验证入口、第二页、详情和对应返回链接。测试专用服务、页面和合成数据清理。未提交、推送或部署。

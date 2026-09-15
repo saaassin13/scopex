@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted, ref } from 'vue'
+import { RouterLink } from 'vue-router'
 import { api, ApiError } from '../api'
 import type { ScheduleSnapshot } from '../types'
 
@@ -123,7 +124,7 @@ onBeforeUnmount(() => timer && window.clearInterval(timer))
       <div v-for="row in schedules" :key="row.id" class="schedule-row">
         <div class="schedule-main">
           <div class="schedule-title-line">
-            <strong>{{ row.name }}</strong>
+            <RouterLink :to="`/schedules/${row.id}/history`"><strong>{{ row.name }}</strong></RouterLink>
             <span class="state-pill" :data-state="row.enabled ? 'RUNNING' : 'PAUSED'">{{ row.enabled ? '启用' : '停用' }}</span>
           </div>
           <p>{{ row.message }}</p>
@@ -135,6 +136,7 @@ onBeforeUnmount(() => timer && window.clearInterval(timer))
           </div>
         </div>
         <div class="schedule-actions">
+          <RouterLink class="ghost-button" :to="`/schedules/${row.id}/history`">执行历史</RouterLink>
           <button class="ghost-button" @click="runNow(row)">立即执行</button>
           <button class="ghost-button" @click="toggle(row)">{{ row.enabled ? '停用' : '启用' }}</button>
           <button class="danger-button" @click="remove(row)">删除</button>

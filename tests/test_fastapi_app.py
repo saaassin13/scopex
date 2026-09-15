@@ -36,7 +36,7 @@ class StubService:
         self.calls.append(("continue", task_id, message))
         return {"id": "task-next", "state": "CREATED", "mode": "conversation"}
 
-    def list_tasks(self, *, mode=None, day=None):
+    def list_tasks(self, *, mode=None, day=None, schedule_id=None, limit=None, offset=0):
         self.calls.append(("list", mode, day))
         return [{"id": "task-1", "state": "COMPLETED", "mode": mode or "task"}]
 

@@ -283,9 +283,12 @@ class TaskService:
         except (FileNotFoundError, OSError):
             raise TaskNotFoundError(task_id) from None
 
-    def list_tasks(self, *, mode: str | None = None, day: str | None = None) -> list[dict]:
+    def list_tasks(self, *, mode: str | None = None, day: str | None = None,
+                   schedule_id: str | None = None, limit: int | None = None, offset: int = 0) -> list[dict]:
         if mode is not None and mode not in {"task", "conversation", "auto"}:
             raise ValueError("mode must be task, conversation or auto")
+        if offset < 0 or (limit is not None and not 1 <= limit <= 200):
+            raise ValueError("offset must be nonnegative and limit must be 1..200")
         day_value = self._parse_day(day) if day is not None else None
         tasks: list[dict] = []
         for stored_task_id in self.store.list_task_ids():
@@ -295,11 +298,13 @@ class TaskService:
                     continue
                 if day_value is not None and self._task_local_day(row) != day_value:
                     continue
+                if schedule_id is not None and row.get("schedule_id") != schedule_id:
+                    continue
                 tasks.append(row)
             except (TaskNotFoundError, json.JSONDecodeError, OSError):
                 continue
         tasks.sort(key=lambda row: str(row.get("started_at") or row.get("created_at") or ""), reverse=True)
-        return tasks
+        return tasks[offset:offset + limit] if limit is not None else tasks[offset:]
 
     def calendar_month(self, month: str) -> dict:
         try:

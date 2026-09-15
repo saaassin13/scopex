@@ -309,7 +309,8 @@ onBeforeUnmount(() => timer && window.clearInterval(timer))
   <section class="task-page">
     <div class="task-header panel">
       <div>
-        <RouterLink class="back-link" to="/">← 返回执行记录</RouterLink>
+        <RouterLink v-if="task?.schedule_id" class="back-link" :to="`/schedules/${task.schedule_id}/history`">← 返回定时任务执行历史</RouterLink>
+        <RouterLink v-else class="back-link" to="/">← 返回执行记录</RouterLink>
         <div class="eyebrow">RUN · {{ taskId }}</div>
         <h1>{{ task?.user_request || '加载任务…' }}</h1>
         <div class="run-meta">
