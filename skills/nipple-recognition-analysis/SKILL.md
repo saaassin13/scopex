@@ -98,7 +98,7 @@ A physical cow completely invisible to the perception system and never creating 
 
 The stable script computes KPI facts. It should **not** manufacture a natural-language diagnosis or speculate about why recognition is low.
 
-The final user report is produced downstream from validated Claims. It should normally answer in this order:
+The investigating Agent delivers the final answer directly; no downstream Claims or report-model call is required. It should normally answer in this order:
 
 1. this window's total cow count;
 2. 4/3/2/1/0/missing final 2D distribution;

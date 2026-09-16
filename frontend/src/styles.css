@@ -205,3 +205,9 @@ button:disabled { opacity: .45; cursor: not-allowed; }
 .activity-card a { display: block; font-weight: 650; color: #17476b; overflow-wrap: anywhere; }
 .activity-card p { font-size: 13px; margin: 8px 0; }
 .activity-actions { display: flex; gap: 8px; margin-top: 12px; }
+
+/* Lightweight result controls; no business-specific forms. */
+.assessment-toggle input[type="checkbox"] { width: auto; margin-right: 6px; }
+.assessment-toggle { line-height: 1.6; }
+.task-row-top { flex-wrap: wrap; }
+select option { background: #12161e; color: #eef2ff; }

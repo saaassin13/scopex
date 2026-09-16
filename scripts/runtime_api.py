@@ -200,6 +200,7 @@ def main(argv=None) -> int:
         collection_max_bytes=args.collection_max_bytes,
         collection_max_files=args.collection_max_files,
         reconcile_interrupted=True,
+        assessment_classifier=factory.manual_assessment_classifier(),
     )
     schedules = ScheduleService(data_root / "scheduler", service)
     static_dir = args.web_dist.expanduser().resolve()

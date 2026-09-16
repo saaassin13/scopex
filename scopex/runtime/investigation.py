@@ -9,6 +9,7 @@ import threading
 import time
 from typing import Callable, Iterable
 
+from scopex.assessment import INSTRUCTION as ASSESSMENT_INSTRUCTION, from_native
 from scopex.agent.runtime import OpenClawTaskRuntime, OpenClawTaskSpec, OpenClawTurnResult
 from scopex.agent.trace import load_audit_trace
 from scopex.evidence.catalog import EvidenceCatalog, EvidenceItem
@@ -319,6 +320,21 @@ class InvestigationCoordinator:
             "unresolved_citation_refs": unknown_refs,
             "warnings": list(outcome.warnings) if outcome else [],
         }
+        # A footer is optional product metadata, never a new completion gate.
+        # Preserve report_text byte-for-byte (after existing redaction/length guard).
+        if self.task.metadata.get("assessment_enabled") is True:
+            assessment, footer = from_native(text, complete=complete, no_data=bool(turn.no_data),
+                                             request=self.task.user_request)
+            self.task.metadata["assessment"] = assessment
+            if footer is not None:
+                meta["assessment_footer"] = footer
+            if self.audit is not None:
+                try:
+                    self.audit.store.write_json(self.task.id, "assessment.json", assessment)
+                except OSError:
+                    assessment.update(status="needs_review", push_decision="none",
+                                      summary="结果标签保存失败；原任务正文仍按原生链交付。",
+                                      reason="assessment_storage_error")
         self.controller.begin_finalization(reasons=reasons)
         if self.audit is not None:
             self.audit.store.write_json(self.task.id, "result.json", {
@@ -479,7 +495,10 @@ class InvestigationCoordinator:
         with self._turn_lock:
             if self.controller.state is not TaskState.RUNNING:
                 raise ValueError("agent turn requires RUNNING task")
-            result = self.agent.run_turn(message, turn_name=turn_name)
+            native_message = message
+            if self.native_answers and self.task.metadata.get("assessment_enabled") is True:
+                native_message += ASSESSMENT_INSTRUCTION
+            result = self.agent.run_turn(native_message, turn_name=turn_name)
             self._turns += 1
             self._forwarded_model_requests += sum(
                 1 for record in result.proxy_records if record.get("forwarded") is True

@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 
+from scopex.api.assessment_classifier import TextAssessmentClassifier
 from scopex.agent.openclaw_config import TASK_SCRATCH_PATH
 from scopex.agent.runtime import OpenClawTaskSpec
 from scopex.evidence.media import EvidenceMediaLoader
@@ -172,6 +173,15 @@ class OpenClawRuntimeFactory:
             ),
             audit=audit,
             native_answers=True,
+        )
+
+    def manual_assessment_classifier(self) -> TextAssessmentClassifier:
+        # No request until an explicit manual API action. This never joins the
+        # native completion chain and never loads Evidence/images/tools.
+        return TextAssessmentClassifier(
+            StreamingFinalizerClient(self.config.base_url, api_key=self.config.api_key,
+                                     timeout_s=60, max_response_bytes=65536),
+            model=self.config.model_id, api_key=self.config.api_key,
         )
 
     def finalizer(self) -> StructuredFinalizer:

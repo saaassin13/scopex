@@ -1,4 +1,18 @@
+export interface Assessment {
+  version: number
+  status: 'not_assessed' | 'pending' | 'normal' | 'abnormal' | 'needs_review'
+  summary: string
+  source: string
+  reason?: string
+  push_decision: 'suggested' | 'none' | 'undecided'
+  delivery_status: 'not_connected'
+  model_calls: number
+  manual_model_calls_total?: number
+  updated_at?: string | null
+}
+
 export interface TaskSnapshot {
+  assessment?: Assessment
   id: string
   state: string
   user_request?: string
@@ -118,6 +132,7 @@ export interface ScheduleSnapshot {
   daily_time?: string | null
   run_at?: string | null
   enabled: boolean
+  assessment_enabled?: boolean
   created_at: string
   updated_at: string
   next_run_at?: string | null

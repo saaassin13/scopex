@@ -8,6 +8,8 @@ const schedules = ref<ScheduleSnapshot[]>([])
 const name = ref('')
 const message = ref('')
 const kind = ref<'interval' | 'daily' | 'once'>('interval')
+const assessmentEnabled = ref(true)
+const assessmentUpdating = ref('')
 const intervalMinutes = ref(30)
 const dailyTime = ref('08:00')
 const runAt = ref('')
@@ -42,6 +44,7 @@ async function createSchedule() {
   try {
     const payload: Parameters<typeof api.createSchedule>[0] = {
       name: name.value.trim(), message: message.value.trim(), kind: kind.value,
+      assessment_enabled: assessmentEnabled.value,
     }
     if (kind.value === 'interval') payload.interval_minutes = intervalMinutes.value
     if (kind.value === 'daily') payload.daily_time = dailyTime.value
@@ -60,6 +63,17 @@ async function createSchedule() {
 async function toggle(row: ScheduleSnapshot) {
   await api.setScheduleEnabled(row.id, !row.enabled)
   await refresh()
+}
+
+async function toggleAssessment(row: ScheduleSnapshot) {
+  if (assessmentUpdating.value) return
+  assessmentUpdating.value = row.id
+  error.value = ''
+  try {
+    await api.setScheduleAssessment(row.id, row.assessment_enabled === false)
+    await refresh()
+  } catch (exc) { error.value = exc instanceof Error ? exc.message : String(exc) }
+  finally { assessmentUpdating.value = '' }
 }
 
 async function runNow(row: ScheduleSnapshot) {
@@ -95,7 +109,7 @@ onBeforeUnmount(() => timer && window.clearInterval(timer))
         <label><span>任务名称</span><input v-model="name" placeholder="例如：编码器30分钟检查" /></label>
         <label class="wide-field">
           <span>任务内容</span>
-          <textarea v-model="message" rows="4" placeholder="例如：检查过去30分钟编码器是否存在丢数、毛刺、回退或不稳定。"></textarea>
+          <textarea v-model="message" rows="4" placeholder="直接写检查目标和异常条件，例如：检查当前CPU和内存，任一项使用率超过80%判为异常。"></textarea>
         </label>
         <label>
           <span>触发方式</span>
@@ -108,6 +122,10 @@ onBeforeUnmount(() => timer && window.clearInterval(timer))
         <label v-if="kind === 'interval'"><span>间隔（分钟）</span><input v-model.number="intervalMinutes" type="number" min="1" max="10080" /></label>
         <label v-else-if="kind === 'daily'"><span>每天时间</span><input v-model="dailyTime" type="time" /></label>
         <label v-else><span>执行时间</span><input v-model="runAt" type="datetime-local" /></label>
+        <label class="wide-field assessment-toggle">
+          <span><input v-model="assessmentEnabled" type="checkbox" /> 开启结果评估（默认开启）</span>
+          <small class="muted">异常条件直接写在任务内容中；由原任务同时给出标签，不另调报告模型。仅影响后续执行，不补评历史。</small>
+        </label>
         <div class="schedule-submit">
           <button class="primary-button" :disabled="busy || !name.trim() || !message.trim()">{{ busy ? '保存中…' : '保存定时任务' }}</button>
         </div>
@@ -136,6 +154,9 @@ onBeforeUnmount(() => timer && window.clearInterval(timer))
           </div>
         </div>
         <div class="schedule-actions">
+          <button class="ghost-button" role="switch" :aria-checked="row.assessment_enabled !== false" :disabled="!!assessmentUpdating" @click="toggleAssessment(row)">
+            结果评估：{{ row.assessment_enabled === false ? '关闭' : '开启' }}
+          </button>
           <RouterLink class="ghost-button" :to="`/schedules/${row.id}/history`">执行历史</RouterLink>
           <button class="ghost-button" @click="runNow(row)">立即执行</button>
           <button class="ghost-button" @click="toggle(row)">{{ row.enabled ? '停用' : '启用' }}</button>

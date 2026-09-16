@@ -1,13 +1,20 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { api, ApiError } from '../api'
 import type { TaskCalendarDay, TaskSnapshot } from '../types'
+import type { TaskFilters } from '../assessment'
+import ResultBadge from '../components/ResultBadge.vue'
+import TaskResultFilters from '../components/TaskResultFilters.vue'
 
 const router = useRouter()
 const tasks = ref<TaskSnapshot[]>([])
 const calendarDays = ref<TaskCalendarDay[]>([])
 const message = ref('')
+const assessmentEnabled = ref(false)
+const filters = ref<TaskFilters>({})
+const historyLoading = ref(false)
+let generation = 0
 const loading = ref(false)
 const deletingId = ref('')
 const error = ref('')
@@ -63,26 +70,28 @@ function shiftMonth(delta: number) {
 }
 
 async function refresh() {
+  const token = ++generation
+  historyLoading.value = true
   try {
     const [calendar, rows] = await Promise.all([
       api.getTaskCalendar(selectedMonth.value),
-      api.listTasks({ day: selectedDay.value }),
+      api.listTasks({ day: selectedDay.value, ...filters.value }),
     ])
+    if (token !== generation) return
     calendarDays.value = calendar.days
     tasks.value = rows.tasks
+    error.value = ''
   } catch (exc) {
-    error.value = exc instanceof Error ? exc.message : String(exc)
-  }
+    if (token === generation) error.value = exc instanceof Error ? exc.message : String(exc)
+  } finally { if (token === generation) historyLoading.value = false }
 }
+watch(filters, () => { tasks.value = []; void refresh() })
 
 async function selectDay(date?: string) {
   if (!date) return
   selectedDay.value = date
-  try {
-    tasks.value = (await api.listTasks({ day: date })).tasks
-  } catch (exc) {
-    error.value = exc instanceof Error ? exc.message : String(exc)
-  }
+  tasks.value = []
+  await refresh()
 }
 
 async function createEntry() {
@@ -91,7 +100,7 @@ async function createEntry() {
   loading.value = true
   error.value = ''
   try {
-    const task = await api.createRun(value)
+    const task = await api.createRun(value, assessmentEnabled.value)
     message.value = ''
     await router.push(`/tasks/${task.id}`)
   } catch (exc) {
@@ -121,7 +130,7 @@ onMounted(() => {
   void refresh()
   timer = window.setInterval(refresh, 10000)
 })
-onBeforeUnmount(() => timer && window.clearInterval(timer))
+onBeforeUnmount(() => { generation += 1; if (timer) window.clearInterval(timer) })
 </script>
 
 <template>
@@ -138,7 +147,7 @@ onBeforeUnmount(() => timer && window.clearInterval(timer))
           placeholder="例如：检查3点的编码器数据是否存在异常；分析7点乳头识别率；当前支持哪些能力？"
         ></textarea>
         <div class="compose-footer">
-          <span>统一入口 · 用户无需选择任务类型</span>
+          <label class="assessment-toggle"><input v-model="assessmentEnabled" type="checkbox" /> 本次同时给出结果标签</label>
           <button class="primary-button" :disabled="loading || !message.trim()">
             {{ loading ? '处理中…' : '发送' }}
           </button>
@@ -193,10 +202,13 @@ onBeforeUnmount(() => timer && window.clearInterval(timer))
           </div>
           <button class="ghost-button" @click="refresh">刷新</button>
         </div>
-        <div v-if="!tasks.length" class="empty-state">当天没有执行记录。</div>
+        <TaskResultFilters v-model="filters" />
+        <p v-if="historyLoading" class="muted" role="status">正在更新列表…</p>
+        <div v-else-if="!tasks.length" class="empty-state">当天没有符合筛选条件的执行记录。</div>
         <div v-for="task in tasks" :key="task.id" class="task-row task-row-with-action" @click="router.push(`/tasks/${task.id}`)">
           <div class="task-row-top">
             <span class="state-pill" :data-state="task.state">{{ task.state }}</span>
+            <ResultBadge :value="task.assessment" />
             <span class="mode-badge">{{ task.trigger_type === 'schedule' ? '定时' : '手动' }}</span>
             <button
               v-if="canDelete(task)"

@@ -1,4 +1,5 @@
 import type {
+  Assessment,
   ActivitySnapshot,
   Evaluation,
   EvidenceSnapshot,
@@ -41,10 +42,13 @@ export const api = {
   activity: () => request<ActivitySnapshot>('/activity'),
   cancelQueued: (id: string) => request<TaskSnapshot>(`/tasks/${encodeURIComponent(id)}/cancel-queued`, { method: 'POST', body: '{}' }),
   health: () => request<{ status: string; active_task_id: string | null }>('/health'),
-  createRun: (message: string) =>
-    request<TaskSnapshot>('/runs', { method: 'POST', body: JSON.stringify({ message }) }),
-  listTasks: (options?: { mode?: 'task' | 'conversation' | 'auto'; day?: string; schedule_id?: string; limit?: number; offset?: number }) => {
+  createRun: (message: string, assessment_enabled = false) =>
+    request<TaskSnapshot>('/runs', { method: 'POST', body: JSON.stringify({ message, assessment_enabled }) }),
+  listTasks: (options?: { mode?: 'task' | 'conversation' | 'auto'; day?: string; schedule_id?: string; limit?: number; offset?: number; state?: string; assessment_status?: string; push_decision?: string }) => {
     const params = new URLSearchParams()
+    if (options?.state) params.set('state', options.state)
+    if (options?.assessment_status) params.set('assessment_status', options.assessment_status)
+    if (options?.push_decision) params.set('push_decision', options.push_decision)
     if (options?.mode) params.set('mode', options.mode)
     if (options?.day) params.set('day', options.day)
     if (options?.schedule_id) params.set('schedule_id', options.schedule_id)
@@ -84,6 +88,10 @@ export const api = {
     request<TaskSnapshot>(`/tasks/${encodeURIComponent(id)}/steer`, {
       method: 'POST', body: JSON.stringify({ message }),
     }),
+  assessTask: (id: string, allow_model = false, retry = false) =>
+    request<{ task_id: string; assessment: Assessment; requires_model?: boolean }>(`/tasks/${encodeURIComponent(id)}/assessment`, {
+      method: 'POST', body: JSON.stringify({ allow_model, retry }),
+    }),
   getEvaluation: (id: string) =>
     request<{ task_id: string; evaluation: Evaluation | null }>(`/tasks/${encodeURIComponent(id)}/evaluation`),
   setEvaluation: (id: string, rating: 'up' | 'down', tags: string[], note: string) =>
@@ -107,7 +115,12 @@ export const api = {
     daily_time?: string
     run_at?: string
     enabled?: boolean
+    assessment_enabled?: boolean
   }) => request<ScheduleSnapshot>('/schedules', { method: 'POST', body: JSON.stringify(payload) }),
+  setScheduleAssessment: (id: string, assessment_enabled: boolean) =>
+    request<ScheduleSnapshot>(`/schedules/${encodeURIComponent(id)}/assessment`, {
+      method: 'PATCH', body: JSON.stringify({ assessment_enabled }),
+    }),
   setScheduleEnabled: (id: string, enabled: boolean) =>
     request<ScheduleSnapshot>(`/schedules/${encodeURIComponent(id)}/enabled`, {
       method: 'PATCH', body: JSON.stringify({ enabled }),

@@ -117,3 +117,11 @@ python3 -m unittest discover -s tests -v
 ```
 
 Code baseline CI: [35043132700](https://github.com/saaassin13/scopex/actions/runs/35043132700), 650 Python tests and the existing build/hygiene checks passed. See [current contract](../12-native-answers-and-skill-refinement.md) and [acceptance status](../02-delivery-and-acceptance.md) for the limits of that evidence.
+
+## Optional result labels
+
+See [task result assessment](../13-task-result-assessment.md) for the native-answer footer contract. No business templates, threshold parser or default second model call is introduced. A missing/invalid label does not fail native answer publication.
+
+`POST /runs` accepts optional boolean `assessment_enabled` (default false); schedule creation defaults it to true and `PATCH /schedules/{id}/assessment` updates only future triggers. The task message remains the criterion snapshot. `GET /tasks` accepts `state`, `assessment_status`, `push_decision` and filters before pagination.
+
+`GET /tasks/{id}/assessment` reads metadata. `POST` on the same path requires a terminal task, reuses an existing label where possible, and only with explicit `allow_model=true` may classify bounded saved text once. Duplicate requests are idempotent unless `retry=true`; a pending request is never duplicated. It does not read images or Evidence, rerun the original Agent, change execution state, or send notifications.

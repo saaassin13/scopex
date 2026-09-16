@@ -25,10 +25,14 @@ class FinalizerResponse:
 class StreamingFinalizerClient:
     """Small loopback OpenAI-compatible client for fresh no-tool finalization."""
 
-    def __init__(self, base_url: str, *, api_key: str = "", timeout_s: int = 120) -> None:
+    def __init__(self, base_url: str, *, api_key: str = "", timeout_s: int = 120,
+                 max_response_bytes: int | None = None) -> None:
         self.host, self.port, self.https = self._endpoint(base_url)
         self.api_key = api_key
         self.timeout_s = timeout_s
+        if max_response_bytes is not None and max_response_bytes < 1024:
+            raise ValueError("response byte limit must be >= 1024")
+        self.max_response_bytes = max_response_bytes
 
     @staticmethod
     def _endpoint(base_url: str) -> tuple[str, int, bool]:
@@ -112,6 +116,7 @@ class StreamingFinalizerClient:
         done = False
         headers_s = 0.0
         reasoning_chars = 0
+        received_bytes = 0
         tool_call_chunks = 0
         try:
             connection.request("POST", "/v1/chat/completions", body=encoded, headers=headers)
@@ -122,7 +127,17 @@ class StreamingFinalizerClient:
                 raise ValueError(f"finalizer HTTP {response.status}: {detail[:500]}")
 
             while True:
-                raw = response.readline()
+                if self.max_response_bytes is not None:
+                    if time.monotonic() - start >= self.timeout_s:
+                        raise TimeoutError("bounded text request deadline exceeded")
+                    if connection.sock is not None:
+                        connection.sock.settimeout(max(0.01, self.timeout_s - (time.monotonic() - start)))
+                    raw = response.readline(self.max_response_bytes - received_bytes + 1)
+                    received_bytes += len(raw)
+                    if received_bytes > self.max_response_bytes:
+                        raise ValueError("bounded text response capacity exceeded")
+                else:
+                    raw = response.readline()
                 if not raw:
                     break
                 line = raw.decode("utf-8", errors="replace").strip()

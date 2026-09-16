@@ -15,7 +15,7 @@ from test_runtime_api_service import wait_state
 
 class NativeAnswerTests(unittest.TestCase):
     def run_task(self, root, *, text="计数保持不变，对应停转；当前依据不足以确认故障。",
-                 meta=None, stop=None, limit=None, evidence=True, mode="task", no_data=None):
+                 meta=None, stop=None, limit=None, evidence=True, mode="task", no_data=None, assessment_enabled=False):
         cli = root / "openclaw"
         cli.write_text("#!/bin/sh\nexit 0\n")
         cli.chmod(0o755)
@@ -44,7 +44,7 @@ class NativeAnswerTests(unittest.TestCase):
         finalizer = Mock(side_effect=AssertionError("native path must not construct a finalizer"))
         service = TaskService(audit_root=root / "tasks", coordinator_factory=coordinator,
                               finalizer_factory=finalizer)
-        task = service.create_task("检查指定时间窗", mode=mode)
+        task = service.create_task("检查指定时间窗", mode=mode, metadata={"assessment_enabled": assessment_enabled})
         expected = "FAILED" if stop or limit or meta or not text or len(text) > 32768 else "COMPLETED"
         wait_state(service, task["id"], expected)
         finalizer.assert_not_called()

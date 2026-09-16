@@ -13,6 +13,10 @@ import uuid
 from typing import Callable, Protocol
 import zipfile
 
+from scopex.assessment import (
+    STATUSES as ASSESSMENT_STATUSES, PUSH_DECISIONS, digest, from_native,
+    parse_footer, record as assessment_record, task_summary,
+)
 from scopex.agent.runtime import OpenClawTurnResult
 from scopex.agent.trace import load_audit_trace
 from scopex.api.data_packages import DataPackageService
@@ -111,6 +115,7 @@ class TaskService:
         collection_max_bytes: int = 2 * 1024 * 1024 * 1024,
         collection_max_files: int = 5000,
         reconcile_interrupted: bool = False,
+        assessment_classifier: Callable[..., dict] | None = None,
     ) -> None:
         if isinstance(max_active_tasks, bool) or not isinstance(max_active_tasks, int) or not 1 <= max_active_tasks <= 4:
             raise ValueError("max_active_tasks must be 1..4")
@@ -139,9 +144,13 @@ class TaskService:
         self._active_ids: set[str] = set()
         self._queue: deque[str] = deque()
         self._shutdown_event = threading.Event()
+        self.assessment_classifier = assessment_classifier
+        self._assessment_task_id: str | None = None
+        self._assessment_thread: threading.Thread | None = None
         self._build_commit = self._git_head()
         if reconcile_interrupted:
             self._reconcile_interrupted()
+            self._reconcile_assessments()
         self._queue_thread: threading.Thread | None = None
         if max_queued_tasks:
             self._queue_thread = threading.Thread(target=self._queue_watch, name="scopex-admission", daemon=True)
@@ -197,6 +206,10 @@ class TaskService:
                              "max_active_tasks": self.max_active_tasks}
             if metadata:
                 task_metadata.update(metadata)
+            if "assessment_enabled" in task_metadata and not isinstance(task_metadata["assessment_enabled"], bool):
+                raise ValueError("assessment_enabled must be a boolean")
+            # Never inherit a verdict from another Run/session.
+            task_metadata.pop("assessment", None)
             if mode == "conversation" and not task_metadata.get("conversation_id"):
                 task_metadata["conversation_id"] = task_id
 
@@ -228,8 +241,9 @@ class TaskService:
                 self._launch_locked(handle)
             return task.snapshot()
 
-    def create_auto_run(self, message: str) -> dict:
-        return self.create_task(message, mode="auto", trigger_type="manual")
+    def create_auto_run(self, message: str, *, assessment_enabled: bool = False) -> dict:
+        return self.create_task(message, mode="auto", trigger_type="manual",
+                                metadata={"assessment_enabled": assessment_enabled})
 
     def continue_conversation(self, task_id: str, message: str) -> dict:
         parent = self.get_task(task_id)
@@ -289,18 +303,30 @@ class TaskService:
         with self._lock:
             handle = self._handles.get(task_id)
             if handle is not None:
-                return handle.task.snapshot()
+                row = handle.task.snapshot()
+                row["assessment"] = task_summary(row)
+                return row
         try:
-            return self.store.read_json(task_id, "task.json")
+            row = self.store.read_json(task_id, "task.json")
+            row["assessment"] = task_summary(row)
+            return row
         except (FileNotFoundError, OSError):
             raise TaskNotFoundError(task_id) from None
 
     def list_tasks(self, *, mode: str | None = None, day: str | None = None,
-                   schedule_id: str | None = None, limit: int | None = None, offset: int = 0) -> list[dict]:
+                   schedule_id: str | None = None, limit: int | None = None, offset: int = 0,
+                   state: str | None = None, assessment_status: str | None = None,
+                   push_decision: str | None = None) -> list[dict]:
         if mode is not None and mode not in {"task", "conversation", "auto"}:
             raise ValueError("mode must be task, conversation or auto")
         if offset < 0 or (limit is not None and not 1 <= limit <= 200):
             raise ValueError("offset must be nonnegative and limit must be 1..200")
+        if state is not None and state not in {item.value for item in TaskState}:
+            raise ValueError("unsupported task state")
+        if assessment_status is not None and assessment_status not in ASSESSMENT_STATUSES:
+            raise ValueError("unsupported assessment status")
+        if push_decision is not None and push_decision not in PUSH_DECISIONS:
+            raise ValueError("unsupported push decision")
         day_value = self._parse_day(day) if day is not None else None
         tasks: list[dict] = []
         for stored_task_id in self.store.list_task_ids():
@@ -311,6 +337,12 @@ class TaskService:
                 if day_value is not None and self._task_local_day(row) != day_value:
                     continue
                 if schedule_id is not None and row.get("schedule_id") != schedule_id:
+                    continue
+                if state is not None and row.get("state") != state:
+                    continue
+                if assessment_status is not None and row["assessment"]["status"] != assessment_status:
+                    continue
+                if push_decision is not None and row["assessment"]["push_decision"] != push_decision:
                     continue
                 tasks.append(row)
             except (TaskNotFoundError, json.JSONDecodeError, OSError):
@@ -352,7 +384,9 @@ class TaskService:
         return {"month": month, "days": [days[key] for key in sorted(days)]}
 
     def delete_task(self, task_id: str) -> dict:
-        with self.data_packages.operation(task_id):
+        with self.data_packages.operation(task_id), self._lock:
+            if self._assessment_task_id == task_id:
+                raise TaskConflictError("该任务正在评估，不能删除")
             return self._delete_task(task_id)
 
     def _delete_task(self, task_id: str) -> dict:
@@ -456,6 +490,161 @@ class TaskService:
             "rendered": rendered,
         }
 
+    def get_assessment(self, task_id: str) -> dict:
+        return {"task_id": task_id, "assessment": self.get_task(task_id)["assessment"]}
+
+    def _save_assessment_locked(self, task_id: str, value: dict) -> dict:
+        # The caller owns _lock; deletion cannot race this metadata-only update.
+        row = self.get_task(task_id)
+        previous = (row.get("metadata") or {}).get("assessment") or {}
+        value = dict(value)
+        value["manual_model_calls_total"] = int(previous.get("manual_model_calls_total", 0)) + value.get("model_calls", 0)
+        self.store.write_json(task_id, "assessment.json", value)
+        self.store.append_jsonl(task_id, "assessment-history.jsonl", value)
+        handle = self._handles.get(task_id)
+        if handle is not None:
+            handle.task.metadata["assessment"] = value
+            handle.audit.persist_task(handle.task)
+        else:
+            row.pop("assessment", None)
+            row.setdefault("metadata", {})["assessment"] = value
+            self.store.write_json(task_id, "task.json", row)
+        return {"task_id": task_id, "assessment": value}
+
+    def request_assessment(self, task_id: str, *, allow_model: bool = False, retry: bool = False) -> dict:
+        """Explicit manual action; no source scan, auto backfill or native rerun.
+
+        At most one short text call may be in flight. It starts only when the
+        execution slots/queue are idle; a later foreground run is not blocked.
+        A repeated POST is idempotent unless the user explicitly requests retry.
+        """
+        if not isinstance(allow_model, bool) or not isinstance(retry, bool):
+            raise ValueError("allow_model/retry must be booleans")
+        with self.data_packages.operation(task_id), self._lock:
+            if self._shutdown_event.is_set():
+                raise TaskBusyError("服务正在关闭，未启动评估")
+            task = self.get_task(task_id)
+            if task["state"] not in {"COMPLETED", "FAILED", "CANCELLED"}:
+                raise TaskConflictError("只能评估已经结束的任务")
+            if self._assessment_task_id == task_id:
+                return self.get_assessment(task_id)
+            old = (task.get("metadata") or {}).get("assessment")
+            if (task["state"] == "COMPLETED" and isinstance(old, dict)
+                    and old.get("status") in {"normal", "abnormal", "needs_review"} and not retry):
+                return self.get_assessment(task_id)
+            # Failed tasks must never be promoted by a saved non-empty draft.
+            if task["state"] != "COMPLETED":
+                return self._save_assessment_locked(task_id, assessment_record(
+                    "needs_review", "原任务执行失败或中断，未追加模型判断。", reason="execution_incomplete"))
+            saved = self.get_result(task_id)
+            payload = saved.get("result") or {}
+            if not isinstance(payload, dict) or payload.get("valid") is not True:
+                return self._save_assessment_locked(task_id, assessment_record(
+                    "needs_review", "没有完整的原生结果，不能自动认定正常或异常。", reason="result_unavailable"))
+            answer = payload.get("report_text") or payload.get("answer_text") or saved.get("rendered")
+            if not isinstance(answer, str) or not answer.strip():
+                return self._save_assessment_locked(task_id, assessment_record(
+                    "needs_review", "没有可供归类的正文。", reason="result_unavailable"))
+            meta = payload.get("report_meta") or {}
+            if isinstance(meta, dict) and (meta.get("no_data") or meta.get("producer") == "scopex_no_data"):
+                value, _ = from_native(answer, complete=True, no_data=True, request=task["user_request"])
+                return self._save_assessment_locked(task_id, value)
+            footer, _ = parse_footer(answer)
+            if footer is not None:
+                value, _ = from_native(answer, complete=True, no_data=False, request=task["user_request"])
+                value["source"] = "native_reuse"
+                return self._save_assessment_locked(task_id, value)
+            if not allow_model:
+                return {"task_id": task_id, "assessment": task["assessment"], "requires_model": True}
+            if self.assessment_classifier is None:
+                return self._save_assessment_locked(task_id, assessment_record(
+                    "needs_review", "手动文本归类尚未配置；原结果保持不变。", reason="classifier_unavailable"))
+            if self._assessment_task_id is not None or self._active_ids or self._queue:
+                raise TaskBusyError("已有任务或文本评估在执行；未增加模型负载，请空闲时再试")
+            session_path = self.store.existing_task_dir(task_id) / "session.json"
+            try:
+                if session_path.stat().st_size > 65536:
+                    raise ValueError("control history too large")
+                session = self.store.read_json(task_id, "session.json")
+                if session.get("task_id") != task_id or session.get("session_key") != task.get("session_key"):
+                    raise ValueError("control identity mismatch")
+                turns = session.get("turns")
+                if not isinstance(turns, list) or any(not isinstance(x, dict) for x in turns):
+                    raise ValueError("invalid control history")
+                controls = [{"kind": x["kind"], "content": x["content"]} for x in turns
+                            if x.get("kind") in {"STEER", "RESUME"}]
+                if any(not isinstance(x["content"], str) for x in controls):
+                    raise ValueError("invalid control content")
+            except (OSError, ValueError, KeyError, AttributeError):
+                return self._save_assessment_locked(task_id, assessment_record(
+                    "needs_review", "原任务控制记录缺失或不可用，未猜测判据或调用模型。", reason="control_context_unavailable"))
+            self._assessment_task_id = task_id
+            pending = assessment_record("pending", "正在对已保存正文进行一次短文本归类，不重新调查。", source="manual_text")
+            try:
+                result = self._save_assessment_locked(task_id, pending)
+                def run() -> None:
+                    try:
+                        value = self.assessment_classifier(
+                            request=task["user_request"], answer=answer, controls=controls,
+                            anchor=task.get("scheduled_for") or task.get("created_at"))
+                    except Exception:
+                        value = assessment_record("needs_review", "手动评估未完成，原任务不受影响。",
+                                                  reason="assessment_worker_error", source="manual_text", model_calls=1)
+                    try:
+                        with self._lock:
+                            current = self.get_result(task_id)
+                            current_payload = current.get("result") or {}
+                            current_text = (current_payload.get("report_text") or
+                                            current_payload.get("answer_text") or current.get("rendered"))
+                            if current_text != answer:
+                                value = assessment_record("needs_review", "归类期间原正文发生变化，未采用旧正文的判定。",
+                                                          reason="assessment_source_changed", source="manual_text",
+                                                          model_calls=value.get("model_calls", 0))
+                            value["control_sha256"] = digest(json.dumps(controls, ensure_ascii=False, sort_keys=True))
+                            if self._shutdown_event.is_set():
+                                value = assessment_record("needs_review", "评估被服务关闭中断，未自动重跑。",
+                                                          reason="assessment_interrupted", source="manual_text",
+                                                          model_calls=value.get("model_calls", 0))
+                            self._save_assessment_locked(task_id, value)
+                    except (OSError, ValueError):
+                        with self._lock:
+                            failed = assessment_record("needs_review", "评估结果保存失败，原任务正文仍保留。",
+                                                       reason="assessment_storage_error")
+                            handle = self._handles.get(task_id)
+                            if handle is not None:
+                                handle.task.metadata["assessment"] = failed
+                            try:
+                                self._save_assessment_locked(task_id, failed)
+                            except OSError:
+                                pass
+                    finally:
+                        with self._lock:
+                            self._assessment_task_id = None
+                thread = threading.Thread(target=run, name=f"scopex-assessment-{task_id}", daemon=True)
+                self._assessment_thread = thread
+                thread.start()
+                return result
+            except Exception:
+                self._assessment_task_id = None
+                self._save_assessment_locked(task_id, assessment_record(
+                    "needs_review", "未能启动文本评估，原任务保持不变。", reason="assessment_start_failed"))
+                raise
+
+    def _reconcile_assessments(self) -> None:
+        # A restart never replays model calls, changes original execution state,
+        # or backfills old/disabled tasks. Only an already-pending label expires.
+        for task_id in self.store.list_task_ids():
+            try:
+                row = self.store.read_json(task_id, "task.json")
+                old = (row.get("metadata") or {}).get("assessment") or {}
+                if old.get("status") != "pending":
+                    continue
+                with self._lock:
+                    self._save_assessment_locked(task_id, assessment_record(
+                        "needs_review", "上次评估因服务重启中断，未自动重跑。", reason="assessment_interrupted"))
+            except (OSError, ValueError, AttributeError):
+                continue
+
     def get_evaluation(self, task_id: str) -> dict | None:
         self._require_task(task_id)
         try:
@@ -507,7 +696,7 @@ class TaskService:
             "evidence.json", "events.jsonl", "final.txt", "evaluation.json",
             "runtime-limit.json", "runtime-guard.json", "investigation-error.json",
             "worker-error.json", "cleanup.json", "report.md", "report-meta.json",
-            "report.json", "report-error.json",
+            "report.json", "report-error.json", "assessment.json", "assessment-history.jsonl",
         )
         included = [name for name in allow if (task_dir / name).is_file()]
         runtime_context = self._review_runtime_context(task_dir)
@@ -581,6 +770,8 @@ class TaskService:
                         handle.coordinator.request_stop("server_shutdown")
                     except Exception:
                         pass
+        if self._assessment_thread is not None:
+            self._assessment_thread.join(timeout=max(0.0, deadline - time.monotonic()))
         for handle in handles:
             thread = handle.thread
             if thread is None or not thread.is_alive():
@@ -924,6 +1115,7 @@ class TaskService:
                 if handle.task.terminal:
                     continue
                 row = handle.task.snapshot()
+                row["assessment"] = task_summary(row)
                 row["queue_position"] = positions.get(handle.task.id)
                 events = handle.memory_events.events
                 last = next((x for x in reversed(events) if x.type.value in {

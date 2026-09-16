@@ -2,6 +2,7 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { RouterLink, useRoute } from 'vue-router'
 import { api, ApiError } from '../api'
+import AssessmentPanel from '../components/AssessmentPanel.vue'
 import type {
   Evaluation,
   EvidenceItem,
@@ -50,7 +51,13 @@ const evaluationOptions = [
 
 const textReport = computed(() => {
   const value = result.value?.result?.report_text
-  return typeof value === 'string' && value.trim() ? value : null
+  if (typeof value !== 'string' || !value.trim()) return null
+  const meta = result.value?.result?.report_meta as Record<string, unknown> | undefined
+  const footer = meta?.assessment_footer
+  // Only hide the exact suffix already validated by the backend. The API/audit
+  // keep the original native text, including the optional footer.
+  return typeof footer === 'string' && footer && value.endsWith(footer)
+    ? value.slice(0, -footer.length).trimEnd() : value
 })
 const textMeta = computed(() => {
   const value = result.value?.result?.report_meta
@@ -361,6 +368,7 @@ onBeforeUnmount(() => timer && window.clearInterval(timer))
 
     <div class="task-layout">
       <div class="main-column">
+        <AssessmentPanel v-if="task" :key="task.id" :task="task" @refresh="refresh" />
         <section class="panel result-first-panel">
           <div class="section-heading">
             <div>

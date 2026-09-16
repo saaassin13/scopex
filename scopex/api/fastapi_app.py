@@ -9,7 +9,7 @@ from fastapi import FastAPI, Query, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, StrictBool
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from scopex.api.schedules import ScheduleNotFoundError, ScheduleService
@@ -27,6 +27,21 @@ MAX_BODY = 64 * 1024
 class MessageRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     message: str = Field(min_length=1, max_length=32768)
+
+
+class RunRequest(MessageRequest):
+    assessment_enabled: StrictBool = False
+
+
+class AssessmentRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    allow_model: StrictBool = False
+    retry: StrictBool = False
+
+
+class AssessmentEnabledRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    assessment_enabled: StrictBool
 
 
 class OptionalMessageRequest(BaseModel):
@@ -55,6 +70,7 @@ class ScheduleCreateRequest(BaseModel):
     daily_time: str | None = Field(default=None, max_length=5)
     run_at: str | None = Field(default=None, max_length=64)
     enabled: bool = True
+    assessment_enabled: StrictBool = True
 
 
 class ScheduleEnabledRequest(BaseModel):
@@ -178,7 +194,9 @@ def create_app(
         return service.cancel_queued(task_id)
 
     @app.post("/runs", status_code=202)
-    def create_run(body: MessageRequest) -> dict[str, Any]:
+    def create_run(body: RunRequest) -> dict[str, Any]:
+        if body.assessment_enabled:
+            return service.create_auto_run(body.message, assessment_enabled=True)
         return service.create_auto_run(body.message)
 
     @app.get("/tasks")
@@ -188,8 +206,12 @@ def create_app(
         schedule_id: Annotated[str | None, Query()] = None,
         limit: Annotated[int | None, Query(ge=1, le=200)] = None,
         offset: Annotated[int, Query(ge=0)] = 0,
+        state: str | None = None,
+        assessment_status: str | None = None,
+        push_decision: str | None = None,
     ) -> dict[str, Any]:
-        return {"tasks": service.list_tasks(mode=mode, day=day, schedule_id=schedule_id, limit=limit, offset=offset)}
+        filters = {key: value for key, value in {"state": state, "assessment_status": assessment_status, "push_decision": push_decision}.items() if value is not None}
+        return {"tasks": service.list_tasks(mode=mode, day=day, schedule_id=schedule_id, limit=limit, offset=offset, **filters)}
 
     @app.get("/tasks/calendar")
     def task_calendar(month: Annotated[str, Query(pattern=r"^\d{4}-\d{2}$")]) -> dict[str, Any]:
@@ -242,6 +264,14 @@ def create_app(
     def steer(task_id: str, body: MessageRequest) -> dict[str, Any]:
         return service.steer(task_id, body.message)
 
+    @app.get("/tasks/{task_id}/assessment")
+    def get_assessment(task_id: str) -> dict[str, Any]:
+        return service.get_assessment(task_id)
+
+    @app.post("/tasks/{task_id}/assessment", status_code=202)
+    def assess(task_id: str, body: AssessmentRequest) -> dict[str, Any]:
+        return service.request_assessment(task_id, allow_model=body.allow_model, retry=body.retry)
+
     @app.get("/tasks/{task_id}/evaluation")
     def get_evaluation(task_id: str) -> dict[str, Any]:
         return {"task_id": task_id, "evaluation": service.get_evaluation(task_id)}
@@ -283,11 +313,16 @@ def create_app(
                 daily_time=body.daily_time,
                 run_at=body.run_at,
                 enabled=body.enabled,
+                assessment_enabled=body.assessment_enabled,
             )
 
         @app.patch("/schedules/{schedule_id}/enabled")
         def set_schedule_enabled(schedule_id: str, body: ScheduleEnabledRequest) -> dict[str, Any]:
             return schedules.set_enabled(schedule_id, body.enabled)
+
+        @app.patch("/schedules/{schedule_id}/assessment")
+        def set_schedule_assessment(schedule_id: str, body: AssessmentEnabledRequest) -> dict[str, Any]:
+            return schedules.set_assessment_enabled(schedule_id, body.assessment_enabled)
 
         @app.post("/schedules/{schedule_id}/run", status_code=202)
         def run_schedule_now(schedule_id: str) -> dict[str, Any]:

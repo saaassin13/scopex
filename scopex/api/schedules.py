@@ -93,7 +93,10 @@ class ScheduleService:
         daily_time: str | None = None,
         run_at: str | None = None,
         enabled: bool = True,
+        assessment_enabled: bool = True,
     ) -> dict[str, Any]:
+        if not isinstance(assessment_enabled, bool):
+            raise ValueError("assessment_enabled must be a boolean")
         name = name.strip()
         message = message.strip()
         if not name:
@@ -111,6 +114,7 @@ class ScheduleService:
             "kind": kind,
             **rule,
             "enabled": bool(enabled),
+            "assessment_enabled": assessment_enabled,
             "created_at": iso(created),
             "updated_at": iso(created),
             "next_run_at": iso(self._next_after(created, kind, rule)) if enabled else None,
@@ -139,6 +143,18 @@ class ScheduleService:
                 row["next_run_at"] = None
             row["enabled"] = bool(enabled)
             row["updated_at"] = iso(current)
+            self._persist_locked()
+            return dict(row)
+
+    def set_assessment_enabled(self, schedule_id: str, enabled: bool) -> dict[str, Any]:
+        if not isinstance(enabled, bool):
+            raise ValueError("assessment_enabled must be a boolean")
+        with self._lock:
+            row = self._items.get(schedule_id)
+            if row is None:
+                raise ScheduleNotFoundError(schedule_id)
+            row["assessment_enabled"] = enabled
+            row["updated_at"] = iso(now_local())
             self._persist_locked()
             return dict(row)
 
@@ -201,6 +217,7 @@ class ScheduleService:
                 trigger_type="schedule",
                 schedule_id=schedule_id,
                 scheduled_for=planned,
+                metadata={"assessment_enabled": snapshot.get("assessment_enabled", True)},
             )
             task_id = task["id"]
             if task.get("state") == "QUEUED":
@@ -347,6 +364,7 @@ class ScheduleService:
         for row in value:
             if isinstance(row, dict) and isinstance(row.get("id"), str):
                 normalized = dict(row)
+                normalized.setdefault("assessment_enabled", True)
                 normalized.setdefault("missed_count", 0)
                 normalized.setdefault("last_missed_at", None)
                 self._items[normalized["id"]] = normalized
