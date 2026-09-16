@@ -1,190 +1,89 @@
-# 原生回答与编码器、图片 Skill 修正
+# 原生回答与业务 Skill：当前实现契约
 
-状态：2026-09-15，`feature/agent-native-results` 开发分支。首批实现已在 `ae846f6` 提交，用户提供的现场任务确认运行该版本；下述编码器上下文修复仍未提交或部署。用户已批准正常任务直接交付 OpenClaw 答案的方向。
+同步：2026-09-16；代码基线main@cb90d02。原feature/agent-native-results内容及后续修正已合入main。用户确认已部署端侧服务器并过夜运行总体正常，不再把整轮改动写成未提交/未部署。
 
-## 现场追加：task-b9ef01e82ab2 上下文溢出
+本文件是当前实现快照。[2026-09-15逐次开发与复盘记录](https://github.com/saaassin13/scopex/blob/cb90d028773b4fac4eabf4b429ecb3fed97f1c51/docs/12-native-answers-and-skill-refinement.md)保留在固定提交；其中未提交/未部署、schema4、压缩关闭等叙述只代表各次记录当时的状态，不能覆盖下面的当前定义。
 
-依据为用户提供的复盘 ZIP，以及 workstation 对该任务 `agent.stdout.txt`、`agent.stderr.txt` 和 wire metadata 的只读核对。
-
-- 该任务运行 390 秒，没有产生业务结论。前 7 次模型调用成功，第 8 次 HTTP 400：输入至少 30721 tokens，加请求输出 2048，超过 32768 上限。这里的“至少”是服务端错误原文，不能解释成只超了一个 token。
-- Agent 先分析一次，再查询两个保存的事件窗口；随后调用日志工具时误用不存在的 `--files` 参数，两个调用均失败，多花一轮纠错。
-- 修正参数后，两次无关键词的 120 行日志输出分别为 15634、15998 字符，且已截断。高频混合日志从窗口起点填满额度，不能保证覆盖目标事件。下一次模型请求即溢出，未观察到成功的原生恢复。之前引用原生文档的恢复能力不能当作该部署已经验证的兜底。
-- 框架将英文 overflow 通知放入普通 payload，ScopeX 因其非空误称为“草稿”；任务 FAILED 判定本身正确。
-
-本次修正：日志工具默认 40 行、最多 6000 字符（可显式设 1024–12000），紧凑 JSON，超限删除完整行并标记 `output_limited/truncated`，保留原始行内容与行号；两个 Skill 明确位置参数、精确时间与关键词、逐次复核和截断处理。error envelope 仅在明确提供 `finalAssistantVisibleText` 时保留草稿，普通框架提示不再当回答。
-
-验证：`PYTHONPATH=tests python3 -m unittest test_business_skill_tools test_native_answers test_openclaw_runner_outcome test_encoder_motion_context -q`，31 项通过。只读执行新日志脚本（标准输入，不落远端文件），对 13:28:43.258、13:26:08.741 各 ±0.15 秒、关键词 EncoderVal、20 行，分别输出 4111/4035 字符，均覆盖目标时间且如实标记截断。该片段验证不等于完整运动过程判定。
-
-Codex skill-creator 的通用 frontmatter 校验器拒绝项目原有 OpenClaw `user-invocable` 字段；保留该原生字段，不将这项校验记为通过。脚本回归通过，新增命令参数与实际 argparse 对齐。
-
-未验证：部署后完整 Agent 重跑、业务异常判别准确率、其他长任务的原生 overflow 恢复。字符上限减少本次输入膨胀，不保证任意多轮任务永不溢出。本轮未改模型/上下文/压缩参数，未提交、推送或部署；无持久测试资源，用户 ZIP 与截图原位保留。
-
-本文件覆盖早期文档中“所有业务任务必经 TextReportComposer”与默认主动 compaction 的描述；权限、隔离、时间锚点、离线调度和并发边界不变。现场原因见 [实机复盘](reviews/2026-09-15-workstation-findings-and-proposal.md)。
-
-## 1. 产品主链
+## 1. 唯一默认结果链
 
 ```text
 POST /runs / 定时触发
- -> TaskService 准入、独立任务
- -> OpenClaw + 已加载业务 Skill 调查、判断、回答
- -> 原生 CLI outcome
- -> ScopeX 保存正文、来源、执行状态和审计
+ -> TaskService准入
+ -> OpenClaw + 模型 + 已加载Skill自主调查、判断和回答
+ -> 原生CLI outcome
+ -> ScopeX正文、来源、执行状态与审计
 ```
 
-- 使用现有 `cli_outcome.answer`，不另建 Agent Loop、SSE 终态解析器或报告模型调用。
-- 正常与异常执行统一输出现有 version=2 文本格式。`report_meta.producer=openclaw`、`postprocess_model_calls=0`。
-- `valid/complete` 只指原生执行及文本交付完成，不认证业务语义或未观察范围。正常任务不要求工具输出匹配 ScopeX 业务 JSON 才可交付。
-- 原生 error/aborted/非终态 stopReason、进程失败或预算中断不能因有文字/Evidence而变成功。可见原生文字保存为 partial 草稿，无文字为 unavailable。
-- 已核对 OpenClaw 2026.9.2 的 `meta.stopReason=length` 和 `meta.finalAssistantVisibleText`；截断时保留部分回答，不把附加截断提示当最终结论。
-- 不从任意 wire `finish=stop` 抢救“成功”：压缩等辅助调用也会 stop。没有原生 outcome 的中断保留审计和明确失败，不自动再调模型。
-- 旧 StructuredFinalizer/TextReportComposer 和相关专项回归保留为历史兼容、独立回放能力，退出产品默认链。
+Factory启用native_answers=True和concise_terminal_handoff=False，TaskService优先走finish_native_answer。除脱敏、长度约束与元数据封装外不另调模型重写；postprocess_model_calls=0。
 
-实现位置：`scopex/api/factory.py`、`scopex/api/service.py`、`scopex/runtime/investigation.py`、`scopex/agent/outcome.py`。
+StructuredFinalizer、Claim Validator、ReportComposer、TextReportComposer保留历史/专项兼容及独立回放，但不参与产品默认交付。不要求工具输出匹配固定业务schema或ClaimsJSON才可交付。也不从任意wire响应的stop推断任务成功，辅助压缩调用不是原生最终答案。
 
-## 2. 原生上下文管理与运行参数
+## 2. 状态与落盘
 
-产品 LocalRuntimeConfig/CLI 默认 `compaction.enabled=false`，已有 `--disable-compaction` 保留；`--enable-compaction` 可显式恢复主动/完成后维护。
+| 原生结果 | 产品状态 |
+|---|---|
+| 原生执行正常结束且正文完整 | COMPLETED；execution_status=completed；report_meta.status=complete |
+| 预算/运行保护/原生错误/截断/进程失败，有有效原生文字 | FAILED；execution_status=incomplete；status=partial，保留草稿 |
+| 同类失败没有有效原生文字 | FAILED；execution_status=incomplete；status=unavailable |
+| 已知Locator确认固定窗口无数据并正常结束 | 可正常完成无数据说明；producer=scopex_no_data，不当业务正常诊断 |
 
-现场 OpenClaw 2026.9.2 文档确认：关闭的是主动阈值压缩与 direct-command post-turn maintenance，preflight/overflow recovery仍由OpenClaw负责。低层历史实验的配置默认不改，不扩大历史Step6验收结论。
+error envelope只有明确的finalAssistantVisibleText可作为草稿；普通英文框架错误通知不作为答案。length保留原生部分正文，不取附加截断通知。有Evidence不覆盖失败；complete只表示执行与交付完整，不认证数字、单位、范围或物理原因全部正确。
 
-不要为一次性独立任务的未来追问预先做数分钟会话维护。未来恢复持续会话时需重新评估配置，不据此声明所有长会话都应关闭主动压缩。
+result.json使用version=2、report_text、report_meta、execution_status、investigation_reasons；另存report.md/final.txt/report-meta.json。通常producer=openclaw；no_data单独标记来源。保留真实来源编号、未知引用警告和必要脱敏。
 
-图片额度仍由 `SCOPEX_MAX_IMAGES_PER_PROMPT` 明确设置，并须与服务端匹配。默认4不擅自改12；现场vLLM接受数量12也不等于全分辨率12张已验收。部署时必须保留现有挂载、模型参数与任务存储。
+旧版“预算结束后另写报告，再因报告完整标完成”已不在默认分支，不是当前需要重做的架构问题。不以状态问题为由恢复任何报告模型链。
 
-当前没有部署授权，本分支不执行上述现场配置变更，不调整vLLM max-num-seqs。
+## 3. 上下文与实际部署参数
 
-## 3. Evidence 保真
+LocalRuntimeConfig/CLI默认compaction=false；--enable-compaction显式开启，--disable-compaction保留。**端侧deploy/edge/compose.yaml已经传入--enable-compaction**，不能把CLI默认关闭当作端侧有效配置。
 
-`OpenClawEvidenceProjector` 对结构化业务输出只压缩JSON空白：
+使用OpenClaw原生上下文机制，不自建压缩器或子Agent。Runtime Dockerfile固定OpenClaw2026.9.2。长任务实际触发、压缩后证据保留及overflow恢复仍需单独核验；历史溢出复盘不是当前所有任务失败的证明，也不能用短任务/过夜运行替代该专项。
 
-- 不按字段白名单删除 units、limitations、semantics 或新Skill字段。
-- 不二次裁减 top_candidates。
-- 超过投影预算，记录明确的 capacity_exceeded 和原始输出哈希，标记 working_derived；不切出残缺JSON冒充事实。完整工具结果仍在OpenClaw审计。
-- 界面不把这种容量占位记录列为业务事实。结果正文不再依赖这份投影才能交付。
+edge图片SCOPEX_IMAGE_LIMIT默认12同时进入vLLM和ScopeX；通用图片默认4，每次view_image最多2。端侧restart均no，模型、路径、额度由deployment.md描述；本次不改这些配置。
 
-原图来源身份仍保留，但正常答案不再重新附图进行第二次视觉推理。
+## 4. Evidence、取样和无数据
 
-## 4. 编码器
+结构化业务输出投影只压缩JSON空白，不按白名单删除units/limitations/semantics或新字段，也不二次截top候选。超预算明确capacity_exceeded与原始哈希并标working_derived，不剪残JSON冒充事实；原生正文不以此投影为必经关卡。
 
-工具输出 schema=4；events_out schema=3。旧任务文件不改写。
+原图身份用于审计，视觉判断在调查调用中完成，不再次附图给报告模型。Locator按实际时间网格选代表图，避免密集采集段挤掉小时中部，不重复图片填满额度；保留selected_count/largest_selected_gap_ms。
 
-确定性修正：
+固定窗无数据应立即说明并结束，不换窗/来源/猜UTC，不默认无限等待。现有请求边界仅对可核验的已知Locatorno_data合同硬结束，匹配工具/命令source/start/end/结果窗口与零匹配空文件列表；用户停止优先。后续请求不再发上游模型，系统来源单列。不撤回此前同批工具，不声称所有业务零样本均已硬拦截。source_unavailable/读取错误与no_data分开。
 
-- 局部正向增量按相同dt归一化，恒速下采样间隔变长不再自动变成正跳候选。
-- 反向事件补充持续时间、平均count/s、前后各最多2秒的运动摘要。无效记录/时间断点不能跨越补上下文。
-- 恢复检查改为可配置时间窗（默认1000ms），达到80%回补即结束，不吞掉之后独立发生的跳变。recovery_observed_ms反映实际观察时长；不是物理恢复证明。
-- 正常恒值区间单列，不争用top候选名额。优先保留最大回退/正跳/采样间隙，再按同类型筛查门槛的相对程度选样，默认6项。
-- `anomaly_event_count` 改为 `candidate_event_count`；candidate_events_total不含恒值区间，observed_events_total包含全部观测事件。候选数不是已确认异常数。
-- `--inspect-events FILE --start ... --end ... --top-events N` 可查询已保存事件，无需重新扫描日志或临时Python全量打印。
+## 5. 编码器：当前产品schema5
 
-Skill要求结合启动、减速、停转、回弹及周围正常过程解释候选，必要时主动补看局部日志；不再只报候选数并让用户自行核查。
+产品Skill使用：
 
-**尚未完成的业务验收**：未用现场标签确定正常回弹包络；没有宣称所有近停回退正常，也没有宣称脚本已经自动分类全部工况。相邻过程合并、可接受性和根因仍由Agent结合证据判断。需要对正常启停/回弹及已确认异常样本做误报漏报核对。
+```bash
+python3 {baseDir}/scripts/encoder_health.py /agent-data/logs/<实际文件> \
+  --start "YYYY-MM-DD HH:MM:SS:000" --end "YYYY-MM-DD HH:MM:SS:000" \
+  --motion-report --events-out /task-scratch/encoder-motion.json
+# 只查询实际返回的过程ID，不再扫描全部日志：
+python3 {baseDir}/scripts/encoder_health.py \
+  --inspect-events /task-scratch/encoder-motion.json --episode M1
+```
 
-## 5. 图片与取样
+默认显示3个优先过程；M编号只作查询引用，不是故障码。无--motion-report的schema4及旧事件文件schema3属于兼容路径，不是当前产品Skill默认输出。
 
-- Skill先判断可见退化及影响区域，再区分失焦、运动、雾化、污物、水滴或其他解释。
-- 首轮直接看少量原图；指标仅在能改变筛选决策时使用，不默认先跑help/metrics。
-- 预留累计图片额度给邻近时点复核；多个样本反复出现与完整连续区间分开，起止只定位到观察边界。
-- Locator改为按实际时间网格选邻近文件；密集采集段不再挤掉小时中部。间隙造成多个网格点对应同一图片时不重复填满额度。
-- 新增 selected_count 与 largest_selected_gap_ms，帮助判断覆盖。
+允许前进、持续后退、停止、回弹、归零后累积；大反向位移、长时、少见或缺少控制意图不构成异常。motion_pattern描述观察形态，不代表指令模式；反向距离/时长不再生成统计故障分数。离轨返回同类比较也只是未校准参考，不是设备限值。
 
-未增加视觉模型、训练管线、依赖或核心业务工作流。现有模型对8点原图已能识别主要退化，但新Skill的业务效果和总耗时仍需实机对照验证。
+使用实际dt；invalid、缺口、非正dt不拼接。孤立离轨返回结合两侧趋势及桥接速率作筛查，不保证捕获多点突跳、慢漂移或原始文件所有时间倒退；现有载入器排序边界如实保留。
 
-## 6. 验证
+counter_boundaries包含小计数落到精确零的可能重置；平滑反向到零也可能出现，计数本身不证明意图。正常归零后累积达到旧值不自动当快速故障恢复。未采到精确零时仍使用下降至少10000、落点不超过1000的启发式，不能称完整重置检测器。后续最多2秒、遇invalid或超过500ms间隙停止；边界不抹除采样缺口。
 
-- 原生交付专项：真实产品Factory/Coordinator/TaskService，替换OpenClaw执行；覆盖完整答案、无业务schema、超时草稿、无outcome、原生错误/length、脱敏、未知引用、普通问答；断言零额外报告调用。
-- 业务反例：恒速改变采样间隔、实际跳变、停后回退的静止上下文、不同频率下恢复、恢复后独立跳变、正常停转不挤掉极值、有界事件查询、非均匀图片密度。
-- 前端：Vue类型检查与Vite构建通过。真实构建页面+本机合成OpenClaw执行，通过首页提交、正常正文、超时FAILED/草稿及来源展开；不是Spark联调。
-- 最终 `python3 -m unittest discover -s tests -q` 执行605项，601项通过，4项既有macOS平台失败；已在未修改HEAD归档中单独复现：3项POC02强制Linux，1项临时路径解析断言。它们没有被跳过、删除或伪装通过。首轮沙箱禁止本机端口导致的错误已在允许本机测试服务的环境复查，不计为通过。
-- 尚未执行：Spark新版任务、长输入原生溢出恢复、8/12张原图容量、两项业务人工对账和并发收益验证。当前没有性能改善百分比结论。
+过程合组、前后上下文及全跨度极值包络用于解释，不冒充每个采样或完整物理周期。默认2000ms是分析设置，不是业务阈值；raw/filtered/报告速度是关联测量，不是独立机械真值。必要时查询不同未决问题的过程ID，禁止重复查询/倾倒原日志。
 
-## 7. 分支与资源
+输出以时间+现象、值/形态/证据为主；需要判断动作是否符合指令时必须有独立控制或业务状态，缺证据不是故障。语义准确率仍需要正常工况与已知异常对照，不能把过程数、候选数或幅度混用。
 
-分支 `feature/agent-native-results`，保留全部未提交修改及两份审查报告；用户只授权开发，未commit/push/部署。
+## 6. 图片与日志
 
-本地前端node_modules/dist由本轮验证生成，保留用于后续开发。现场任务、8张获准原图与核对记录留在 `/private/tmp/scopex-review-20260915`，不提交业务数据。一次性UI验收服务、合成数据和基线临时副本在验收后清理；保留必要测试日志。
+图片先实际看少量原图，区分可见退化、影响区域及可能解释；指标仅辅助选样，预留额度给邻近复核。重复出现不等于全时段连续存在，观察边界不证明物理起止或原因。没有新增视觉模型/训练流程。
 
-## 2026-09-15：运动过程分析实现（未提交、未部署）
+日志上下文采用位置文件参数，不是--files；默认40行/6000字符，可显式1024–12000字符。保留完整原始行/行号，截断如实标记，不用高频窗口起点前N行冒充目标覆盖。
 
-用户确认通用目标：输入正常性未知的时间窗，区分正常启停/回弹与异常；禁止围绕某个任务时间或数值定制规则。
+## 7. 产品新增与验证
 
-编码器 Skill 现在调用已有脚本的 `--motion-report --events-out <path>`，使用 schema 5。历史调用不带参数时仍返回原候选格式，以保留既有回归契约；产品 Skill 不再走该格式。没有修改 OpenClaw、ScopeX 运行时或模型配置。
+已实现按schedule_id跨日期历史（前端50条分页，APIlimit1..200、offset，先过滤再分页），以及独立显式原始数据收集入口。历史记录、数据包、反馈与终态删除仅操作ScopeX资产，不修改源数据。
 
-实现内容：
+代码基线[Actions 35043132700](https://github.com/saaassin13/scopex/actions/runs/35043132700)为650项Python、compileall、Vue构建、卫生检查通过。原生专项使用真实Factory/Coordinator/TaskService并替换OpenClaw执行，验证超时草稿、原生错误/length、无schema、零额外报告调用及no_data来源；不冒充真实GPU语义验收。
 
-- 使用实际 dt；跨缺口、无效记录、非正 dt 的 pair 连续性不拼接。现有载入器仍会按时间排序，不据此声明已经检测原始文件里的所有时间倒退或业务重置事件。
-- 孤立离轨并返回：两侧各两个正常相邻速率的中位数/MAD、跨可疑点的桥接速率一致，两个相反的大步同时偏离局部趋势；额外排除不超过 2 count 的量化变化。这是采样级筛选，不是已校准的故障阈值，也尚未覆盖所有多点突跳。
-- 将负增量、零速切换和突发持续速率变化作为过程线索，间隔小于 2000ms 的线索合组；保存前后最多 2000ms 上下文。这个时间是可复核的分组假设，不是正常回弹上限。连续缓慢漂移仍可能漏检。
-- 计算峰谷回撤、反向持续时间、各反向波瓣、是否逐次衰减，以及前后速率和状态。过程回撤与旧版单段连续负增量总量不同，不可混称同一个“最大值”。
-- 同窗口比较限定相同前后状态、离轨返回类型和前段速率在两倍范围内；至少五个其他过程才提供稳健偏离值，附两个参照过程 ID。参照是未验证的观测，不能当健康标准；当前状态分类仍较粗。
-- 摘要最多三个过程，优先保留最大回撤和离轨返回，再按相对偏离排序；每个时序以全跨度分箱极值呈现，不再取日志前 N 行。数据文件保留全部过程时序；`--inspect-events <path> --episode M1` 返回该过程最多 64 个全跨度点，不重新扫描原日志。缩减轨迹不等于完整采样，细节遗漏有显式标记。
-- 同过程 raw/filtered 样本数、无效数量、差异和反向次数一并计算；它们不是独立物理传感器。未实现滤波延迟校正或自动根因判定。
-
-验证：`PYTHONPATH=tests python3 -m unittest test_encoder_episodes test_encoder_motion_context test_encoder_invalid_boundaries test_business_skill_tools -q`，37 项通过。包含采样变化恒速、正向离轨返回、衰减回弹合组、断点、持续正向速率变化、极值与首尾保留、量化抖动、参照偏离、保存后无原日志查询和实际 CLI 新输出契约。
-
-workstation 只读回放：2026-09-14 12/13 点，各 32904/32768 个应用采样；过程分析分别约 3.8/4.0 秒（不是 Agent 总耗时），生成 12/106 个过程。13:26:06.767–13:26:24.409 合组回撤 2664 count；13:28:43.140–13:28:45.686 为 1863 count。未将这两个小时预标正常或异常，不据此宣称准确率。
-
-仍需验收：新 Skill 的真实 OpenClaw 全链路任务、正常/异常人工复核、参数敏感性与慢漂移等漏检边界。当前完成工具与 Skill 实现和数据回放，尚未证明业务判断稳定交付。未提交、推送、部署；远端脚本通过 stdin 运行，无远端文件或服务变更。临时源码拼接文件已删除；保留源码与有效回归测试。
-
-### 固定时间窗无数据结束规则
-
-检查发现此前仅返回 matching_count=0，未明确要求结束。现已在通用 runtime prompt 和 data-locator Skill 加入：固定窗口定位为空或业务工具窗口内零记录，立即报告无数据并结束本次运行；不改时间、来源，不轮询重试，除非用户显式要求兜底。未来定时触发不受影响。目录缺失返回 source_unavailable，与 no_data 区分；读取/解析错误也不得解释成正常或无数据。
-
-验证 `PYTHONPATH=tests python3 -m unittest test_data_locator_sampling test_runtime_message_contract test_schedules -q`：15 项通过。当前为 OpenClaw 指令与工具结果契约，未新增自定义循环拦截；尚未实测模型在定时空窗口下的完整退出行为。未部署。
-
-### 定时任务执行历史快捷入口
-
-定时任务名称及“执行历史”链接进入 `/schedules/:id/history`，按 schedule_id 查询全部日期执行记录，最新优先，每页 50 条；显示状态、执行时间、计划时间、耗时，点击打开原结果详情，详情可返回对应定时任务历史。包含该定时任务的立即执行记录。现有普通历史不变，未改存储或调度行为。
-
-GET /tasks 增加可选 schedule_id、limit(1..200)、offset 参数，先过滤后分页。沿用文件存储枚举，分页限制响应与渲染量，尚未引入磁盘查询索引；超大量历史时磁盘扫描仍有成本。
-
-16 项 API/定时任务相关测试通过；Vue 类型检查/Vite 构建通过；本机合成 52 条记录实际验证入口、第二页、详情和对应返回链接。测试专用服务、页面和合成数据清理。未提交、推送或部署。
-
-### 无数据硬结束：task-3f2e4968e3af 回归
-
-此前提示词约束被真实任务违反：15:04:47–15:34:47 无数据后扩大范围、枚举目录，并无依据改按 UTC 查07点数据。112fcad任务输出不能用于原目标窗口。
-
-本次在已有 RuntimeRequestHook / ModelProxy 请求边界消费已知 locator 的结构化 no_data：匹配 exec 调用、确定脚本路径、命令 source/start/end 和返回窗口、零匹配及空文件列表；拒绝普通文本、其他工具、窗口不一致及复合 shell。确认后锁定终态，代理不再请求上游模型，直接通过现有 OpenAI 流式/非流式协议返回确定性无数据说明，使 OpenClaw 正常结束。审计记录 forwarded=false、local_terminal=no_data 和本地正文；产品标记 producer=scopex_no_data，不冒充模型生成。用户停止优先。仅阻止结果被接收后的后续模型调用，无法撤回此前同批已经发出的工具。
-
-时区指令明确禁止根据文件存在性推测UTC；缺少必要时区配置应报告缺口，不改窗口。未凭空修改部署的数据源时区。
-
-验证：24项 hook/native outcome/runtime message测试、6项实际本机HTTP代理测试通过（流式与非流式均无上游调用），原复盘包首次no_data调用/结果回放在扩大窗口前被截住。不是完整实机OpenClaw验收。当前硬终态只覆盖既有locator明确no_data契约；其他业务工具的零样本尚未统一为硬结束信号，仍遵循指令约束。未提交、推送或部署。测试临时HTTP服务和目录自动回收，用户复盘包原位保留。
-
-## 2026-09-15 端侧上下文与计数边界修复
-
-任务 `task-9fec37b0b43c` 第 15 次模型请求返回上下文超限：输入至少
-30721 tokens，加输出预算 2048 超过 32768。失败任务配置与当时运行容器均未开启
-compaction。此次在 edge Compose 显式加入 `--enable-compaction`，保留既定
-`restart: "no"`；不新增子 Agent 或自建压缩流程。
-
-计数边界分析现在独立统计时间缺口；观察归零后最多 2 秒的有效连续样本，超过
-500ms 间隔或遇无效样本即停止。返回先前下降幅度的 80% 仅作为描述性回归特征，
-不代表正常或硬件原因。立即回归的两侧增量保留供离群点检测，持续低计数和缺乏
-后续样本分别描述，不能据此确认为复位。原有 10000/1000 近零筛选仍是启发式，
-不是完整的计数器复位检测器。
-
-Skill 允许针对不同未决问题查询不同过程 ID，继续禁止重复查询和倾倒原始日志。
-验证：40 项受影响测试通过，覆盖缺口叠加归零、瞬时掉点回归及后续观察中断。
-未部署；未验证真实模型压缩触发。部署后应复跑固定窗口
-`2026-09-15 17:56:13` 至 `2026-09-15 18:26:13`，检查完整答案与业务判断；另用长
-上下文任务确认原生压缩实际触发且证据保留，不能将短任务成功当作压缩验收。
-
-## 编码器业务语义修正：反向运动与重置是允许行为
-
-用户明确：转盘允许前进、持续后退、停止、回弹；计数器允许重置到零后重新累积。
-因此反向距离大、持续时间长、同窗口少见或归零本身都不是异常依据。
-
-- 运动报告增加方向/形态描述，区分纯反向与混合方向；不再给反向位移和时长生成
-  稳健偏离分数。仍保留原始位移、时长、轨迹用于描述，不将统计差异转成故障。
-- 小计数到零也作为可能的重置边界，不再必须先累积到 10000。归零后正常累积即使
-  很快达到旧值，也不能仅因达到旧值当作瞬时恢复。立即异常跳回仍交由双侧趋势检查。
-- 边界分段不抹除时间缺口和无效样本。计数单独不能证明重置意图；平滑后退到零
-  也可能出现，边界仅用于避免跨疑似重置计算虚假运动。
-- 近零但未采到精确零仍保留原有启发式筛选（下降至少 10000、落点不超过 1000）；
-  不是覆盖所有未采到零的重置检测器。缺少重置记录时不能声称检测到了所有重置。
-- Skill 明确“不知道为何后退/重置”不是异常；需要判断动作是否符合指令时必须有
-  独立控制或业务状态依据。用户报告以时间和现象为主，M 编号仅作可选查询引用。
-
-验证：41 项相关测试通过，覆盖长反向、小计数重置后累积、零点瞬时掉点及已有
-缺口、无效值、运动上下文测试。未部署、未用真实模型重新验收本次报告语义。
+用户已部署并过夜运行总体正常。独立专项还包括业务人工对账、全分辨率图片容量、长输入压缩、容器资源来源和整批并发收益；没有据此宣告故障，也没有新增性能百分比。详见[验收状态](02-delivery-and-acceptance.md)。

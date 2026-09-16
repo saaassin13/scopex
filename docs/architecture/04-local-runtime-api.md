@@ -1,254 +1,119 @@
 # Local Runtime API
 
-ScopeX Runtime MVP has passed real OpenClaw + local-vLLM integration and the
-line-level stored-trace refinalization. The product boundary is now a
-loopback-only **FastAPI + Uvicorn** HTTP service over the frozen runtime core.
+Current documentation sync: 2026-09-16, code baseline `main@cb90d02`. The product is FastAPI + Uvicorn over the existing OpenClaw runtime. The user has confirmed edge deployment and generally normal overnight operation; this is not a separate acceptance result for every endpoint or workload.
 
 ## Product boundary
 
 ```text
-Vue 3 Web UI / local client
-        ↓ HTTP on loopback
-FastAPI transport
-        ↓
-TaskService
-        ↓
-InvestigationCoordinator
-        ↓
-OpenClaw + local model + sandbox
-        ↓
-AuditStore
+Vue / client -> FastAPI -> TaskService admission
+ -> independent OpenClaw runtime + model + skills
+ -> native CLI outcome -> persisted text/status/sources/audit
 ```
 
-FastAPI only owns request validation, status/error mapping, OpenAPI and static
-frontend serving. It does not implement diagnosis logic, tool routing, evidence
-rules, task lifecycle or model prompts. Route handlers call `TaskService`; they
-never call OpenClaw or `InvestigationCoordinator` directly.
+FastAPI owns transport/validation/error mapping/static serving, not diagnosis or a second agent loop. `scopex/api/http.py` and legacy report paths remain regression/compatibility references, not the default product entrypoint.
 
-`scopex/api/http.py` is retained temporarily as a standard-library regression
-reference. The product entrypoint no longer uses it.
+Use [deployment.md](../deployment.md) and `deploy/edge/compose.yaml` for current deployment. Do not mix historical host/systemd startup commands with edge Compose.
 
 Current constraints:
 
-- single user;
-- one non-terminal major task at a time;
-- a PAUSED task still owns the slot;
-- loopback bind only;
-- no database, Redis, broker or scheduler;
-- events use incremental polling, not SSE/WebSocket yet;
-- historical tasks remain readable after restart but are not resumable after the
-  ScopeX process is restarted.
+- One API process owns one data-root, protected by a file lock. Do not share the in-memory admission queue across Uvicorn workers.
+- Product CLI defaults: 2 active tasks, 16 queued tasks, 600-second queue timeout. Active slots are configurable from 1 to 4. Direct TaskService construction retains legacy defaults of one slot/no queue.
+- Paused tasks keep their logical slot. Queued tasks have no Runtime/Sandbox/host snapshot until admission.
+- Default bind is loopback. An explicit IP with `--allow-trusted-network-bind` is supported; edge Compose supplies the trusted VPN IP. This is not application authentication or permission to expose the API publicly.
+- ScheduleService is present; no database, Redis or broker is introduced.
+- Events use incremental polling, not SSE/WebSocket. Completed history is readable after restart, but unfinished execution is not automatically resumed/replayed.
+- Follow-up and cross-Run conversation recovery redesign remains deferred; compatibility interfaces do not establish full conversational product support.
 
-## Dependencies
+Pinned transport dependencies remain in `requirements-api.txt`. Runtime image creation installs them at build time; do not install packages through an Agent task.
 
-Pinned product transport dependencies live in `requirements-api.txt`:
-
-```text
-fastapi==0.141.1
-uvicorn==0.52.4
-httpx==0.28.1
-```
-
-`httpx` is included for FastAPI transport tests. Install once on Spark:
-
-```bash
-python3 -m pip install -r requirements-api.txt
-```
-
-## Endpoints
-
-### Health
+## Main endpoints
 
 ```http
 GET /health
-```
-
-### Tasks
-
-```http
-POST /tasks
+POST /runs
 Content-Type: application/json
 
-{"message":"分析今天 10:15 左右任务失败"}
+{"message":"分析指定时间窗的编码器运动与数据异常"}
 ```
 
-Returns `202` with the created Task snapshot. Execution continues in a
-background task worker.
+`POST /runs` returns 202 with an auto-mode task snapshot and uses the same runtime for conversation and business requests. Native publication does not require a fixed ScopeX business JSON schema or a second report model.
 
 ```http
+GET /activity
 GET /tasks
 GET /tasks/{task_id}
-```
-
-### Controls
-
-```http
-POST /tasks/{task_id}/stop
-{"message":"先暂停"}
-
-POST /tasks/{task_id}/resume
-{"message":"继续，优先检查 system.log"}
-
-POST /tasks/{task_id}/steer
-{"message":"先别查机器人，先检查 system 侧"}
-```
-
-Controls return `202`. Invalid lifecycle operations return `409`.
-
-Stop remains a safe model-request boundary rather than a hard process kill.
-Steering keeps the Task RUNNING and starts the pending instruction in the same
-OpenClaw session after the interrupted turn unwinds.
-
-### Progress
-
-```http
 GET /tasks/{task_id}/events?after=0
-```
-
-Response includes `next_after`. The first Vue MVP polls using that sequence
-number. Only observable runtime actions are exposed; hidden reasoning is never
-exposed.
-
-### Evidence and result
-
-```http
 GET /tasks/{task_id}/evidence
 GET /tasks/{task_id}/result
 ```
 
-Evidence uses runtime-owned exact refs such as `E11 system.log:L3`.
+`/activity` is global live metadata, not filtered by the selected calendar date. `/tasks` accepts mode/day and schedule_id/limit/offset; limit is 1..200 when supplied. Filtering precedes pagination. Existing file enumeration remains; response pagination is not a disk index. Consult generated OpenAPI for full parameter shapes.
 
-Publication invariant:
+## Controls
 
-> Once a Task is externally visible as `COMPLETED`, `result.json` and the final
-> rendered result have already been atomically persisted and are immediately
-> readable.
-
-Sandbox cleanup may finish just after the business terminal state. Process
-shutdown therefore waits for all known worker threads to quiesce before the
-audit directory can be removed/unmounted.
-
-## Request/error invariants
-
-Migration to FastAPI does not weaken the previous transport guards:
-
-- JSON bodies are limited to 64 KiB;
-- duplicate JSON keys are rejected;
-- Pydantic request models reject unexpected fields;
-- query/body validation is normalized to `400 invalid_request`;
-- lifecycle conflicts remain `409`;
-- unknown API routes remain machine readable.
-
-Error shape:
-
-```json
-{
-  "error": {
-    "code": "task_busy",
-    "message": "active task ... is RUNNING"
-  }
-}
+```http
+POST /tasks/{task_id}/stop
+{"message":"先暂停"}
+POST /tasks/{task_id}/resume
+{"message":"继续"}
+POST /tasks/{task_id}/steer
+{"message":"缩小调查范围"}
+POST /tasks/{task_id}/cancel-queued
 ```
 
-Main status codes:
+Control compatibility is retained. Stop acts at the safe model-request boundary, not an immediate kill of an already-running tool. Cancel-queued applies only before execution. State conflicts return 409; stopping/resuming one task must not affect another task's Runtime.
 
-- `400 invalid_request`
-- `404 task_not_found` / `route_not_found`
-- `409 task_busy` / `task_conflict`
-- `413 request_too_large`
-- `500 internal_error`
+Explicit `/tasks`, `/conversations`, and `/conversations/{task_id}/messages` routes remain available for compatibility. They do not introduce a separate engine or change the deferred follow-up scope.
 
-FastAPI OpenAPI UI:
+## Native result contract
+
+The product factory enables `native_answers=True`. TaskService selects `finish_native_answer()` before the historical budget-to-finalizer branch.
 
 ```text
-http://127.0.0.1:8787/docs
+normal native execution + complete visible answer
+ -> COMPLETED, execution_status=completed, report_meta.status=complete
+
+budget/runtime guard/native error/length/process failure
+ -> FAILED, execution_status=incomplete
+ -> partial if valid native visible text exists, otherwise unavailable
 ```
 
-## Investigation completion rule
+Existing Evidence or non-empty text cannot erase native execution failures. Framework error notices are not treated as assistant drafts; an explicit native visible draft is retained. No report model is added on failure. The old TextReportComposer completion rule is not the current product path.
 
-The API service must not treat "some Evidence exists" as proof that the
-investigation completed successfully.
+`result.json`: version=2, report_text, report_meta, execution_status, investigation_reasons; report.md/final.txt/report-meta.json are also saved. `postprocess_model_calls=0`; producer is normally openclaw, with scopex_no_data for the verified Locator no-data terminal. Identity-checkable sources do not certify semantic correctness.
 
-```text
-normal OpenClaw turn
-(returncode=0, no runtime stop reason, parsed CLI outcome completed)
-        +
-non-empty Evidence
-        ↓
-goal_satisfied
-        ↓
-Fresh Finalizer
+Publication remains ordered: once COMPLETED is externally visible, persisted result text/status must already be readable. Cleanup may continue afterward; shutdown waits for known workers within its configured boundary. Restart records queued tasks as expired and other unfinished tasks as interrupted, without executing their old actions.
 
-abnormal OpenClaw turn
-(timeout / transport / non-zero exit / malformed CLI outcome)
-        +
-non-empty Evidence
-        ↓
-Generic ConvergencePolicy
-        ├─ budget/convergence reached → Fresh Finalizer from existing evidence
-        └─ not reached → FAILED + investigation-error.json
+## Schedule, feedback and data
 
-user Stop / Steering
-        ↓
-control path only; never auto-finalize
+```http
+GET /schedules
+POST /schedules
+PATCH /schedules/{schedule_id}/enabled
+POST /schedules/{schedule_id}/run
+DELETE /schedules/{schedule_id}
+GET /tasks/{task_id}/evaluation
+POST /tasks/{task_id}/evaluation
+GET /tasks/{task_id}/export
+GET /tasks/{task_id}/data-package
+POST /tasks/{task_id}/data-package
+GET /tasks/{task_id}/data-package/download
+DELETE /tasks/{task_id}
 ```
 
-## Start on Spark
+Schedules trigger ordinary tasks. Online capacity may queue them; a still-active/queued run from the same schedule prevents accumulation. Offline misses are skipped, not caught up. Schedule history uses `/tasks?schedule_id=...` across dates, including run-now records; the UI route is `/schedules/:id/history`.
 
-The product path does not import POC code. `--sandbox-image` is supplied
-explicitly. For the first integration run it is acceptable to read the already
-validated image reference from the passed POC02 audit; the server itself has no
-POC dependency.
+Review export is distinct from explicitly collecting original source files. Collection has size/file budgets and records missing/changed/limited data. Terminal deletion removes ScopeX-owned assets only, never external business source files. Feedback does not automatically rewrite prompts/skills.
+
+## Request guards and checks
+
+JSON bodies remain limited to 64KiB; duplicate keys and unexpected request fields are rejected. Validation maps to 400, missing objects/routes to 404, lifecycle/capacity conflicts to 409, oversized bodies to 413. Error bodies remain machine-readable. Generated OpenAPI is available at `/docs` on the configured API address.
+
+CLI compaction defaults to disabled, while current edge Compose explicitly enables it. Both use native OpenClaw mechanisms. Do not change runtime architecture or configuration to match obsolete documentation.
 
 ```bash
-cd /home/yanlan/workspaces/code/scopex
-
-IMAGE=$(python3 - <<'PY'
-import json
-from pathlib import Path
-p = Path(
-    ".local/poc02/prepare-20260911T055921Z-042d152b/"
-    "poc03-20260912T060813Z-a61cf7f6/result.json"
-)
-pf = Path(json.loads(p.read_text())["security_basis"]["poc02_preflight"])
-cfg = json.loads((pf / "openclaw.json").read_text())
-print(cfg["agents"]["defaults"]["sandbox"]["docker"]["image"])
-PY
-)
-
-python3 scripts/runtime_api.py \
-  --model qwen3.8-27b-nvfp4 \
-  --base-url http://127.0.0.1:18002/v1 \
-  --workspace tests/fixtures/poc04 \
-  --sandbox-image "$IMAGE"
-```
-
-Default endpoint:
-
-```text
-http://127.0.0.1:8787
-```
-
-Uvicorn handles process signals and FastAPI lifespan invokes
-`TaskService.shutdown()` so shutdown waits for Runtime workers and sandbox/audit
-cleanup.
-
-If `frontend/dist/` exists, it is mounted at `/`; otherwise the server starts in
-API-only mode.
-
-## Regression gate
-
-After installing `requirements-api.txt`:
-
-```bash
-python3 -m unittest \
-  tests.test_runtime_api_service \
-  tests.test_fastapi_app \
-  -v
-
 python3 -m unittest discover -s tests -v
+(cd frontend && npm run build)
 ```
 
-Do not diagnose API failures by weakening Runtime evidence/finalizer semantics.
-Classify failures as API lifecycle/transport, Runtime execution, model output, or
-validation logic first.
+Code baseline CI: [35043132700](https://github.com/saaassin13/scopex/actions/runs/35043132700), 650 Python tests and the existing build/hygiene checks passed. See [current contract](../12-native-answers-and-skill-refinement.md) and [acceptance status](../02-delivery-and-acceptance.md) for the limits of that evidence.
