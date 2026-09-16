@@ -15,7 +15,8 @@ import zipfile
 
 from scopex.assessment import (
     STATUSES as ASSESSMENT_STATUSES, PUSH_DECISIONS, digest, from_native,
-    parse_footer, record as assessment_record, task_summary,
+    is_persisted_record, parse_footer, persisted_record,
+    record as assessment_record, task_summary,
 )
 from scopex.agent.runtime import OpenClawTurnResult
 from scopex.agent.trace import load_audit_trace
@@ -497,8 +498,20 @@ class TaskService:
         # The caller owns _lock; deletion cannot race this metadata-only update.
         row = self.get_task(task_id)
         previous = (row.get("metadata") or {}).get("assessment") or {}
+        try:
+            file_previous = self.store.read_json(task_id, "assessment.json")
+        except (FileNotFoundError, OSError, ValueError):
+            file_previous = {}
+        if (is_persisted_record(file_previous)
+                and int(file_previous["revision"]) > int(previous.get("revision") or 0)):
+            previous = file_previous
         value = dict(value)
-        value["manual_model_calls_total"] = int(previous.get("manual_model_calls_total", 0)) + value.get("model_calls", 0)
+        previous_total = int(previous.get("manual_model_calls_total", 0))
+        if "manual_model_calls_total" in value:
+            value["manual_model_calls_total"] = max(previous_total, int(value["manual_model_calls_total"]))
+        else:
+            value["manual_model_calls_total"] = previous_total + int(value.get("model_calls", 0))
+        value = persisted_record(value, previous=previous, history_required=True)
         self.store.write_json(task_id, "assessment.json", value)
         self.store.append_jsonl(task_id, "assessment-history.jsonl", value)
         handle = self._handles.get(task_id)
@@ -582,12 +595,16 @@ class TaskService:
             pending = assessment_record("pending", "正在对已保存正文进行一次短文本归类，不重新调查。", source="manual_text")
             try:
                 result = self._save_assessment_locked(task_id, pending)
+                pending = result["assessment"]
                 def run() -> None:
+                    attempted_calls = 0
                     try:
                         value = self.assessment_classifier(
                             request=task["user_request"], answer=answer, controls=controls,
                             anchor=task.get("scheduled_for") or task.get("created_at"))
+                        attempted_calls = int(value.get("model_calls", 0))
                     except Exception:
+                        attempted_calls = 1
                         value = assessment_record("needs_review", "手动评估未完成，原任务不受影响。",
                                                   reason="assessment_worker_error", source="manual_text", model_calls=1)
                     try:
@@ -609,7 +626,11 @@ class TaskService:
                     except (OSError, ValueError):
                         with self._lock:
                             failed = assessment_record("needs_review", "评估结果保存失败，原任务正文仍保留。",
-                                                       reason="assessment_storage_error")
+                                                       reason="assessment_storage_error", source="manual_text",
+                                                       model_calls=attempted_calls)
+                            failed["manual_model_calls_total"] = (
+                                int(pending.get("manual_model_calls_total", 0)) + attempted_calls
+                            )
                             handle = self._handles.get(task_id)
                             if handle is not None:
                                 handle.task.metadata["assessment"] = failed
@@ -631,17 +652,52 @@ class TaskService:
                 raise
 
     def _reconcile_assessments(self) -> None:
-        # A restart never replays model calls, changes original execution state,
-        # or backfills old/disabled tasks. Only an already-pending label expires.
+        # A restart never replays model calls or backfills old/disabled tasks.
+        # Reconcile the current record's materialized copies, then expire pending.
         for task_id in self.store.list_task_ids():
             try:
                 row = self.store.read_json(task_id, "task.json")
-                old = (row.get("metadata") or {}).get("assessment") or {}
-                if old.get("status") != "pending":
+                task_value = (row.get("metadata") or {}).get("assessment") or {}
+                try:
+                    file_value = self.store.read_json(task_id, "assessment.json")
+                except FileNotFoundError:
+                    file_value = {}
+                task_stored_id = task_value.get("assessment_id") if isinstance(task_value, dict) else None
+                file_stored_id = file_value.get("assessment_id") if isinstance(file_value, dict) else None
+                for name, value in (("task", task_value), ("file", file_value)):
+                    if (not is_persisted_record(value) and isinstance(value, dict)
+                            and value.get("version") == 1 and value.get("status") in ASSESSMENT_STATUSES):
+                        upgraded = persisted_record(
+                            value,
+                            history_required=(value.get("source") in {"manual_text", "native_reuse"}
+                                              or value.get("status") == "pending"),
+                        )
+                        if name == "task":
+                            task_value = upgraded
+                        else:
+                            file_value = upgraded
+                candidates = [value for value in (task_value, file_value) if is_persisted_record(value)]
+                if not candidates:
                     continue
+                current = max(candidates, key=lambda value: int(value["revision"]))
                 with self._lock:
-                    self._save_assessment_locked(task_id, assessment_record(
-                        "needs_review", "上次评估因服务重启中断，未自动重跑。", reason="assessment_interrupted"))
+                    if task_stored_id != current["assessment_id"]:
+                        row.setdefault("metadata", {})["assessment"] = current
+                        self.store.write_json(task_id, "task.json", row)
+                    if file_stored_id != current["assessment_id"]:
+                        self.store.write_json(task_id, "assessment.json", current)
+                    if current.get("history_required") is True:
+                        try:
+                            history = self.store.read_jsonl(task_id, "assessment-history.jsonl")
+                        except (OSError, ValueError):
+                            history = ()
+                        if not any(isinstance(item, dict) and item.get("assessment_id") == current["assessment_id"]
+                                   for item in history):
+                            self.store.append_jsonl(task_id, "assessment-history.jsonl", current)
+                    if current.get("status") == "pending":
+                        self._save_assessment_locked(task_id, assessment_record(
+                            "needs_review", "上次评估因服务重启中断，未自动重跑。",
+                            reason="assessment_interrupted", source="manual_text"))
             except (OSError, ValueError, AttributeError):
                 continue
 

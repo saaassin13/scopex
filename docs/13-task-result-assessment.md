@@ -54,7 +54,7 @@
 
 ## 4. 保存、列表与推送建议
 
-`assessment.json` 保存当前判定；`task.json.metadata.assessment` 为列表摘要；手动操作另追加 `assessment-history.jsonl`。保留来源 native/native_reuse/manual_text/system、原正文/请求哈希、更新时间和手动调用尝试次数。
+`assessment.json` 保存当前判定；`task.json.metadata.assessment` 为列表摘要；手动操作另追加 `assessment-history.jsonl`。持久化记录带唯一 assessment_id 和单调 revision；启动时归并三份副本并补齐缺失的列表摘要或历史记录，写盘中断不会让重启后的列表与当前判定永久分叉。保留来源 native/native_reuse/manual_text/system、原正文/请求哈希、更新时间和手动调用尝试次数；模型调用已经发生后，即使结果保存失败也保留真实尝试次数。
 
 任务列表 GET /tasks 新增可选 state、assessment_status、push_decision；**先过滤再分页**，可与 day/schedule_id 组合。读取任务元数据，不读取正文、Evidence或调用模型；没有新建磁盘索引，仍沿用现有文件枚举。
 
@@ -84,6 +84,7 @@ POST `/tasks/{id}/assessment`：`{"allow_model":true,"retry":false}`。
 - 标签成功/缺失/重复/非法字段/引用示例/超限与执行状态分离，原生正文和零额外模型调用；
 - 定时开关默认/关闭/保存/下一次触发，原任务说明不变；
 - 手动显式授权、零调用复用、忙碌拒绝、重复点击、删除互斥、重启不重评；
+- 评估三份持久化副本的写盘中断恢复、历史去重和保存失败调用次数；
 - 列表筛选在分页之前，不读报告或证据；HTTP布尔类型校验；
 - 仅短文本与原控制上下文进入一次请求，预算、错误/截断/无工具、脱敏。
 

@@ -10,6 +10,7 @@ import hashlib
 import json
 import re
 from typing import Any
+import uuid
 
 VERSION = 1
 STATUSES = frozenset({'not_assessed', 'pending', 'normal', 'abnormal', 'needs_review'})
@@ -97,6 +98,38 @@ def record(status: str, summary: str, *, source: str = 'system', reason: str = '
         'request_sha256': digest(request) if request else None,
         'semantic_validation': False,
     }
+
+
+def persisted_record(value: dict[str, Any], *, previous: dict[str, Any] | None = None,
+                     history_required: bool = False) -> dict[str, Any]:
+    """Add stable recovery metadata without changing computed display records."""
+    result = dict(value)
+    prior_revision = 0
+    if isinstance(previous, dict):
+        revision = previous.get('revision')
+        if isinstance(revision, int) and not isinstance(revision, bool) and revision > 0:
+            prior_revision = revision
+    revision = result.get('revision')
+    if not isinstance(revision, int) or isinstance(revision, bool) or revision <= prior_revision:
+        result['revision'] = prior_revision + 1
+    assessment_id = result.get('assessment_id')
+    if not isinstance(assessment_id, str) or not assessment_id:
+        result['assessment_id'] = 'assessment-' + uuid.uuid4().hex
+    result['history_required'] = bool(history_required)
+    return result
+
+
+def is_persisted_record(value: Any) -> bool:
+    return bool(
+        isinstance(value, dict)
+        and value.get('version') == VERSION
+        and value.get('status') in STATUSES
+        and isinstance(value.get('assessment_id'), str)
+        and value.get('assessment_id')
+        and isinstance(value.get('revision'), int)
+        and not isinstance(value.get('revision'), bool)
+        and value.get('revision') > 0
+    )
 
 
 def from_native(answer: str, *, complete: bool, no_data: bool, request: str) -> tuple[dict, str | None]:

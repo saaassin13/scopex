@@ -9,7 +9,7 @@ import threading
 import time
 from typing import Callable, Iterable
 
-from scopex.assessment import INSTRUCTION as ASSESSMENT_INSTRUCTION, from_native
+from scopex.assessment import INSTRUCTION as ASSESSMENT_INSTRUCTION, from_native, persisted_record
 from scopex.agent.runtime import OpenClawTaskRuntime, OpenClawTaskSpec, OpenClawTurnResult
 from scopex.agent.trace import load_audit_trace
 from scopex.evidence.catalog import EvidenceCatalog, EvidenceItem
@@ -325,6 +325,11 @@ class InvestigationCoordinator:
         if self.task.metadata.get("assessment_enabled") is True:
             assessment, footer = from_native(text, complete=complete, no_data=bool(turn.no_data),
                                              request=self.task.user_request)
+            assessment = persisted_record(
+                assessment,
+                previous=self.task.metadata.get("assessment"),
+                history_required=False,
+            )
             self.task.metadata["assessment"] = assessment
             if footer is not None:
                 meta["assessment_footer"] = footer

@@ -5,7 +5,7 @@
 ## 代码与验证版本
 
 - 首次功能提交：e64dc6fbb550ba74b4118217b07289b01091bb70。
-- PR正式verify 35050736038（该head的PR合并树）：682 tests in 33.171s，OK；Python编译、Vue类型检查/生产构建、仓库卫生检查全部通过。新增32项测试，其中3项使用真实本机HTTP而非远端模型。
+- PR正式verify 35050736038（该head的PR合并树）：682 tests in 33.171s，OK；Python编译、Vue类型检查/生产构建、仓库卫生检查全部通过。该记录之后又新增写盘中断恢复与调用计数故障注入测试，最终数量以最新提交的正式CI为准；其中3项使用真实本机HTTP而非远端模型。
 - 浏览器任务切换发现旧请求读取变化中的route.params.id，产生/tasks/undefined/evidence和evaluation请求。最小修正a457c67ad0987616e2892377cdf9ede0c30858a3：在由fullPath创建/销毁的详情页实例内固定task ID；未改变Agent、评估判据或生命周期。
 - 修正后的Vue构建由35051213166生成；下载源码逐字节核对TaskView修正，并使用该构建产物进行下面的离线页面检查。本文件提交后的最终PR检查以PR最新Checks为准，不拿早期head的CI冒充最终head。
 

@@ -1,5 +1,7 @@
 export interface Assessment {
   version: number
+  assessment_id?: string
+  revision?: number
   status: 'not_assessed' | 'pending' | 'normal' | 'abnormal' | 'needs_review'
   summary: string
   source: string

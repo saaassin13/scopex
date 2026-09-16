@@ -403,3 +403,62 @@ class AssessmentServiceTests(unittest.TestCase):
         value=self.service.get_task(task.id)['assessment']
         self.assertEqual(self.classifier.call_count,2)
         self.assertEqual(value['manual_model_calls_total'],2)
+
+    def test_restart_repairs_current_assessment_after_task_summary_write_was_interrupted(self):
+        task=self.seed(text='正文\n'+footer())
+        original=self.service.store.write_json
+        def fail_task_summary(task_id,name,value):
+            if name == 'task.json': raise OSError('simulated crash boundary')
+            return original(task_id,name,value)
+        with patch.object(self.service.store,'write_json',side_effect=fail_task_summary):
+            with self.assertRaises(OSError): self.service.request_assessment(task.id)
+        current=self.service.store.read_json(task.id,'assessment.json')
+        self.assertEqual(current['status'],'abnormal')
+        second=TaskService(audit_root=self.root/'tasks',coordinator_factory=Mock(),finalizer_factory=Mock(),
+                           reconcile_interrupted=True)
+        try:
+            visible=second.get_task(task.id)['assessment']
+            self.assertEqual(visible['assessment_id'],current['assessment_id'])
+            self.assertEqual(visible['status'],'abnormal')
+            history=second.store.read_jsonl(task.id,'assessment-history.jsonl')
+            self.assertEqual(sum(row.get('assessment_id') == current['assessment_id'] for row in history),1)
+        finally: second.shutdown()
+        third=TaskService(audit_root=self.root/'tasks',coordinator_factory=Mock(),finalizer_factory=Mock(),
+                          reconcile_interrupted=True)
+        try:
+            history=third.store.read_jsonl(task.id,'assessment-history.jsonl')
+            self.assertEqual(sum(row.get('assessment_id') == current['assessment_id'] for row in history),1)
+        finally: third.shutdown()
+
+    def test_restart_repairs_history_when_append_was_interrupted(self):
+        task=self.seed(text='正文\n'+footer())
+        with patch.object(self.service.store,'append_jsonl',side_effect=OSError('simulated history failure')):
+            with self.assertRaises(OSError): self.service.request_assessment(task.id)
+        current=self.service.store.read_json(task.id,'assessment.json')
+        second=TaskService(audit_root=self.root/'tasks',coordinator_factory=Mock(),finalizer_factory=Mock(),
+                           reconcile_interrupted=True)
+        try:
+            visible=second.get_task(task.id)['assessment']
+            self.assertEqual(visible['assessment_id'],current['assessment_id'])
+            history=second.store.read_jsonl(task.id,'assessment-history.jsonl')
+            self.assertEqual([row['assessment_id'] for row in history],[current['assessment_id']])
+        finally: second.shutdown()
+
+    def test_manual_storage_failure_preserves_actual_model_attempt(self):
+        task=self.seed()
+        original=self.service.store.write_json
+        writes=0
+        def fail_final_assessment_once(task_id,name,value):
+            nonlocal writes
+            if name == 'assessment.json':
+                writes += 1
+                if writes == 2: raise OSError('simulated final assessment failure')
+            return original(task_id,name,value)
+        with patch.object(self.service.store,'write_json',side_effect=fail_final_assessment_once):
+            self.service.request_assessment(task.id,allow_model=True)
+            value=wait_assessment(self.service,task.id)
+        self.assertEqual(self.classifier.call_count,1)
+        self.assertEqual(value['source'],'manual_text')
+        self.assertEqual(value['model_calls'],1)
+        self.assertEqual(value['manual_model_calls_total'],1)
+        self.assertEqual(value['reason'],'assessment_storage_error')
