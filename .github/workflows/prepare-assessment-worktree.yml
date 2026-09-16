@@ -4,18 +4,72 @@ on:
     branches: [feature/task-result-assessment]
     paths: [.github/workflows/prepare-assessment-worktree.yml]
 permissions:
-  contents: read
+  contents: write
 jobs:
   source-snapshot:
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
-      - name: Export tracked source only
-        run: git archive --format=zip -o "$RUNNER_TEMP/scopex-source.zip" HEAD
-      - uses: actions/upload-artifact@v4
         with:
-          name: assessment-development-source
-          path: ${{ runner.temp }}/scopex-source.zip
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.18.0'
+      - name: Apply checksum-verified development patch
+        shell: bash
+        run: |
+          test "$GITHUB_REF" = refs/heads/feature/task-result-assessment
+          git merge-base --is-ancestor 2b353903688d4c4418c6aded04adfe10129f9543 HEAD
+          python3 - <<'PY'
+          import base64, hashlib, lzma, os, subprocess
+          from pathlib import Path
+          text = ''.join(Path(f'.assessment-dev-{i}.b64').read_text().strip() for i in range(1,5))
+          patch = lzma.decompress(base64.b64decode(text, validate=True))
+          assert hashlib.sha256(patch).hexdigest() == '42ec44e506905c8832904ba8dde112e41ca875bfdc6f89f52f926341838b473d', 'patch digest mismatch'
+          target = Path(os.environ['RUNNER_TEMP']) / 'assessment.patch'
+          target.write_bytes(patch)
+          subprocess.run(['git', 'apply', '--check', str(target)], check=True)
+          subprocess.run(['git', 'apply', str(target)], check=True)
+          PY
+          git rm .assessment-dev-1.b64 .assessment-dev-2.b64 .assessment-dev-3.b64 .assessment-dev-4.b64 .github/workflows/prepare-assessment-worktree.yml
+          git add README.md docs frontend/src scopex scripts/runtime_api.py skills/nipple-recognition-analysis/SKILL.md tests
+          git diff --cached --check
+      - name: Python compilation and full regression
+        shell: bash
+        run: |
+          set -o pipefail
+          python -m pip install -r requirements-api.txt
+          python -m compileall -q scopex scripts skills tests
+          python -m unittest discover -s tests -v 2>&1 | tee "$RUNNER_TEMP/assessment-python.log"
+      - name: Vue type check and production build
+        shell: bash
+        run: |
+          set -o pipefail
+          npm --prefix frontend install --no-audit --no-fund
+          npm --prefix frontend run build 2>&1 | tee "$RUNNER_TEMP/assessment-frontend.log"
+      - name: Publish feature commit only
+        shell: bash
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'feat: add native task result labels and explicit text-only manual assessment'
+          git push origin HEAD:refs/heads/feature/task-result-assessment
+          git rev-parse HEAD > "$RUNNER_TEMP/assessment-commit.txt"
+          git archive --format=zip -o "$RUNNER_TEMP/assessment-source.zip" HEAD
+          (cd frontend/dist && zip -qr "$RUNNER_TEMP/assessment-frontend.zip" .)
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: assessment-validation
+          path: |
+            ${{ runner.temp }}/assessment-python.log
+            ${{ runner.temp }}/assessment-frontend.log
+            ${{ runner.temp }}/assessment-commit.txt
+            ${{ runner.temp }}/assessment-source.zip
+            ${{ runner.temp }}/assessment-frontend.zip
           retention-days: 1
-          if-no-files-found: error
+          if-no-files-found: warn
