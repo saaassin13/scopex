@@ -16,7 +16,8 @@ import type {
 } from '../types'
 
 const route = useRoute()
-const taskId = computed(() => String(route.params.id))
+// RouterView is keyed by fullPath; keep in-flight reads on this instance's task.
+const taskId = ref(String(route.params.id))
 const task = ref<TaskSnapshot | null>(null)
 const events = ref<ProgressEvent[]>([])
 const evidence = ref<EvidenceItem[]>([])
