@@ -581,11 +581,10 @@ def motion_episodes(samples, gap_threshold, settle_ms=2000.0):
                     and min(abs(rates[i] - baseline), abs(rates[i + 1] - baseline)) > 8 * scale):
                 jumps[i] = abs(p['delta'] - baseline * p['dt_ms'] / 1000)
         transitions = set()
-        # Include starts/stops and abrupt persistent changes, even without reverse.
+        # Include persistent changes, even without reverse. A zero/non-zero toggle
+        # by itself is often stationary quantization and must not seed a process.
         times = [p['a']['ts'] for p in block]
         for i in range(1, len(block) - 1):
-            if (block[i - 1]['delta'] == 0) != (block[i]['delta'] == 0):
-                transitions.add(i)
             if abs(rates[i] - rates[i - 1]) <= max(1.0, abs(rates[i - 1]) * .5):
                 continue
             left = bisect_left(times, times[i] - timedelta(seconds=1))
@@ -597,7 +596,44 @@ def motion_episodes(samples, gap_threshold, settle_ms=2000.0):
             scale = max(1.0, abs(center) * .1, (mad(a) or 0) * 6)
             if abs(statistics.median(b) - center) > 8 * scale:
                 transitions.add(i)
-        seeds = sorted(set(i for i, p in enumerate(block) if p['delta'] < 0) | set(jumps) | transitions)
+
+        movement_thresholds = []
+        quiet_thresholds = []
+        for i in range(len(block)):
+            center, spread = local_positive_profile(block, i, gap_threshold)
+            threshold, _ = anomaly_thresholds(center, spread)
+            movement_thresholds.append(threshold)
+            quiet_thresholds.append(max(2.0, (center or 0.0) * .05, (spread or 0.0) * 2.0))
+        reported_speeds = [abs(float(pair['b']['speed'])) for pair in block if 'speed' in pair['b']]
+        reported_motion_floor = (max(1.0, (percentile(reported_speeds, .95) or 0.0) * .05)
+                                 if reported_speeds else None)
+
+        def quiet_material(index):
+            pair = block[index]
+            count_motion = abs(pair['delta']) >= quiet_thresholds[index]
+            speed_motion = (reported_motion_floor is not None and 'speed' in pair['b']
+                            and abs(float(pair['b']['speed'])) >= reported_motion_floor)
+            return count_motion or speed_motion
+
+        # Only a locally material negative group may seed/extend a process.
+        # Sub-threshold -1/-2 count noise remains visible in context but cannot
+        # single-linkage-chain one short stop event across many seconds.
+        material_negative_indices = set()
+        negative_groups = []
+        for i, pair in enumerate(block):
+            if pair['delta'] >= 0:
+                continue
+            if negative_groups and i == negative_groups[-1][-1] + 1:
+                negative_groups[-1].append(i)
+            else:
+                negative_groups.append([i])
+        for negative_group in negative_groups:
+            magnitude = -sum(block[i]['delta'] for i in negative_group)
+            threshold = movement_thresholds[negative_group[0]]
+            if magnitude >= threshold:
+                material_negative_indices.update(negative_group)
+
+        seeds = sorted(material_negative_indices | set(jumps) | transitions)
         groups = []
         for i in seeds:
             if groups and (block[i]['a']['ts'] - block[groups[-1][-1]]['b']['ts']).total_seconds() * 1000 < settle_ms:
@@ -606,6 +642,7 @@ def motion_episodes(samples, gap_threshold, settle_ms=2000.0):
                 groups.append([i])
         for group in groups:
             first, last = group[0], group[-1]
+            has_material_reverse = any(i in material_negative_indices for i in group)
             if last in jumps:
                 last += 1
             lo, hi = first, last
@@ -618,10 +655,15 @@ def motion_episodes(samples, gap_threshold, settle_ms=2000.0):
             core = block[first:last + 1]
             # Drawdown measures peak-to-trough displacement, not sum of all oscillations.
             peak, drawdown = core[0]['a']['count'], 0
-            reverse_lobes, lobe = [], 0
             for p in core:
                 peak = max(peak, p['b']['count'])
                 drawdown = max(drawdown, peak - p['b']['count'])
+
+            # Shape evidence includes bounded post-core settling, but minor
+            # observations there never extend the process core itself.
+            reverse_lobes, lobe = [], 0
+            shape = block[first:hi + 1]
+            for p in shape:
                 if p['delta'] < 0:
                     lobe -= p['delta']
                 elif lobe:
@@ -644,32 +686,97 @@ def motion_episodes(samples, gap_threshold, settle_ms=2000.0):
             core_rates = [p['delta'] * 1000 / p['dt_ms'] for p in core]
             core_rate_stats = rounded_stats(core_rates)
             material_signs = []
-            for offset, pair in enumerate(core):
-                center, spread = local_positive_profile(block, first + offset, gap_threshold)
-                movement_threshold, _ = anomaly_thresholds(center, spread)
-                if abs(pair['delta']) >= movement_threshold:
+            for offset, pair in enumerate(shape):
+                if abs(pair['delta']) >= movement_thresholds[first + offset]:
                     material_signs.append(1 if pair['delta'] > 0 else -1)
             material_direction_changes = sum(a != b for a, b in zip(material_signs, material_signs[1:]))
-            lobes_decreasing = (len(reverse_lobes) >= 2
-                                and all(a > b for a, b in zip(reverse_lobes, reverse_lobes[1:])))
-            rebound_supported = (lobes_decreasing
-                                 and before_context['state'] in {'forward', 'mixed'}
-                                 and after_context['state'] == 'stationary')
+
+            quiet_start = quiet_end = next_material = None
+            candidate_start = None
+            quiet_elapsed = 0.0
+            for i in range(last + 1, len(block)):
+                material = quiet_material(i)
+                if material:
+                    candidate_start, quiet_elapsed = None, 0.0
+                    continue
+                if candidate_start is None:
+                    candidate_start = i
+                quiet_elapsed += block[i]['dt_ms']
+                if quiet_elapsed < settle_ms / 2:
+                    continue
+                quiet_start, quiet_end = candidate_start, i
+                for j in range(i + 1, len(block)):
+                    window = range(j, min(j + 5, len(block)))
+                    material_signs_ahead = [1 if block[k]['delta'] > 0 else -1
+                                            for k in window
+                                            if quiet_material(k)]
+                    persistent_motion = (len(material_signs_ahead) >= 3
+                                         and len(set(material_signs_ahead[:3])) == 1)
+                    if persistent_motion:
+                        next_material = j
+                        break
+                    quiet_end = j
+                break
+            stationary_tail_ms = (sum(block[i]['dt_ms'] for i in range(quiet_start, quiet_end + 1))
+                                  if quiet_start is not None and quiet_end is not None else 0.0)
+            if not has_material_reverse:
+                stationary_tail_ms = 0.0
+                next_material = None
+
+            dominant_lobe = max(reverse_lobes, default=0)
+            decay_lobes = []
+            pre_dominant_material = False
+            if dominant_lobe:
+                start_lobe = reverse_lobes.index(dominant_lobe)
+                noise_floor = max(2.0, dominant_lobe * .05)
+                pre_dominant_material = any(value > noise_floor for value in reverse_lobes[:start_lobe])
+                for lobe_value in reverse_lobes[start_lobe:]:
+                    decay_lobes.append(lobe_value)
+                    if lobe_value <= noise_floor:
+                        break
+            lobes_decreasing = (len(decay_lobes) >= 2
+                                and not pre_dominant_material
+                                and decay_lobes[0] > decay_lobes[-1]
+                                and all(a >= b for a, b in zip(decay_lobes, decay_lobes[1:])))
+            rebound_supported = (has_material_reverse and lobes_decreasing
+                                 and stationary_tail_ms >= settle_ms
+                                 and before_context['state'] not in {'reverse', 'unobserved'})
+            positive_rates = [rate for rate in rates if rate > 0]
+            reference_forward_rate = statistics.median(positive_rates) if positive_rates else None
+            peak_reverse_rate = max((-rate for rate in core_rates if rate < 0), default=0.0)
+            reverse_to_forward_ratio = (peak_reverse_rate / reference_forward_rate
+                                        if reference_forward_rate else None)
+            stop_settling_supported = (
+                stationary_tail_ms >= settle_ms
+                and has_material_reverse
+                and not any(i in jumps for i in group)
+                and material_direction_changes <= 1
+                and sum(p['dt_ms'] for p in core if p['delta'] < 0) <= settle_ms
+                and (rebound_supported
+                     or (reverse_to_forward_ratio is not None and reverse_to_forward_ratio <= .5))
+            )
             episodes.append({
                 'id': f'M{len(episodes) + 1}',
                 'start': core[0]['a']['ts_text'], 'end': core[-1]['b']['ts_text'],
                 'duration_ms': round(sum(p['dt_ms'] for p in core), 3),
                 'drawdown_counts': drawdown,
                 'motion_pattern': ('off_trend_return' if any(i in jumps for i in group) else
-                                   'reverse_motion' if all(p['delta'] <= 0 for p in core) else
-                                   'mixed_direction_motion' if reverse_lobes else 'forward_or_stop_transition'),
+                                   'reverse_motion' if has_material_reverse and all(p['delta'] <= 0 for p in core) else
+                                   'mixed_direction_motion' if has_material_reverse else 'forward_or_stop_transition'),
                 'rate_transition_observed': any(i in transitions for i in group),
                 'rate_counts_s': {key: core_rate_stats[key] for key in ('min', 'median', 'max')},
                 'material_direction_change_count': material_direction_changes,
                 'reverse_duration_ms': round(sum(p['dt_ms'] for p in core if p['delta'] < 0), 3),
                 'negative_lobes': reverse_lobes,
+                'decay_lobes': decay_lobes,
                 'lobes_decreasing': lobes_decreasing,
                 'rebound_supported': rebound_supported,
+                'stop_settling_supported': stop_settling_supported,
+                'stationary_tail_ms': round(stationary_tail_ms, 3),
+                'next_material_motion_at': (block[next_material]['b']['ts_text']
+                                            if next_material is not None else None),
+                'peak_reverse_to_typical_forward_rate': (
+                    round(reverse_to_forward_ratio, 3) if reverse_to_forward_ratio is not None else None),
                 'off_trend_return_counts': max((jumps.get(i, 0) for i in group), default=0),
                 'before': before_context, 'after': after_context,
                 'context_complete': sum(p['dt_ms'] for p in before) >= settle_ms * .9 and sum(p['dt_ms'] for p in after) >= settle_ms * .9,
@@ -928,36 +1035,40 @@ def main() -> int:
     if args.motion_report:
         def priority(e):
             deviations = [abs(v['robust_deviation']) for v in e['comparison']['features'].values()]
-            return (bool(e['off_trend_return_counts']), max(deviations, default=0), e['drawdown_counts'])
-        ordered = []
-        # Preserve extremes as well as relative deviations; tiny return-to-trend
-        # events must never crowd out the largest motion process.
-        for key in ('drawdown_counts', 'off_trend_return_counts'):
-            if episodes:
-                e = max(episodes, key=lambda e: e[key])
-                if e[key] > 0 and e not in ordered:
-                    ordered.append(e)
-        ordered.extend(e for e in sorted(episodes, key=priority, reverse=True) if e not in ordered)
+            unresolved_reverse = (not e['stop_settling_supported']
+                                  and e['motion_pattern'] in {'reverse_motion', 'mixed_direction_motion'})
+            reverse_rate_ratio = e['peak_reverse_to_typical_forward_rate'] or 0.0
+            return (bool(e['off_trend_return_counts']), unresolved_reverse,
+                    max(deviations, default=0), reverse_rate_ratio,
+                    e['material_direction_change_count'],
+                    e['drawdown_counts'])
+        ordered = sorted(episodes, key=priority, reverse=True)
         pattern_counts = {
             pattern: sum(e['motion_pattern'] == pattern for e in episodes)
             for pattern in ('off_trend_return', 'reverse_motion', 'mixed_direction_motion',
                             'forward_or_stop_transition')
         }
+        motion_fact_keys = ('primary_stream', 'samples_in_window', 'first_ts', 'last_ts',
+            'median_sample_dt_ms', 'sampling_gap_count', 'primary_invalid_samples',
+            'raw_filtered_invalid_samples', 'counter_boundary_count', 'signed_delta_min',
+            'signed_delta_median', 'signed_delta_max', 'negative_steps_observed',
+            'significant_reverse_event_count', 'reverse_glitch_candidate_count',
+            'reverse_interval_candidate_count', 'reverse_step_candidate_count',
+            'positive_spike_candidate_count', 'max_reverse_pulses',
+            'max_positive_spike_pulses', 'reported_speed_mm_s', 'raw_negative_steps',
+            'filtered_negative_steps')
+        motion_facts = {key: facts[key] for key in motion_fact_keys if key in facts}
+        if 'significant_reverse_event_count' in motion_facts:
+            motion_facts['material_reverse_group_count'] = motion_facts.pop(
+                'significant_reverse_event_count')
         result = {
             'scopex_role': 'business_facts', 'source': 'encoder-health', 'schema': 5,
-            'facts': {k: facts[k] for k in ('primary_stream', 'samples_in_window', 'first_ts', 'last_ts',
-                'median_sample_dt_ms', 'sampling_gap_count', 'primary_invalid_samples',
-                'raw_filtered_invalid_samples', 'counter_boundary_count', 'signed_delta_min',
-                'signed_delta_median', 'signed_delta_max', 'negative_steps_observed',
-                'significant_reverse_event_count', 'reverse_glitch_candidate_count',
-                'reverse_interval_candidate_count', 'reverse_step_candidate_count',
-                'positive_spike_candidate_count', 'max_reverse_pulses',
-                'max_positive_spike_pulses', 'reported_speed_mm_s', 'raw_negative_steps',
-                'filtered_negative_steps') if k in facts},
+            'facts': motion_facts,
             'episode_count': len(episodes),
             'episode_summary': {
                 'pattern_counts': pattern_counts,
                 'rebound_supported_count': sum(e['rebound_supported'] for e in episodes),
+                'stop_settling_supported_count': sum(e['stop_settling_supported'] for e in episodes),
                 'max_material_direction_change_count': max(
                     (e['material_direction_change_count'] for e in episodes), default=0),
                 'expectedness_from_encoder_data':
@@ -969,7 +1080,7 @@ def main() -> int:
             'episodes_omitted': max(0, len(episodes) - 3),
             'limitations': [
                 'Observed deviations and motion groups are not physical-fault diagnoses. Same-window peers are not verified normal.',
-                'A possible normal reverse or rebound explanation does not establish that an observed deviation is normal.',
+                'A possible normal explanation alone does not prove normality; stop_settling_supported is positive shape evidence, not command proof.',
                 'Grouping uses 2000ms without reversal; this is not an allowable rebound duration.',
                 'Starts/stops and abrupt rate transitions are observed patterns, not faults; slow drift and a uniformly faulty reference may be missed.',
                 'Trace spans the full saved context but is reduced; do not infer absent fine-scale behavior.',

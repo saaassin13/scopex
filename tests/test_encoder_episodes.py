@@ -32,6 +32,7 @@ class EpisodeTests(unittest.TestCase):
         reverse = max(result, key=lambda e: e['drawdown_counts'])
         self.assertEqual(reverse['drawdown_counts'], 7200)
         self.assertEqual(reverse['off_trend_return_counts'], 0)
+        self.assertFalse(reverse['stop_settling_supported'])
         self.assertNotIn('drawdown_counts', reverse['comparison']['features'])
 
     def test_gap_at_counter_boundary_remains_a_sampling_gap(self):
@@ -96,8 +97,9 @@ class EpisodeTests(unittest.TestCase):
         self.assertEqual(len(result), 1)
         self.assertTrue(result[0]['lobes_decreasing'])
         self.assertTrue(result[0]['rebound_supported'])
+        self.assertTrue(result[0]['stop_settling_supported'])
         self.assertEqual(result[0]['negative_lobes'], [8, 3, 1])
-        self.assertEqual(result[0]['after']['state'], 'stationary')
+        self.assertGreaterEqual(result[0]['stationary_tail_ms'], 2000)
         self.assertEqual(result[0]['off_trend_return_counts'], 0)
 
     def test_non_decreasing_lobes_cannot_be_described_as_rebound(self):
@@ -106,6 +108,7 @@ class EpisodeTests(unittest.TestCase):
         self.assertEqual(len(result), 1)
         self.assertFalse(result[0]['lobes_decreasing'])
         self.assertFalse(result[0]['rebound_supported'])
+        self.assertFalse(result[0]['stop_settling_supported'])
         self.assertNotIn('interpretation', result[0])
 
     def test_continuity_gap_is_not_a_reversal_or_recovery(self):
@@ -145,6 +148,28 @@ class EpisodeTests(unittest.TestCase):
         result = episodes([(100, 0)] * 30 + [(100, -1), (100, 1)] + [(100, 0)] * 30)
         self.assertFalse(any(e['off_trend_return_counts'] for e in result))
 
+    def test_stationary_quantization_does_not_chain_into_motion_episode(self):
+        result = episodes([(100, 0)] * 30
+                          + ([(100, -1), (100, 0), (100, 1), (100, 0)] * 20)
+                          + [(100, 0)] * 30)
+        self.assertEqual(result, [])
+
+    def test_short_stop_recoil_has_bounded_core_and_stationary_tail(self):
+        data = ([(100, 0)] * 16
+                + [(100, -1), (100, 1)]
+                + [(100, -5), (100, -10), (100, -19), (100, -28),
+                   (100, -32), (100, -8)]
+                + [(100, 8), (100, 12), (100, 14), (100, 5)]
+                + ([(100, 0), (100, 1), (100, 0), (100, -1)] * 45)
+                + [(100, 6), (100, 14), (100, 23), (100, 40), (100, 80)]
+                + [(100, 100)] * 20)
+        recoil = max(episodes(data), key=lambda row: row['drawdown_counts'])
+        self.assertLess(recoil['duration_ms'], 2000)
+        self.assertGreaterEqual(recoil['stationary_tail_ms'], 10_000)
+        self.assertTrue(recoil['rebound_supported'])
+        self.assertTrue(recoil['stop_settling_supported'])
+        self.assertLessEqual(recoil['material_direction_change_count'], 1)
+
     def test_motion_report_cli_persists_process_and_omits_legacy_candidates(self):
         with tempfile.TemporaryDirectory() as td:
             log, saved = Path(td) / 'app.log', Path(td) / 'motion.json'
@@ -157,7 +182,8 @@ class EpisodeTests(unittest.TestCase):
             self.assertEqual(result['episode_count'], 1)
             self.assertNotIn('candidate_event_count', result['facts'])
             self.assertNotIn('top_candidates', result)
-            self.assertIn('significant_reverse_event_count', result['facts'])
+            self.assertIn('material_reverse_group_count', result['facts'])
+            self.assertNotIn('significant_reverse_event_count', result['facts'])
             self.assertIn('reported_speed_mm_s', result['facts'])
             saved_result = json.loads(saved.read_text())
             self.assertEqual(saved_result['episodes'][0]['drawdown_counts'], 500)
@@ -185,12 +211,13 @@ class EpisodeTests(unittest.TestCase):
             facts = result['facts']
             self.assertEqual(facts['reported_speed_mm_s']['min'], -321.0)
             self.assertEqual(facts['reported_speed_mm_s']['max'], 706.0)
-            self.assertGreater(facts['significant_reverse_event_count'], 0)
+            self.assertGreater(facts['material_reverse_group_count'], 0)
             self.assertGreater(facts['positive_spike_candidate_count'], 0)
             # The process core starts at the first negative seed, so the leading
             # positive-to-negative transition remains in context rather than core.
             self.assertGreaterEqual(result['episode_summary']['max_material_direction_change_count'], 4)
             self.assertFalse(result['episodes'][0]['rebound_supported'])
+            self.assertFalse(result['episodes'][0]['stop_settling_supported'])
             self.assertEqual(result['episode_summary']['expectedness_from_encoder_data'],
                              'unresolved_without_command_or_verified_operating_context')
 

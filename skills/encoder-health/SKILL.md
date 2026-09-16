@@ -44,12 +44,14 @@ window. The shortlist is not exhaustive evidence that the rest is normal.
   deviation than a large increment alone, but does not identify hardware cause.
 - Each process groups reversals and nearby starts/stops/rate transitions, with
   context before and after. Inspect count/time order, duration, drawdown and
-  negative-lobe amplitudes. Say the shape supports rebound only when
-  `rebound_supported=true`. `lobes_decreasing=false` forbids describing that
-  process as diminishing oscillation or normal rebound.
+  negative-lobe amplitudes. Sub-threshold stationary jitter is context only and
+  must not extend the process core. `rebound_supported=true` means the dominant
+  lobe decays into a stationary tail; `stop_settling_supported=true` additionally
+  supports a short stop/recoil interpretation. A false field means that shape was
+  not established; it is not positive anomaly evidence.
 - A persistent forward rate transition is also included. Determine whether its
   shape supports an ordinary start/change of speed or an unexplained discontinuity.
-- Inspect `reported_speed_mm_s`, signed-delta extrema, significant reverse and
+- Inspect `reported_speed_mm_s`, signed-delta extrema, material reverse and
   positive-spike counts, direction changes, and raw/filtered context. These are
   observable deviation evidence, not hidden device limits or proof of root cause.
 - `motion_pattern` describes observed direction/shape, not the commanded
@@ -65,6 +67,10 @@ window. The shortlist is not exhaustive evidence that the rest is normal.
 - The 2000ms grouping/context horizon is an analysis setting, not a business
   threshold. `context_complete=false` means a boundary prevents that context;
   even true does not prove the full physical start/stop cycle is captured.
+- Prioritized processes are ranked observations, not anomaly severity. Do not
+  rename the largest drawdown or first process as the "main anomaly" unless its
+  actual shape provides anomaly evidence. A material-reverse count is a screening
+  count, not an anomaly count.
 - Trace is a full-span min/max envelope, not a prefix. It preserves endpoints and
   bin extrema but can omit fine oscillation and must not be treated as every sample.
 - Raw/filtered context covers this process, not whole-hour totals. Those streams
@@ -107,6 +113,9 @@ Match the conclusion to the user's question:
   local deviations, rapid direction changes, or corroborating raw/filtered
   changes may establish an abnormal observed pattern even when the physical
   cause is unresolved.
+- A short bounded reverse followed by a long stationary tail and smooth restart,
+  with `stop_settling_supported=true` and no contradictory gap/spike/off-trend
+  evidence, is consistent with ordinary stop settling rather than a data anomaly.
 - For whether motion was **expected** or the device is **faulty**, require command,
   business-state, or verified operating-limit evidence. Material deviations with
   missing intent evidence require review; they are not normal by default.
