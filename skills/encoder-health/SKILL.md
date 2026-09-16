@@ -4,12 +4,14 @@ description: Assess encoder motion over a requested window, distinguishing allow
 user-invocable: true
 ---
 
-# Encoder motion diagnosis
+# Encoder observation and motion diagnosis
 
-Decide whether the supplied window contains unexplained deviations. Its normality
-is unknown. Forward motion, sustained reverse motion, stops, rebound, and resetting the counter
-to zero followed by renewed accumulation are allowed operation. Neither a large
-reverse displacement nor a reset nor rarity within this window establishes a fault.
+Decide first whether the supplied data contains unexplained deviations, then keep
+that observation separate from whether the motion matched a command and from any
+physical fault diagnosis. Forward motion, sustained reverse motion, stops, rebound,
+and resetting the counter to zero followed by renewed accumulation can all be
+valid operations. A possible valid explanation prevents unsupported fault
+attribution; it does not prove that a materially unusual observation is normal.
 
 ## Analyze once
 
@@ -24,7 +26,8 @@ python3 {baseDir}/scripts/encoder_health.py /agent-data/logs/<file1> /agent-data
 
 The report includes coverage, process count and three prioritized processes.
 Normal starts/stops are included, not labeled faults. Omitted processes still
-exist; this shortlist is not exhaustive evidence that the rest is normal.
+exist; use `episode_summary` and aggregate facts before answering for the whole
+window. The shortlist is not exhaustive evidence that the rest is normal.
 
 ## Interpret the evidence
 
@@ -41,18 +44,24 @@ exist; this shortlist is not exhaustive evidence that the rest is normal.
   deviation than a large increment alone, but does not identify hardware cause.
 - Each process groups reversals and nearby starts/stops/rate transitions, with
   context before and after. Inspect count/time order, duration, drawdown and
-  negative-lobe amplitudes. Deceleration followed by diminishing oscillation and
-  a stationary tail supports rebound; it does not establish an allowable amplitude.
+  negative-lobe amplitudes. Say the shape supports rebound only when
+  `rebound_supported=true`. `lobes_decreasing=false` forbids describing that
+  process as diminishing oscillation or normal rebound.
 - A persistent forward rate transition is also included. Determine whether its
   shape supports an ordinary start/change of speed or an unexplained discontinuity.
+- Inspect `reported_speed_mm_s`, signed-delta extrema, significant reverse and
+  positive-spike counts, direction changes, and raw/filtered context. These are
+  observable deviation evidence, not hidden device limits or proof of root cause.
 - `motion_pattern` describes observed direction/shape, not the commanded
   operating mode. Never compare long reverse travel against small rebound and
   call the larger displacement abnormal. Reverse distance/duration are descriptive
   only; the script no longer scores them as statistical faults. Off-trend
   comparisons, when available, are unverified references, not hardware limits.
 - Diagnose observable data problems (gaps, invalid readings, isolated off-trend
-  jumps). Whether a smooth forward/reverse/stop action was intended requires
-  command/business-state evidence. Absence of that evidence is not a fault.
+  jumps, and motion materially unlike the nearby stable behavior). Whether a
+  smooth forward/reverse/stop action was intended requires command/business-state
+  evidence. Absence of that evidence is not a fault, but it also cannot establish
+  normality; use an unresolved distinction when intent changes the answer.
 - The 2000ms grouping/context horizon is an analysis setting, not a business
   threshold. `context_complete=false` means a boundary prevents that context;
   even true does not prove the full physical start/stop cycle is captured.
@@ -91,6 +100,19 @@ evidence is a possibly normal reverse journey or reset. Do not certify omitted
 processes as normal.
 Do not equate candidate counts with anomaly counts or diagnose hardware from
 these counts alone. Use counts and counts/s unless calibration is verified.
+
+Match the conclusion to the user's question:
+
+- For whether the **encoder data contains abnormal behavior**, multiple strong
+  local deviations, rapid direction changes, or corroborating raw/filtered
+  changes may establish an abnormal observed pattern even when the physical
+  cause is unresolved.
+- For whether motion was **expected** or the device is **faulty**, require command,
+  business-state, or verified operating-limit evidence. Material deviations with
+  missing intent evidence require review; they are not normal by default.
+- Use normal only when coverage is sufficient and the requested scope has no
+  material unexplained deviation. A possible normal explanation or a three-item
+  shortlist is insufficient.
 
 A clean shortlist does not certify all motion as normal: slow drift, faulty
 same-window references and unobserved processes remain limitations. Mention only
