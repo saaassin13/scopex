@@ -1,0 +1,21 @@
+name: prepare-assessment-worktree
+on:
+  push:
+    branches: [feature/task-result-assessment]
+    paths: [.github/workflows/prepare-assessment-worktree.yml]
+permissions:
+  contents: read
+jobs:
+  source-snapshot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Export tracked source only
+        run: git archive --format=zip -o "$RUNNER_TEMP/scopex-source.zip" HEAD
+      - uses: actions/upload-artifact@v4
+        with:
+          name: assessment-development-source
+          path: ${{ runner.temp }}/scopex-source.zip
+          retention-days: 1
+          if-no-files-found: error
