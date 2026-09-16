@@ -38,7 +38,7 @@ TaskService -> OpenClaw + 模型 + Skill -> 原生CLI outcome
 
 入口：[deployment.md](deployment.md)、deploy/edge/compose.yaml。ScopeX和vLLM容器restart均no；API绑定显式VPN IP；配置、运行数据、模型与app分开。旧systemd/宿主机方案仅历史参考，不混用。
 
-直接CLI/LocalRuntimeConfig默认compaction关闭；edge Compose显式开启原生compaction。edge图片额度默认12同时传给模型与ScopeX，通用默认4，每次view_image最多2。Runtime镜像固定OpenClaw2026.9.2；vLLM Compose max-num-seqs=1。这是仓库配置，不代替运行中参数inspect。
+直接CLI/LocalRuntimeConfig默认compaction关闭；edge Compose显式开启原生compaction，并将单次调查预算设为1200秒、Runtime优雅停止时间设为1220秒；CLI通用默认仍为600秒。edge图片额度默认12同时传给模型与ScopeX，通用默认4，每次view_image最多2。Runtime镜像固定OpenClaw2026.9.2；vLLM Compose max-num-seqs=1。这是仓库配置，不代替运行中参数inspect。
 
 用户过夜运行回执说明已部署且总体运行正常；没有对应日志的情况下不编造运行时长、任务数、故障率或加速比例。同步文档不触发任何现场部署/重启。
 

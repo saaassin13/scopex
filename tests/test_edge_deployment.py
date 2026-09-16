@@ -59,6 +59,9 @@ class EdgeDeploymentTests(unittest.TestCase):
         compose = (ROOT / "deploy" / "edge" / "compose.yaml").read_text()
         self.assertIn("/usr/bin/docker:/usr/local/bin/docker:ro", compose)
         self.assertIn("      - --enable-compaction", compose)
+        self.assertIn("    stop_grace_period: 1220s", compose)
+        self.assertIn('      - "1200"', compose)
+        self.assertIn("      - --max-num-seqs\n      - \"1\"", compose)
 
 if __name__ == "__main__":
     unittest.main()

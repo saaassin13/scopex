@@ -55,7 +55,7 @@ services:
     image: ${SCOPEX_RUNTIME_IMAGE}
     container_name: scopex-runtime
     restart: "no"
-    stop_grace_period: 620s
+    stop_grace_period: 1220s
     network_mode: host
     user: ${SCOPEX_UID}:${SCOPEX_GID}
     group_add:
@@ -100,7 +100,7 @@ services:
       - "8787"
       - --allow-trusted-network-bind
       - --timeout
-      - "600"
+      - "1200"
       - --max-requests
       - "16"
       - --max-tokens

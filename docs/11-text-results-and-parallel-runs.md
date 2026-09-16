@@ -12,6 +12,8 @@ OpenClaw继续拥有调查、决策、执行、验证、停止和回答。ScopeX
 
 产品CLI默认--max-active-tasks 2、--max-queued-tasks 16、--queue-timeout 600；活动名额1..4。直接构造TaskService时的单槽位/无队列默认保留为兼容，不是产品CLI未接线。
 
+edge Compose将单次调查`--timeout`覆盖为1200秒，并将Runtime优雅停止时间设为1220秒；队列等待仍为600秒，vLLM并发参数不随任务时长调整。
+
 各任务独立agent/session/Runtime/Scratch/Evidence/审计，模型请求没有全局串行锁；同一vLLM负责GPU调度，不复制模型、不混Prompt。当前并发仅支持隔离Sandbox执行，设备写动作并发锁不在本轮。
 
 队列满明确拒绝，排队可取消/超时，排队不构建Runtime、不采快照。历史相对窗按created_at/scheduled_for；当前资源按执行采样时间。暂停保留逻辑名额，不宣称已实现释放/恢复排队。
