@@ -1,55 +1,54 @@
 # 统一输入、定时任务与评价闭环
 
-更新：2026-09-14，Product V1已整合，真实页面和重启验收待完成。当前实现文件：`scopex/api/service.py`、`schedules.py`、`fastapi_app.py`、`frontend/src/views/`。
+同步：2026-09-16，按main@cb90d02。端侧已部署并获用户过夜运行总体正常回执；专项状态见[02](02-delivery-and-acceptance.md)。实现入口为scopex/api/service.py、schedules.py、fastapi_app.py及frontend/src/views/。
 
-## 1. 一个用户入口、一套Runtime
+## 1. 一个入口、一套Runtime
 
-用户自然输入，不选择“聊天还是任务”。统一`POST /runs`内部auto，始终使用相同TaskService、OpenClaw、模型、工具、Skill和审计。
+用户自然输入，不选择聊天或任务。POST /runs创建auto，所有模式共用TaskService、OpenClaw、模型、Skill、工具和审计，无额外Router Model。
 
-没有业务访问且正常回答可完成为conversation；一旦调查业务数据/能力，必须满足业务依据和结果链。业务失败不能降级聊天绕过证据。定时一开始即task。兼容旧API不等于另起执行引擎。
+是否访问业务用于内部模式分类；原生回答不要求ScopeX固定业务JSON/Evidence schema。正常回答与业务任务走同一原生交付函数，原生失败不能降级成聊天成功。定时创建task。
 
-多轮API复用OpenClaw session，每轮单独Run记录；UI的多轮体验及从聊天转业务的全过程仍应实测，不因为后端方法存在就宣布完整聊天产品验收通过。
+Stop/Steer/Resume及旧conversation接口保持兼容；运行中追问、完成后追问和跨Run上下文恢复改造暂缓，不因接口存在宣称完整多轮产品已验收。
 
-## 2. 任务结果
+## 2. 原生结果
 
 ```text
-业务Evidence -> Fresh Finalizer -> Validated Claims
- -> 一次无工具Report Composer -> 报告引用/分类校验
- -> 结论 / 人话事实依据 / 可能性分析 / 下一步 / 数据限制
+OpenClaw调查、判断、回答 -> cli_outcome
+ -> ScopeX正文、来源、执行状态、审计 -> Vue
 ```
 
-不继续维护按业务字段翻译的主输出路线。内部Evidence编号/原始JSON/脚本和工具过程在原始依据与技术记录内，不能成为用户主要内容。Report失败保留降级与deterministic fallback；历史记录不自动重写。
+不再要求Claims或额外Report/TextReportComposer调用；postprocess_model_calls=0。原生错误、预算中断和截断有可见原生正文时FAILED+partial，没有正文时FAILED+unavailable。框架错误提示不作为草稿；不从任意辅助模型响应抢救成功。完整交付也不认证全部业务含义正确。
 
-任务同时记录开始、结束、持续时间、触发方式、计划时间。调查未结束、Finalizer失败、报告表达失败是不同阶段，不统称“解析失败”。状态成功不证明业务含义正确。
+version=2结果使用report_text/report_meta/execution_status/investigation_reasons。通常producer=openclaw，已核验Locator无数据结果为scopex_no_data。历史报告兼容展示，不自动改写或重跑。
 
-## 3. 简单定时配置
+正文转义展示，不执行模型HTML；源码、内部JSON和工具流水不作为用户主结论。未知引用提示核验，不伪造链接。
 
-只维护名称、普通任务内容、周期/时间、启停。支持每N分钟、每日HH:MM、一次执行、立即执行、上次/下次执行和状态。
+## 3. 简单Schedule与并发准入
 
-例如：检查当前磁盘；检查过去30分钟编码器；检查过去30分钟图片。Scheduler到点只调用普通Task，不选择Skill、不编排A/B/C流程。相对时间窗依据scheduled_for，不由模型猜测“现在”。不新增CPU周期采样或资源历史库。
+支持名称、普通任务内容、每N分钟/每日HH:MM/一次执行、启停和立即执行。Scheduler只创建普通task，不选Skill或编排流程；相对窗口用scheduled_for，数据时区来自Catalog，不猜UTC。
 
-## 4. 断电与忙碌
+默认2活动、16等待、600秒排队；排队不准备Runtime/快照，获得名额后执行。暂停保留名额。在线可排队，同一schedule已有活动/等待项则跳过新触发；容量与队列都满时明确busy，不无限积压或改变统计窗口。
 
-离线历史触发全部跳过：missed_count、last_missed_at，推进到未来时间，不生成历史Run。once过期停用，interval相位保持，daily跳到未来日期。立即执行不改变原周期。
+离线错过全部跳过、推进到未来，不逐个补建历史Run。once过期停用，interval保持相位，daily跳到未来；立即执行不改变原周期。重启旧排队项过期，其他未完成项记中断，不自动重做业务动作。
 
-目前单槽位在线busy=SKIPPED_BUSY，无在线队列。之后可能引入约2任务并发和有界在线排队/合并，但设备离线历史仍然不补跑。前一任务长时间占用不得无限积压。
+固定窗无数据应结束，不扩窗；已知Locatorno_data在现有请求边界硬结束，其余工具零样本目前仍为指令约束。读取错误和源不可用不冒充无数据。
 
-Schedule配置持久化不等于所有非终态Task都能跨重启恢复；重启后的历史Run只读和异常终止状态需要专项验证。
+## 4. 活动、日历与定时历史
 
-## 5. 月历与删除
+全局/activity不受所选日期限制，显示活动/等待/暂停及排队位置；不可达显示未知，不虚构GPU进度。月历与当天Run列表只读任务元数据。
 
-首页月份日历显示每日执行数量及状态，点击日期展示当天Run，再进入详情。日历只读ScopeX任务元数据，不扫描业务目录。时间以设备时区为准，时区/时钟需现场检查。
+定时名称/执行历史进入/schedules/:id/history，按schedule_id跨日期查询，最新优先，每页50条，包括立即执行记录。GET /tasks支持schedule_id、limit(1..200)、offset，先过滤后分页；当前仍为文件枚举，没有磁盘查询索引。
 
-终态Task删除其ScopeX audit/work/报告/评价/导出资产，不删除`/agent-data`原始源，不删除Schedule。运行/暂停/Finalizing不允许直接删除；先正常终止。精确任务/容器归属检查仍需对旧命名残留实测，不得批量prune未知容器。
+详情记录计划、开始、结束、执行/准入等待/总耗时，可返回对应定时历史。页面路由是前端路径，不是独立调度引擎。
 
-## 6. 评价与导出
+## 5. 删除、评价和导出
 
-正确/有问题，错误类型与备注保存为evaluation.json；评价不自动修改Skill或Prompt。
+仅终态Task可删除ScopeX拥有的audit/work/正文/评价/导出/数据收集资产，不删除外部日志、原图、JSON、PCD或Schedule。暂停不是终止；不能批量prune未知旧容器。
 
-review ZIP包含存在的task/session/claims/evidence/result/answer/report/meta/events/evaluation/错误记录。默认不打包外部大日志、原图、模型或secret。缺原始材料时只能复盘执行链，不能假装重新验证图片内容。
+评价保存正确/有问题、标签、备注，不自动改变Skill/Prompt。review ZIP保存存在的task/session/evidence/result/report/meta/events/evaluation/技术错误及历史兼容资产，默认不包含整份业务源或密钥。
 
-更强模型复盘时区分Model、Skill、Tool、Runtime、Evidence、Finalizer、Report、UI，给可复现的最小改动与回归，而不是静默重做业务诊断。
+原始数据另有显式收集与下载入口，默认源内容2GiB/5000文件，缺失、变化、截断要记录；有限数据包不能宣称完整源数据。收集与同任务删除互斥，收集包随任务资产删除而不影响原始源。
 
-## 7. 接下来的验收
+## 6. 验证边界
 
-统一输入普通咨询与业务任务；自然中文报告及原始依据；计划时间/日历/耗时；立即执行周期不漂移；断电错过不补跑；删除只影响任务资产；评价保存和复盘包可定位失败；报告降级不谎报业务成功。并发与网络仍后置。
+已部署过夜运行回执保留；业务语义、长上下文、并发收益、重启/删除边界的专项结论分别记录。旧TextReportComposer回放不验证当前原生主链。历史开发记录见固定版本的12文档，现行说明见[12](12-native-answers-and-skill-refinement.md)。

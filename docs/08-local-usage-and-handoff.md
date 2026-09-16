@@ -1,114 +1,96 @@
 # ScopeX 阶段交接与本地使用
 
-## 2026-09-15 开发分支补充
+更新：2026-09-16，main 集成及用户端侧运行回执收口。代码核对基线：`cb90d028773b4fac4eabf4b429ecb3fed97f1c51`。本轮只同步文档，不修改架构、运行代码、Skill、Compose、模型或端侧服务。
 
-`feature/agent-native-results` 已开始落实用户批准的原生答案主链和编码器/图片Skill修正，未提交、合入或部署。实现、字段变化、验证及未验证范围见 [12-native-answers-and-skill-refinement.md](12-native-answers-and-skill-refinement.md)。本分支不再默认调用TextReportComposer，并关闭原生主动/完成后压缩；下文记录上一轮main集成基线，不能作为本分支新输出主链说明。
+## 1. 当前状态与证据
 
-更新：**2026-09-15 文本输出 / 独立任务并发 / 全局活动入口，PR #16 实施收口**。`main` 是唯一集成基线。阶段交接仅在大块完成后更新；本次是代码与界面实施收口，不是 Spark 整批加速或全部业务验收 PASS。
+`main` 是唯一集成基线。原 `feature/agent-native-results` 的原生回答及本轮业务改动已经进入 main，不再是“未提交/未合入”。
 
-## 1. 本轮用户决定与文档优先级
+2026-09-16 用户确认：**已经部署到端侧服务器，过夜运行总体正常。** 记录为用户现场运行回执，不再统一写“未部署”。本次没有独立核验端侧运行 SHA、镜像和任务明细，不能直接把 main SHA 标为经过 inspect 核对的现场版本。
 
-用户确认：
-
-- 结果总结改为一次无工具模型生成可读正文，系统提供来源、业务数据和执行状态；不再强制通过 Claims JSON 和第二次报告 JSON。
-- 多个独立任务真正并行，目标是**整批任务全部交付更快**，不是仅能提交/排队。
-- 页面提供全局活动任务入口。
-- 运行中提问、完成后追问、跨 Run 会话上下文恢复：全部暂缓。不要因为旧接口存在就宣称完整支持。
-
-先读本文件、README、`11-text-results-and-parallel-runs.md`、`acceptance/2026-09-15-output-parallel-status.md`。原 `01-requirements.md`、`02-delivery-and-acceptance.md`、architecture/08 和业务文档中的强制 Claims 主链/单槽位/并发暂缓描述，已被本轮输出与并发方案替代；其他业务和安全约束仍有效。部署制备读 `09-zero-to-one-build-and-offline-deployment.md`。
-
-OpenClaw + 模型拥有自主调查、决策、动作、验证与停止。ScopeX 只管能力、权限、产品生命周期、Evidence、审计、结果和执行准入。不重写 Agent Loop / Workflow Engine，不把业务调查写死在 Handler。
-
-## 2. 当前状态
-
-| 项目 | 结论 |
+| 项目 | 当前记录 |
 |---|---|
-| Step 6A–6D、6F | 保留历史 PASS，不无证据重做 |
-| Step 6E | 保留历史 CAPABILITY PASS |
-| PR #14 集成 | 原基线；520项回归，非Spark全部业务PASS |
-| PR #15 输出恢复 | 已合入7db4ac4；540项回归，保留为历史兼容 |
-| PR #16 文本报告、独立并发、活动入口 | 实施完成；首轮573项Python、Vue构建、卫生检查通过；最终提交看PR/Actions |
-| 浏览器检查 | 实际构建前端 + 模拟API检查活动列表/取消排队/文本/草稿/任务切换/移动端/断线提示，无页面异常；不是Spark真实联调 |
-| Spark 文本报告语义与图片/编码器/乳头业务正确性 | 待现机验收 |
-| Spark 2路/4路整批耗时收益 | 未测，不得称并发性能PASS |
-| vLLM 模型配置变更 | 本轮未执行，无容器重建/重启 |
+| 代码基线 | main@cb90d02，已包含原生回答、运动过程分析、no_data 终态、定时历史及端侧部署资产 |
+| 仓库回归 | Actions 35043132700：650 tests in 31.437s，OK；编译、Vue 构建、卫生检查通过 |
+| 端侧部署与运行 | 用户已确认部署并过夜运行总体正常 |
+| 历史 Step 6 | 6A–6D、6F PASS，6E CAPABILITY PASS，保留原范围 |
+| 精确现场版本与专项指标 | 本次未独立读取；没有新增逐项 PASS、故障率或吞吐百分比 |
 
-历史失败任务不会因为升级自动变成功。要新建执行或在独立目录对保存的 Evidence 重写报告。
+CI 证据：[main verify](https://github.com/saaassin13/scopex/actions/runs/35043132700)。旧 PR #14/#15/#16/#17 及本地验证是历史证据，不拿旧测试数代替本基线结果，也不删除原始历史结论。
 
-## 3. 新产品主链和实现位置
+## 2. 现行文档入口
 
-```text
-统一 POST /runs 或定时触发
- -> TaskService：默认2个独立任务名额 + 16个有界等待项
- -> 每任务独立OpenClaw Runtime / Session / Scratch / 审计
- -> 原生调查、执行、验证、停止
- -> 普通回答，或业务Evidence + SHA校验原图
- -> 一次无工具 TextReportComposer
- -> version=2 report_text / report_meta / 来源 / 执行状态
- -> Vue正文与全局活动入口
-```
+先读本文件、README、[12 原生回答与 Skill](12-native-answers-and-skill-refinement.md)、[02 交付与验收](02-delivery-and-acceptance.md)。部署操作只读 [deployment.md](deployment.md)。
 
-主要文件：
+[11](11-text-results-and-parallel-runs.md) 保留并发/队列与批次计时方法，其旧 TextReportComposer 方案是历史背景；[architecture/08](architecture/08-trusted-report-composer.md) 是旧结构化报告设计。[09](09-zero-to-one-build-and-offline-deployment.md) 的宿主机/systemd 步骤仅供历史基础环境参考，不覆盖现行 Compose。POC/reviews/带日期验收文件按其原版本解释，不自动继承到当前业务。
 
-- `scopex/finalizer/text_report.py`：文本编辑器，一次请求，无JSON解析/Claims门槛/自动重试。
-- `scopex/api/factory.py`、`scopex/runtime/investigation.py`：产品实际接线与落盘。
-- `scopex/api/service.py`：独立任务并发、队列上限/超时/取消、活动摘要、重启中断记录。
-- `scripts/runtime_api.py`：并发配置、单进程data-root文件锁、延迟到准入时采集快照。
-- `frontend/src/components/ActivityPanel.vue`、`TaskView.vue`：全局活动与正文/不完整草稿。
-- `scripts/replay_text_report.py`：从终态任务目录或复盘ZIP独立生成报告，零业务工具重跑。
-- `scripts/benchmark_task_batch.py`：固定同一任务集的整批计时、串并行对比，失败不算加速。
+阶段交接在大块完成后更新，不因每个小修反复重写。此次是 main 集成与已部署回执的阶段同步。
 
-旧 StructuredFinalizer / Claim Validator / ReportComposer 不作为新产品默认路径，但保留历史与Step6专项测试兼容。不要为新输出添加逐业务字段翻译表。
+## 3. 不改变的架构与结果链
 
-报告来源身份不等于语义证明；complete仅表示完整文本返回，不能替代数字/单位/候选与根因/范围的人工验收。空输出unavailable、截断partial，保留依据，不能伪装完整交付。正文目前以安全转义文本展示，Markdown标题不是必须，也不执行模型HTML。
-
-## 4. 业务边界不变
-
-当前资源仅本次宿主机快照，不采历史，不使用Sandbox的proc/free/df冒充宿主机。排队时不采集，实际获得名额后再采集，报告采样时间。
-
-图片必须看JPG原图；指标只筛选，不能用高锐度断言无雾。view_image每次最多2张，完整Prompt累计受 `SCOPEX_MAX_IMAGES_PER_PROMPT` 控制。原图身份校验与重新附图已移到文本报告调用，不得因减少模型调用而省略。
-
-编码器优先应用EncoderVal，识别具体毛刺、连续回退、异常正跳和缺口；给时刻、前后值、delta、dt与恢复窗口。invalid采样是断点，不能删除后跨点连算。候选数不是脉冲数或已确认故障数。
-
-乳头KPI只按最终LastImgTimeStamp对应2D NippleNum，命名牛周期分母，每牛最多4。缺图/JSON/最终结果不删牛，缺失不等于观测0。牛周期去重、小时边界和最终帧仍需一小时人工对账。
-
-目录语义唯一配置为 `config/data-catalog.json`，host只读映射 `/agent-data/logs` 与 `/agent-data/left-camera`，Locator references随Skill在启动时同步。不能递归全历史目录，也不声称任意Shell全局I/O限流已经实现。
-
-## 5. 并发与恢复边界
-
-多个任务可同时执行工具、请求模型、生成报告；没有把所有模型调用串行化的全局锁。vLLM原生批处理负责GPU调度，ScopeX不混合各任务上下文、不起多个模型副本。
-
-默认2活动/16等待/等待600秒，活动名额可配1–4。队列满时明确拒绝；任务在队列中可取消，不创建Runtime/Sandbox。暂停仍保留逻辑名额，未做暂停释放和恢复排队。
-
-定时任务在线忙碌可进入有限队列，同一schedule已有活动/等待项则跳过新触发。离线错过全部不补跑；重启前排队项过期，其他未完成任务记录中断，不自动重做动作。旧孤儿容器仍需按精确身份检查，不按宽泛前缀删除。
-
-一个data-root只允许一个API进程；不要开多个uvicorn worker共享内存队列。CLI文件锁防止第二个新版本进程启动，但升级时仍必须主动停止不带该锁的旧版本服务。
-
-## 6. 最后已确认的现场事实
+OpenClaw + 模型拥有调查、决策、执行、验证、停止和最终回答。ScopeX 只管能力、权限、生命周期、Evidence、审计、产品输出和准入。不自建 Agent Loop/Workflow，不把调查步骤写死在业务 Handler。
 
 ```text
-model repo=unsloth/Qwen3.8-27B-NVFP4
-revision=f0b7c9e722f5565102fff8481c99e4d86ae099c7
-served id=qwen3.8-27b-nvfp4
-endpoint=http://127.0.0.1:18002/v1
-image=nvcr.io/nvidia/vllm:26.08-py3
-vLLM version=0.27.1+93523f72.nv26.8.64249418
-context=32768
-image limit configured=12（已收到inspect回执，12张请求成功/全分辨率容量仍需实测）
-mm processor cache=0.5GiB
-container=scaling-scope-vllm-nvfp4
+POST /runs 或定时触发
+ -> TaskService 准入
+ -> 每任务独立 OpenClaw Runtime / Session / Scratch / 审计
+ -> 原生调查、判断和回答
+ -> cli_outcome
+ -> ScopeX 原生结果保存
+ -> Vue 正文、来源、状态与技术详情
 ```
 
-用户此前工作区在business-skills/v1的937d879，曾有未跟踪frontend/package-lock.json；之后已给main同步命令，但不能据此替代新进程/新提交现场回执。
+产品 Factory 设置 `native_answers=True`、`concise_terminal_handoff=False`。TaskService 优先调用 `finish_native_answer()`，不进入旧的“预算到达后再调用 Finalizer/Composer”分支。结果 version=2，保留 report_text/report_meta/execution_status/investigation_reasons，`postprocess_model_calls=0`。
 
-max-num-seqs最后文档值为1，当前值需inspect。要测试模型2路批处理，先确认原Compose/容器管理入口与现有参数，再安排维护窗口仅改相关参数；本轮没有重建/重启容器。显式KV缓存最后记录8G，不盲目调大所有预算。OpenClaw精确版本、原Compose入口、网络topology仍需补录。
+预算中断、原生 error/aborted/length、进程失败不能因 Evidence 或文字非空转为成功。有有效原生文字时 `FAILED + partial`，无文字时 `FAILED + unavailable`；异常框架提示不当作模型草稿。正常交付 `COMPLETED + complete` 只说明执行和文本完整，不认证全部业务语义。
 
-## 7. 下一步与更新方法
+**旧版“预算中断但完整报告使任务显示完成”不再列为当前默认链待修复问题。** 不为它恢复 TextReportComposer、Claims、第二次模型总结或其他架构改造。相关回归在 `tests/test_native_answers.py`，包括超时有 Evidence 仍为草稿失败、无额外报告调用。
 
-先等任务结束、停止ScopeX Runtime，保存本地改动。禁止reset --hard / git clean或删除.local。拉main后**本次必须重建frontend dist**，保留原workspace/data-root/额外挂载，启动时显式SCOPEX_MAX_IMAGES_PER_PROMPT=12与--max-active-tasks 2。详细命令在11文档。
+普通回答和业务任务共用 Runtime 与原生交付路径；业务访问用于内部模式和审计，不以固定业务 schema 作为文本交付门槛。当前 producer 通常为 openclaw；已核验 Locator 无数据终态标为 scopex_no_data。历史报告与独立回放保留，不自动重写历史任务。
 
-先用独立Evidence回放确认文本输出；再新建真实任务检查report_text/meta及语义。然后在相同代码/模型/任务集/预热条件下对比1路与2路至少3组，记录整批从首次提交到最后报告完成的耗时。全部结果质量和覆盖一致后才判断加速；不把失败早退、少看原图、少算牛或输出链减少一次调用当并发收益。
+## 4. 当前业务边界
 
-全局活动入口检查跨日期、排队取消、报告阶段、断线后状态未知和任务切换不串数据。Spark重启/离线包/回滚、数据保留策略、任意Shell I/O预算及复杂大窗口资源占用仍是未完成的专项验收。
+编码器产品 Skill 使用 `--motion-report --events-out ...`，schema 5。允许前进、持续后退、停止、回弹、归零后累积；大反向位移、持续时间长、少见或缺少控制意图记录都不独立构成故障。按运动过程时间/形态、离轨返回、有效样本和缺口判断，必要时查询保存的 M 过程；不将编号或过程数当故障码/故障数。计数边界只是可能重置，不证明意图或全部重置已检测。
 
-这组实机结果齐备后再更新下一次大阶段handoff，不按每次小修更新。
+图片由调查 Agent 实际查看原图，指标仅辅助筛选；预留累计额度给必要复核，未观察时段不外推。原生回答不再追加报告模型重新附图。
+
+乳头 KPI 仍用命名牛周期、最终 LastImgTimeStamp 的2D NippleNum、每牛封顶4；缺最终结果保留分母并单列，不伪装成观察到0。
+
+资源目标仍是本次宿主机状态，不引入历史采样。Runtime 已容器化，`host_snapshot.py` 在调用进程环境采集，进程/挂载/GPU等来源范围需要逐字段现场对照。此项是静态审查后的专项核验，不等于已经确认端侧故障，更不据此否定用户过夜运行回执。本次不改采集实现或容器权限。
+
+固定窗口无数据结束，不换窗口、来源或猜 UTC。请求边界硬终态只适用于已知 Locator 的匹配 no_data 契约；其余零样本仍由指令约束。不可用/读取错误不等于无数据。
+
+## 5. 部署与参数：区分默认值、配置和现场回执
+
+现行入口是 `deploy/edge/compose.yaml`，命令见 deployment.md。ScopeX Runtime/vLLM 容器的 restart 均为 no；设备重启或退出后人工启动，不能按历史 systemd 自恢复方案修改它。
+
+| 配置 | 当前仓库事实 |
+|---|---|
+| 原生 compaction | CLI/LocalRuntimeConfig 默认 false；edge Compose 显式 --enable-compaction |
+| OpenClaw | Runtime Dockerfile 安装版本2026.9.2；现场有效版本仍以运行资产为准 |
+| 图片 | edge.env 默认 SCOPEX_IMAGE_LIMIT=12，同时供 vLLM 和 ScopeX；通用默认4，每次view_image最多2 |
+| 并发/等待 | 2活动、16等待、600秒排队；活动名额范围1–4 |
+| 调查预算 | turn 600秒、模型请求16、每次输出2048 tokens；不是端到端绝对耗时承诺 |
+| 模型 | served id=qwen3.8-27b-nvfp4，本机18002/v1；Compose max-num-seqs=1 |
+| API | CLI默认loopback；edge显式绑定VPN IP及可信网络参数；不是任意公网开放 |
+| 目录 | app/代码、config/设备配置、data/运行资产、model/权重分离 |
+
+已有镜像、模型、额外挂载和数据目录均不因文档同步自动变化。不要照旧宿主机命令另起一个服务，也不要按旧说明关闭 edge 已显式开启的压缩。长任务压缩实际触发和恢复效果仍需独立证据。
+
+## 6. 并发、调度与记录
+
+任务 Runtime/Scratch/审计独立；排队不创建 Runtime 或提前采快照，准入后才准备。历史相对窗口用创建/计划时刻；资源用实际采样时刻。暂停保留逻辑名额；队列有上限、超时和取消。
+
+定时仅创建普通 task，在线可有限排队；同一 schedule 已有活动/等待项时跳过，不无限积压。离线错过不补跑，重启前排队项过期，其他未完成项记中断，不重做动作。一个 data-root 一个 API 进程。
+
+全局活动入口、月历、按 schedule_id 的跨日期历史、评价、review ZIP 和显式原始数据收集入口均已实现。终态删除仅清理 ScopeX 资产，不删除外部业务源。
+
+追问/跨 Run 会话恢复改造仍暂缓；保留旧接口不等于新增完整会话产品。并发写设备锁、网络诊断、重型点云不纳入本轮。
+
+## 7. 后续验证与交接边界
+
+以现有已部署服务为基础，不重新设计结果链。真实编码器正常/异常对照、乳头逐牛分母对账、图片覆盖、资源来源、长输入压缩及1路/2路整批收益仍分别记录；“运行正常”不要求被否定，也不自动替代这些专项。
+
+历史 TextReportComposer 回放只能验证回放器，不能代替现在的原生主链。验证当前输出使用新任务或只读检查其原生 outcome、result 与审计，不修改旧失败记录。
+
+本轮文档修订不包含部署或重启授权，不调整模型并发、全局预算、业务阈值或容器权限。

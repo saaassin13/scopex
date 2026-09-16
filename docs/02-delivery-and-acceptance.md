@@ -1,99 +1,70 @@
 # 交付与验收状态
 
-更新：2026-09-14 阶段收口。`main` 是当前集成基线；本次用户明确要求合入并交接，**不是宣告所有业务 Gate 已通过**。
+同步：2026-09-16；代码核对基线 main@cb90d028773b4fac4eabf4b429ecb3fed97f1c51。当前产品使用原生回答和 edge Compose，不再沿用旧报告主链的完成定义。
 
-## 1. 状态用语
+## 1. 当前已确认
 
-- 冻结 PASS：原 Step 6 的既定验证结论，不扩大范围。
-- 仓库回归 PASS：当前提交在指定测试环境通过单元/集成模拟和构建。
-- 已实现 / 待验收：存在代码，但需 Spark + 模型 + 原始业务数据验证。
-- 未实施：仍为设计方向，不能写成能力已完成。
-
-## 2. 冻结能力
-
-| 能力 | 状态 |
+| 层级 | 证据与结论 |
 |---|---|
-| Runtime MVP、Stop/Resume/Steering、Evidence 校准 | 原基线 PASS |
-| 6A Context / Compaction | PASS |
-| 6B Large Data / Multi-Image | PASS |
-| 6C Hard Budget、6D Native Loop | PASS |
-| 6E Complex Task | CAPABILITY PASS |
-| 6F 600s / 16-request | PASS |
+| 集成 | 原生回答、Skill修正、端侧Compose等已在main，非未合入开发分支 |
+| 仓库回归 | [Actions 35043132700](https://github.com/saaassin13/scopex/actions/runs/35043132700)：650 tests in 31.437s，OK；compileall、Vue构建、卫生检查通过 |
+| 端侧运行 | 2026-09-16用户确认：已部署到端侧服务器，过夜运行总体正常 |
+| 证据边界 | 本次未独立读取现场运行SHA/镜像/任务明细，不把上述回执扩大为每一专项均PASS |
 
-不无证据重做 6A–6F；新增业务、报告、容量配置并不自动继承业务正确率 PASS。
+“未部署”不再是当前总体状态。后续应记录哪项能力缺少专项验证，而不是重复要求从零部署。
 
-## 3. 本轮已有直接证据
+## 2. 保留历史结论
 
-收口前 GitHub Actions 使用 `94d34e000aa6464d06639df68206c677b198b1b0` 分支的 PR 合并树：
+Runtime MVP、Stop/Resume/Steering、Evidence校准以及6A/6B/6C/6D/6F保留原PASS；6E保留CAPABILITY PASS，不扩大业务或新配置范围。
 
-- Ubuntu 24.04 / x86_64 / Python 3.12：**519 tests，28.056s，OK**；
-- Python compileall：通过；
-- Node 22.18.0 / Vue 生产构建：通过；
-- 该第一轮 workflow 的独立 whitespace 步骤因 shallow checkout 缺 `HEAD^` 失败，不是单测失败；随后配置修正为 fetch-depth=2，最终结果以 PR #14 Checks 为准。
+PR #14历史首轮519项及后续修正、PR #15输出恢复、PR #16首轮573项、PR #17的586项属于各自提交的证据。旧记录保留在Git历史、reviews及[2026-09-15验收记录](acceptance/2026-09-15-output-parallel-status.md)，不替代650项的现行基线。
 
-此记录指向 Actions run `34858985419`，不把整次首次 workflow 误记为成功。最终收口提交及 main 的 verify workflow 是合入后的持续证据。
+原生回答开发阶段的605项及macOS既有失败见[固定版本开发记录](https://github.com/saaassin13/scopex/blob/cb90d028773b4fac4eabf4b429ecb3fed97f1c51/docs/12-native-answers-and-skill-refinement.md)。不同平台与不同提交的历史失败不抹除，也不自动算成当前Linux回归失败。
 
-前述测试不调用真实 GPU 模型，也不验证工业现场图像/编码器语义，不可当成 Spark 业务验收。历史本地专项/复盘回放仍保留在专项 review 文档。
+## 3. 已整合的产品能力
 
-## 4. 已整合功能
-
-统一 `/runs` 输入、同 Runtime 内部结果策略；当前宿主机快照；六个默认 Skill（含 Locator/上下文支持）；有界目录定位；Evidence/Trace 分层；Report Composer 主路径和 fallback；任务时间；简单 Schedule；离线 missed 不补跑；月历/当天记录；终态删除；评价与 review ZIP。
-
-正式主链：
+统一/runs、同Runtime内部模式、原生CLI答案直接保存；默认2活动/16等待、活动入口；普通Schedule、离线不补跑、重启记中断；月历及定时任务历史；终态删除、评价、review ZIP和显式原始数据收集；6个默认Skill、Catalog有界定位、只读业务挂载及独立scratch。
 
 ```text
-TaskService -> OpenClaw -> 业务依据
- -> Fresh Finalizer -> Validated Claims
- -> 无工具 Report Composer -> 引用/分类校验 -> 人话报告
+TaskService -> OpenClaw + 模型 + Skill -> 原生CLI outcome
+ -> ScopeX正文/来源/执行状态/审计 -> Vue
 ```
 
-单槽位在线 busy 仍 SKIPPED_BUSY。无资源历史 collector、无 Router Model、无额外业务 Workflow。
+结果version=2，通常producer=openclaw，postprocess_model_calls=0；已核验no_data为scopex_no_data。业务固定schema不是交付关卡。历史Claims/Finalizer/Composer/独立回放仍在，但退出默认产品链。
 
-## 5. 最近两个真实失败的状态
+预算中断、原生错误、截断或进程失败不会因文字/Evidence而变成功；有原生正文为FAILED+partial，无正文为FAILED+unavailable。`tests/test_native_answers.py`覆盖超时草稿、错误通知不当答案和零额外报告调用。旧链“预算中断后报告完整使任务完成”不再列作当前主链待修复项，不据此变更架构。
 
-| 任务 | 已定位事实 | 修复状态 | 未完成 |
-|---|---|---|---|
-| 编码器 de435616a790 | 调查完成，两个不同聚合事实引用 E1 被 duplicate_claim 拒绝 | 聚合事实身份校验已修，原包回放及回归覆盖 | 新任务报告、业务措辞/事件人工核对 |
-| 图片 52fcca3534ca | 三批共 6 张，完整 prompt 超过服务 4 张上限，HTTP 400 | 全链路额度统一及容量探针已实现 | vLLM 改 12 的现场回执、原图/token预算、视觉正确率 |
+## 4. 部署配置与运行回执
 
-来源见 `reviews/2026-09-14-runtime-failure-replay.md`。不要归咎“模型不会识别”或“用户 Prompt 不好”来替代已确定的链路原因。
+入口：[deployment.md](deployment.md)、deploy/edge/compose.yaml。ScopeX和vLLM容器restart均no；API绑定显式VPN IP；配置、运行数据、模型与app分开。旧systemd/宿主机方案仅历史参考，不混用。
 
-## 6. Spark 后续 Gate
+直接CLI/LocalRuntimeConfig默认compaction关闭；edge Compose显式开启原生compaction。edge图片额度默认12同时传给模型与ScopeX，通用默认4，每次view_image最多2。Runtime镜像固定OpenClaw2026.9.2；vLLM Compose max-num-seqs=1。这是仓库配置，不代替运行中参数inspect。
 
-| Gate | 验收方法 | 当前状态 |
-|---|---|---|
-| 模型容量 | 实际 vLLM 参数、ScopeX env 相同；小图探针 accepted=true | 最后确认 4，12 待回执 |
-| 实际图片 | 有代表性原图视觉判断，人工复核雾/水珠/污迹；不拿指标否定起雾 | 待验收 |
-| 编码器 | 时间/前后值/delta/dt/恢复、连续回退、invalid/reset 边界逐事件核对 | 待验收 |
-| 乳头 KPI | 一小时牛周期/最终帧/2D框/缺失/封顶/分母人工对账 | 待验收 |
-| 当前资源 | 使用 host 快照，不读 Sandbox 冒充；无历史分析 | 待现机复核 |
-| 人话报告 | result.report、事实说明/可能性/下一步，数字单位与原证据一致 | 待人工验收 |
-| 产品交互 | 日历、开始结束耗时、评价/导出、删除不影响原始业务数据 | 待当前页面验收 |
-| 故障与恢复 | 无效 JSON/图像超预算/服务重启给出明确失败；历史定时不补跑 | 代码测试覆盖，现场待验收 |
-| 大目录 | 不递归历史根；日志无截断冒充全量；测执行时间、CPU、内存和 I/O | 待实测 |
-| 离线/升级 | ARM64 镜像+wheelhouse+权重+OpenClaw；版本切换保留运行数据，可回滚 | 待完整 smoke |
+用户过夜运行回执说明已部署且总体运行正常；没有对应日志的情况下不编造运行时长、任务数、故障率或加速比例。同步文档不触发任何现场部署/重启。
 
-默认 Sandbox 512 MiB 不代表重型 PCD 足够；脚本逐行读取也不代表整个算法常量内存。
+## 5. 仍需分别记录的专项验收
 
-## 7. 当前部署事实
+| 专项 | 所需证据/边界 |
+|---|---|
+| 原生答案业务正确性 | 实际任务正文与原始材料对照；正常执行不认证数字/单位/因果全部正确 |
+| 编码器 | 正常前进/持续后退/停止/回弹/归零与已知异常对照；过程、离轨、缺口/invalid逐项核验，不能以大后退判故障 |
+| 图片 | 代表性原图视觉与人工标注，抽样范围和8/12张全分辨率容量；数量配置不等于视觉/容量PASS |
+| 乳头KPI | 命名牛周期、最终2D框、缺失、封顶、分母逐牛对账 |
+| 当前资源 | Runtime容器下进程/磁盘/GPU来源逐字段与宿主机对照；静态疑点不等于已确认现场故障 |
+| 长上下文 | 原生compaction真实触发、证据保留及overflow恢复；过夜多个短任务不能替代长任务验证 |
+| 整批收益 | 同代码/模型/样本/质量比较1路与2路，多次配对；排队并发不等于GPU加速 |
+| 生命周期/存储 | 断电不补跑、历史中断、删除/数据包不影响外部源、升级回滚与长期retention |
+| 大目录 | 真实耗时、CPU/内存/I/O与覆盖；不宣称任意Shell全局I/O硬限流 |
 
-MODEL_REPO、revision、NGC 镜像已由用户的现机 inspect 补录，不再是未知：详见 `09-zero-to-one-build-and-offline-deployment.md`。12 张属于待验证配置；当前 OpenClaw 精确版本、原 Compose 管理入口仍待补录。
+这些是未取得本轮独立专项结果的范围，不表示用户已观察到运行失败。不无证据重做历史Step6，也不重新引入结果后处理或修改全局预算来“修复”已退出主链的旧问题。
 
-systemd 模板使用 release 外固定 state 目录，去掉旧的泛化 `/agent-data` 根挂载占位符。模板变更不会自动迁移 Spark 现有开发 `.local` 数据，切换前必须按部署说明备份/迁移。
-
-## 8. 保留的风险与技术债
-
-结构/引用校验不是自然语言语义保证；Report 数字、单位、因果和抽样范围需实测。业务指标→报告的传递不得再以逐字段映射扩大维护面。
-
-图片额度不等于 token/HTTP body/内存额度。大目录任意 Shell 的 I/O 硬拦截、编码器逐事件跨流关联、非终态断电状态恢复、旧 Sandbox 精确清理、审计 retention、npm lockfile、完整 Device Base 离线交付尚未全部完成。
-
-并发/队列/设备动作锁、网络 topology 和无周期漏牛真值继续后置；不能在本轮报告尚未验收时直接并行扩大负载。
-
-## 9. 复测命令
+## 6. 工具与后续范围
 
 ```bash
 python3 -m unittest discover -s tests -v
 (cd frontend && npm run build)
 ```
 
-`.github/workflows/verify.yml` 自动做完整仓库测试、前端构建和卫生检查，不负责现场部署。新会话按 `08-local-usage-and-handoff.md` 顺序进行最小真实验收，不先修改算法阈值或全局预算。
+CI不调用现场GPU或执行端侧部署。TextReportComposer回放只验证历史/独立回放器；当前主链验证应检查新的原生outcome及result。
+
+追问/跨Run上下文恢复改造、设备写动作并发锁、网络诊断、重型点云、完整retention继续后置。新任务推进依据现行[交接](08-local-usage-and-handoff.md)和[12契约](12-native-answers-and-skill-refinement.md)。

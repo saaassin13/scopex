@@ -1,6 +1,8 @@
-# ScopeX 受约束业务报告
+# ScopeX 受约束业务报告（历史方案）
 
-更新：2026-09-14，主链已实现，真实模型表达质量待验收。
+> 2026-09-16 状态说明：下面保留的是2026-09-14的结构化报告设计与当时接线，不是当前产品默认路径。main已直接交付OpenClaw原生回答，零额外报告模型调用；旧Finalizer/Composer仅历史/专项兼容及独立回放。现行契约见[12](../12-native-answers-and-skill-refinement.md)，当前状态见[交接](../08-local-usage-and-handoff.md)。下文“当前”“主链”“不能跳过Claims”等均限定在历史实现，不应据此改回现行架构。
+
+原记录：2026-09-14，主链已实现，真实模型表达质量待验收。
 
 ## 1. 职责边界
 
@@ -45,9 +47,9 @@ Prompt要求模型：保持数字/单位/时间/范围；事实与假设分开�
 
 同一份structured_business_facts包含多个统计/事件，可支持多个不同Claim；相同scope+refs并不必然重复。完全相同聚合命题仍拒绝，旧line-evidence去重保留。
 
-## 4. 真实接线和落盘
+## 4. 历史接线和落盘
 
-`OpenClawRuntimeFactory.coordinator()` 注入 `report_composer()`；`InvestigationCoordinator.finish_fresh_finalization()` 在合法Claims生成后调用；`RuntimeAudit.persist_report_result()`保存：
+当时的 `OpenClawRuntimeFactory.coordinator()` 注入 `report_composer()`；`InvestigationCoordinator.finish_fresh_finalization()` 在合法Claims生成后调用；`RuntimeAudit.persist_report_result()`保存：
 
 ```text
 report.json / report-meta.json       成功
@@ -64,16 +66,16 @@ answer.json / final.txt             确定性fallback与审计
 
 working_derived只作为内部派生材料兼容Step6，不因为“存在于Evidence目录”就和原始观察等价。事实页面要人工验收，包括fallback情况下是否仍泄漏大JSON、内部编号或不相干信息。
 
-## 6. 业务校验重点
+## 6. 业务校验重点（当时记录）
 
 图片：数值指标只筛选，最终看原图；抽样未覆盖不能说整小时正常；可见雾化不等于确定凝露。
 
-编码器：数值下降、毛刺候选、连续回退、采样缺口与硬件根因分开；事件个数、负增量个数、脉冲幅度不是同一单位。正向大增量还要检查dt，恢复腿不要双计异常。
+编码器：数值下降、毛刺候选、连续回退、采样缺口与硬件根因分开；事件个数、负增量个数、脉冲幅度不是同一单位。正向大增量还要检查dt，恢复腿不要双计异常。当前允许工况和运动过程schema以现行业务文档为准。
 
 乳头：最终采用帧2D框，最多4，命名牛周期分母；缺最终结果不是观察到0；统计率不是人工标注精确率。
 
 系统：当前host快照不是历史资源；负载高不是业务根因；缺字段不可从Sandbox补值。
 
-## 7. 验收
+## 7. 历史验收范围
 
-测试验证引用越界、fact/inference分类、无工具请求、错误JSON与降级。真实任务另外验证：直接回答问题、事实人话、数字单位一致、未知保留、限制清楚、原始证据可追溯。不能只检查report.json存在就宣布完成。
+测试验证引用越界、fact/inference分类、无工具请求、错误JSON与降级。真实任务另外验证：直接回答问题、事实人话、数字单位一致、未知保留、限制清楚、原始证据可追溯。不能只检查report.json存在就宣布完成。这些旧专项不意味着当前产品仍执行该模型链。
