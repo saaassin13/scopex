@@ -1,128 +1,81 @@
 ---
 name: encoder-health
-description: Assess encoder motion over a requested window, distinguishing allowed forward/reverse motion, stops, rebound and counter resets from off-trend jumps and unusual motion processes.
+description: Check raw CowDisinfect encoder readings for data anomalies, inspect local evidence progressively, and stop once one anomaly is confirmed.
 user-invocable: true
 ---
 
-# Encoder observation and motion diagnosis
+# Raw encoder analysis
 
-Decide first whether the supplied data contains unexplained deviations, then keep
-that observation separate from whether the motion matched a command and from any
-physical fault diagnosis. Forward motion, sustained reverse motion, stops, rebound,
-and resetting the counter to zero followed by renewed accumulation can all be
-valid operations. A possible valid explanation prevents unsupported fault
-attribution; it does not prove that a materially unusual observation is normal.
+Analyze only the number in `Get EncoderVal, raw[...]`. Forward/reverse motion,
+starts and stops are allowed. Other logs can explain raw changes; filtered and
+application values are not alternative measurements for this task.
 
-## Analyze once
+## Scan once
 
-Resolve explicit hourly/rotated logs using data-locator for the requested window.
-Then run the motion report (substitute the actual paths and timestamps):
+Use data-locator to resolve the explicit files and requested window. Run:
 
 ```bash
-python3 {baseDir}/scripts/encoder_health.py /agent-data/logs/<file1> /agent-data/logs/<file2> \
+python3 {baseDir}/scripts/encoder_health.py scan /agent-data/logs/<file1> /agent-data/logs/<file2> \
   --start "YYYY-MM-DD HH:MM:SS:000" --end "YYYY-MM-DD HH:MM:SS:000" \
-  --motion-report --events-out /task-scratch/encoder-motion.json
+  --out /task-scratch/encoder-raw.json
 ```
 
-The report includes coverage, process count and three prioritized processes.
-Normal starts/stops are included, not labeled faults. Omitted processes still
-exist; use `episode_summary` and aggregate facts before answering for the whole
-window. The shortlist is not exhaustive evidence that the rest is normal.
+Check raw coverage, gaps and issues first. `no_raw_data` means there are no raw
+samples, not normal operation; do not fall back to application readings.
+`error` means no completed analysis. A candidate is a place to inspect, not a fault.
 
-## Interpret the evidence
+## Inspect one question at a time
 
-- Check invalid samples and gaps first. Do not interpret discontinuous coverage
-  as mechanical movement or certify an empty window as normal.
-- `counter_boundaries` marks possible resets, including low counts reaching zero.
-  Resetting and accumulating again, or staying stopped at zero, are allowed.
-  Exclude the cross-boundary difference from reverse displacement/speed. A
-  rapid drop then jump back to the old trend is different: inspect off-trend
-  evidence. Smooth reverse travel to zero can also occur; counts alone do not
-  prove a reset. Insufficient follow-up is uncertainty, not an anomaly.
-- `off_trend_return_counts` identifies an isolated point leaving and rejoining a
-  locally consistent trend. It is stronger evidence of a transient recording
-  deviation than a large increment alone, but does not identify hardware cause.
-- Each process groups reversals and nearby starts/stops/rate transitions, with
-  context before and after. Inspect count/time order, duration, drawdown and
-  negative-lobe amplitudes. Sub-threshold stationary jitter is context only and
-  must not extend the process core. `rebound_supported=true` means the dominant
-  lobe decays into a stationary tail; `stop_settling_supported=true` additionally
-  supports a short stop/recoil interpretation. A false field means that shape was
-  not established; it is not positive anomaly evidence.
-- A persistent forward rate transition is also included. Determine whether its
-  shape supports an ordinary start/change of speed or an unexplained discontinuity.
-- Inspect `reported_speed_mm_s`, signed-delta extrema, material reverse and
-  positive-spike counts, direction changes, and raw/filtered context. These are
-  observable deviation evidence, not hidden device limits or proof of root cause.
-- `motion_pattern` describes observed direction/shape, not the commanded
-  operating mode. Never compare long reverse travel against small rebound and
-  call the larger displacement abnormal. Reverse distance/duration are descriptive
-  only; the script no longer scores them as statistical faults. Off-trend
-  comparisons, when available, are unverified references, not hardware limits.
-- Diagnose observable data problems (gaps, invalid readings, isolated off-trend
-  jumps, and motion materially unlike the nearby stable behavior). Whether a
-  smooth forward/reverse/stop action was intended requires command/business-state
-  evidence. Absence of that evidence is not a fault, but it also cannot establish
-  normality; use an unresolved distinction when intent changes the answer.
-- The 2000ms grouping/context horizon is an analysis setting, not a business
-  threshold. `context_complete=false` means a boundary prevents that context;
-  even true does not prove the full physical start/stop cycle is captured.
-- Prioritized processes are ranked observations, not anomaly severity. Do not
-  rename the largest drawdown or first process as the "main anomaly" unless its
-  actual shape provides anomaly evidence. A material-reverse count is a screening
-  count, not an anomaly count.
-- Trace is a full-span min/max envelope, not a prefix. It preserves endpoints and
-  bin extrema but can omit fine oscillation and must not be treated as every sample.
-- Raw/filtered context covers this process, not whole-hour totals. Those streams
-  and reported speed are related measurements, not independent mechanical proof.
-
-## Resolve a specific uncertainty
-
-If the initial trace is insufficient, request the relevant process ID. It returns a
-more detailed full-span trace from saved data without scanning logs again:
+Start with a returned candidate ID:
 
 ```bash
-python3 {baseDir}/scripts/encoder_health.py \
-  --inspect-events /task-scratch/encoder-motion.json --episode M1
+python3 {baseDir}/scripts/encoder_health.py inspect /task-scratch/encoder-raw.json --candidate R1
 ```
 
-Use an ID actually returned. Do not re-query the old candidate list or repeatedly
-shrink raw-log windows. Do not use inline Python, grep or sed to dump the saved
-event file or raw encoder trace. The motion report includes bounded follow-up observations for counter
-boundaries; distinguish a return toward the previous level from continued low
-counts, and treat insufficient follow-up as unresolved; a hardware cause is outside this data-only check. Query additional IDs only for distinct unresolved questions that could change the
-conclusion. Do not repeat an unchanged query. Once available evidence resolves the
-question, or further queries provide no new information, answer with any remaining
-uncertainty.
+The result contains measured changes, exact source lines, local raw samples,
+counter-log context and check outcomes. It persists the check for later reports.
+For a different view, use `--context-ms 5000` or an arbitrary captured
+`--start ... --end ...` range instead of `--candidate`.
+Trace is paginated raw data, not a continuous reconstructed curve; `--offset`
+and `--limit` retrieve more. Inspect returns core extrema/source evidence even
+when the first trace page contains only earlier context.
+
+If needed, use log-context with the reported files and times for other relevant
+log messages. Keep newly retrieved evidence distinct from the saved scan.
+A reset request is not proof that reset completed. Repeated shapes do not prove
+a fault; an isolated occurrence is not automatically normal.
+
+## Decide whether to continue
+
+- `confirmed_raw_anomaly`: source-backed range/rate checks established an anomaly.
+  For “is there an anomaly?”, stop inspecting later blocks and get the report.
+- `unresolved`: inspect more relevant context or compare another candidate.
+  Do not promote a suspicious shape to confirmed solely by model judgment.
+- `compatible_motion` / `no_anomaly_evidence`: no anomaly was established in this
+  region under the implemented checks; continue if other candidates remain.
+- When no new evidence is available or the task budget ends, report the unresolved
+  question. Opening a region does not mean it was resolved.
+
+List remaining candidates or resume after context compaction:
+
+```bash
+python3 {baseDir}/scripts/encoder_health.py report /task-scratch/encoder-raw.json
+# Follow next_offset to retrieve another candidate page:
+python3 {baseDir}/scripts/encoder_health.py report /task-scratch/encoder-raw.json --offset 5
+```
+
+A profile is optional. Without it the first version screens shape changes but
+does not automatically confirm mechanical inconsistency. Read
+[references/raw-contract.md](references/raw-contract.md) only when an existing,
+verified device profile is available or representation/confirmation needs clarification.
+Never create physical limits from the observed maximum or model guesses.
 
 ## Answer
 
-Lead with observed unexplained deviations, behavior consistent with ordinary
-operation, or a specific unresolved distinction. Report the important process
-times, measured shape and comparison evidence. Use time + phenomenon in the
-answer; M IDs are optional lookup references, not fault codes. Group one motion
-process once. Do not headline "significant anomaly" and then admit the only
-evidence is a possibly normal reverse journey or reset. Do not certify omitted
-processes as normal.
-Do not equate candidate counts with anomaly counts or diagnose hardware from
-these counts alone. Use counts and counts/s unless calibration is verified.
-
-Match the conclusion to the user's question:
-
-- For whether the **encoder data contains abnormal behavior**, multiple strong
-  local deviations, rapid direction changes, or corroborating raw/filtered
-  changes may establish an abnormal observed pattern even when the physical
-  cause is unresolved.
-- A short bounded reverse followed by a long stationary tail and smooth restart,
-  with `stop_settling_supported=true` and no contradictory gap/spike/off-trend
-  evidence, is consistent with ordinary stop settling rather than a data anomaly.
-- For whether motion was **expected** or the device is **faulty**, require command,
-  business-state, or verified operating-limit evidence. Material deviations with
-  missing intent evidence require review; they are not normal by default.
-- Use normal only when coverage is sufficient and the requested scope has no
-  material unexplained deviation. A possible normal explanation or a three-item
-  shortlist is insufficient.
-
-A clean shortlist does not certify all motion as normal: slow drift, faulty
-same-window references and unobserved processes remain limitations. Mention only
-limitations that materially affect this task. No images or repair are required.
+Use the tool's times, raw values and evidence. State at least one confirmed
+anomaly when established, and that later candidates were not individually checked.
+Do not infer total frequency, periodicity, unique cause or hardware failure from
+that stopping point. If unresolved, name the missing distinction/evidence.
+“No anomaly evidence in completed checks” is limited by coverage and detector
+scope; it is not a health certificate. Continue beyond the first confirmed block
+only for a user request about all events, frequency, impact or cause.

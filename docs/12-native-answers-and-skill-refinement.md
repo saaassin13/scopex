@@ -49,30 +49,25 @@ edge图片SCOPEX_IMAGE_LIMIT默认12同时进入vLLM和ScopeX；通用图片默�
 
 固定窗无数据应立即说明并结束，不换窗/来源/猜UTC，不默认无限等待。现有请求边界仅对可核验的已知Locatorno_data合同硬结束，匹配工具/命令source/start/end/结果窗口与零匹配空文件列表；用户停止优先。后续请求不再发上游模型，系统来源单列。不撤回此前同批工具，不声称所有业务零样本均已硬拦截。source_unavailable/读取错误与no_data分开。
 
-## 5. 编码器：当前产品schema5
+## 5. 编码器：raw-only schema 6（2026-09-20 本地改造，未部署）
 
-产品Skill使用：
+仅分析 `Get EncoderVal, raw[...]`；不使用 filtered 判定 raw 有效性，不回退到应用 EncoderVal。当前工作区入口：
 
 ```bash
-python3 {baseDir}/scripts/encoder_health.py /agent-data/logs/<实际文件> \
+python3 {baseDir}/scripts/encoder_health.py scan /agent-data/logs/<实际文件> \
   --start "YYYY-MM-DD HH:MM:SS:000" --end "YYYY-MM-DD HH:MM:SS:000" \
-  --motion-report --events-out /task-scratch/encoder-motion.json
-# 只查询实际返回的过程ID，不再扫描全部日志：
-python3 {baseDir}/scripts/encoder_health.py \
-  --inspect-events /task-scratch/encoder-motion.json --episode M1
+  --out /task-scratch/encoder-raw.json
+python3 {baseDir}/scripts/encoder_health.py inspect /task-scratch/encoder-raw.json --candidate R1
+python3 {baseDir}/scripts/encoder_health.py report /task-scratch/encoder-raw.json
 ```
 
-默认显示3个优先过程；M编号只作查询引用，不是故障码。无--motion-report的schema4及旧事件文件schema3属于兼容路径，不是当前产品Skill默认输出。
+scan 保存原始证据、内容哈希、时间索引和全部候选；inspect 支持实际 R ID 或任意已覆盖时间区间、上下文扩展和原始点分页，并保存检查结果；report 汇总确认、未决和未查看状态。确认一处 raw 异常后建议停止后续候选深挖，不推断总数或频率。日常正反向、启停和近零量化不因方向或次数确证异常。
 
-前进、持续后退、停止、回弹、归零后累积都可能是有效操作，但“存在可能的正常解释”不等于“已经证明正常”。motion_pattern描述观察形态，不代表指令模式；反向距离/时长不直接生成故障结论。数据异常问题仍需结合速度、局部变化、换向形态及raw/filtered证据报告观测偏离；动作是否符合指令或设备是否故障则需要独立控制/业务状态。离轨返回同类比较也只是未校准参考，不是设备限值。
+第一版对局部速率偏离、持续速率变化作筛查。自动确证仅使用有明确来源的可选设备 profile：计数合法范围，或具有时间误差及计数连续性依据的速率上限。无 profile 时仍可完整筛查/查看，但形状疑点不自动升级为异常。原始整数打印可能涉及有符号/无符号表示，未知格式不擅自转换。详见 [raw 契约](../skills/encoder-health/references/raw-contract.md)。
 
-使用实际dt；invalid、缺口、非正dt不拼接。孤立离轨返回结合两侧趋势及桥接速率作筛查，不保证捕获多点突跳、慢漂移或原始文件所有时间倒退；现有载入器排序边界如实保留。
+原始时间倒退、相同时间记录、解析错误和控制事件保留为边界/问题；缺口不解释成运动。一次扫描默认限 256 MiB 日志与 250,000 raw 样本，超限明确失败，不输出半份正常结果。已读样本和原始行保存后，局部查看无需原日志仍存在。
 
-counter_boundaries包含小计数落到精确零的可能重置；平滑反向到零也可能出现，计数本身不证明意图。正常归零后累积达到旧值不自动当快速故障恢复。未采到精确零时仍使用下降至少10000、落点不超过1000的启发式，不能称完整重置检测器。后续最多2秒、遇invalid或超过500ms间隙停止；边界不抹除采样缺口。
-
-过程合组只由有实际幅度的反向、离趋势返回或持续速度转换驱动；停稳附近低于局部门槛的±1/±2计数只保留为上下文，不得通过相邻小于2秒的链式合并把短回落扩成十几秒运动过程。前后上下文及全跨度极值包络用于解释，不冒充每个采样或完整物理周期。默认2000ms是分析设置，不是业务阈值；raw/filtered/报告速度是关联测量，不是独立机械真值。必要时查询不同未决问题的过程ID，禁止重复查询/倾倒原日志。
-
-输出以时间+现象、值/形态/证据为主；数据是否出现异常形态与设备故障归因分开。需要判断动作是否符合指令时必须有独立控制或业务状态，缺证据不是故障，也不能据此证明正常，应保留需复核结论。`rebound_supported=true`表示主回落波峰衰减并进入静止尾段；`stop_settling_supported=true`进一步支持短时停转回落。字段为false仅表示未建立该形态，不能反向当作异常证据；优先过程、过程数、候选数或幅度也不能脱离形态与上下文直接当故障等级。
+原 --motion-report 与 schema 3–5 查看入口已退出新工具；既有历史结果不改写，重新分析须 scan。位置文件调用仍等价于 raw scan，--events-out 仅为 --out 别名。未维护第二套旧判定。现场仍可能运行先前 schema 5，不能把此处本地改造当作部署回执。
 
 ## 6. 图片与日志
 

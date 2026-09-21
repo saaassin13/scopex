@@ -126,108 +126,76 @@ class BusinessSkillToolTests(unittest.TestCase):
             self.assertTrue(cows[10]['artifact_2d_count_matches_log'])
             self.assertTrue(cows[11]['artifact_2d_count_matches_log'])
 
-    def test_encoder_health_does_not_bridge_invalid_sample_and_keeps_small_negative_as_telemetry(self):
+    def test_encoder_health_raw_range_profile_breaks_invalid_boundary(self):
         script = ROOT / 'skills/encoder-health/scripts/encoder_health.py'
-        invalid = 2 ** 63
         with tempfile.TemporaryDirectory() as td:
-            log = Path(td) / 'app.log'
-            log.write_text(
-                '\n'.join([
-                    '2026-09-14 07:00:00:000 [INFO] Get EncoderVal, raw[100], filtered[100]',
-                    '2026-09-14 07:00:00:020 [INFO] Get EncoderVal, raw[110], filtered[109]',
-                    f'2026-09-14 07:00:00:040 [INFO] Get EncoderVal, raw[{invalid}], filtered[0]',
-                    '2026-09-14 07:00:00:060 [INFO] Get EncoderVal, raw[90], filtered[91]',
-                    '2026-09-14 07:00:00:080 [INFO] Get EncoderVal, raw[85], filtered[86]',
-                    '2026-09-14 07:00:00:220 [INFO] Get EncoderVal, raw[95], filtered[95]',
-                    '2026-09-14 07:00:00:240 [INFO] Get EncoderVal, raw[95], filtered[95]',
-                    '2026-09-14 07:00:00:260 [INFO] Get EncoderVal, raw[95], filtered[95]',
-                ]) + '\n', encoding='utf-8')
-            proc = run_script(script, str(log), '--flat-ms', '30', '--gap-min-ms', '50')
+            log, profile = Path(td) / 'app.log', Path(td) / 'profile.json'
+            log.write_text('\n'.join(
+                f'2026-09-14 07:00:00:{t:03d} Get EncoderVal, raw[{v}], filtered[0]'
+                for t, v in [(0, 100), (20, 110), (40, 2**63), (60, 90),
+                             (80, 85), (720, 95), (740, 95), (760, 95)]) + '\n')
+            profile.write_text(json.dumps({'source': 'test register contract', 'count_min': 0, 'count_max': 1000}))
+            proc = run_script(script, str(log), '--profile', str(profile))
             self.assertEqual(proc.returncode, 0, proc.stderr)
             data = json.loads(proc.stdout)
             self.assertEqual(data['scopex_role'], 'business_facts')
-            facts = data['facts']
-            self.assertEqual(facts['invalid_samples'], 1)
-            self.assertEqual(facts['negative_steps_observed'], 1)
-            self.assertEqual(facts['sampling_gap_count'], 1)
-            self.assertEqual(facts['flat_count_candidate_count'], 1)
-            self.assertLessEqual(facts['significant_reverse_event_count'], 1)
-            self.assertLess(len(proc.stdout), 5000)
+            self.assertEqual(data['facts']['invalid_samples'], 1)
+            self.assertEqual(data['facts']['negative_steps_observed'], 1)
+            self.assertEqual(data['facts']['sampling_gap_count'], 1)
+            self.assertFalse(data['stop_recommended'])  # scan is not a completed inspection
+            self.assertLess(len(proc.stdout), 6000)
 
-    def test_encoder_health_identifies_reverse_glitch_and_recovery(self):
+    def test_encoder_health_keeps_raw_jump_despite_smooth_application_values(self):
         script = ROOT / 'skills/encoder-health/scripts/encoder_health.py'
         with tempfile.TemporaryDirectory() as td:
             log = Path(td) / 'app.log'
+            values = [1000 + i * 10 for i in range(40)]
+            values[20] -= 500
             rows = []
-            count = 1000
-            for i in range(15):
-                rows.append(f'2026-09-14 07:00:00:{i*20:03d} [INFO] EncoderVal [{count}], TurnTableSpeed [50.0 mm/s]')
-                count += 20
-            # Normal continuation, then one isolated backstep and immediate catch-up.
-            rows.append('2026-09-14 07:00:00:300 [INFO] EncoderVal [1300], TurnTableSpeed [50.0 mm/s]')
-            rows.append('2026-09-14 07:00:00:320 [INFO] EncoderVal [1250], TurnTableSpeed [-10.0 mm/s]')
-            rows.append('2026-09-14 07:00:00:340 [INFO] EncoderVal [1320], TurnTableSpeed [60.0 mm/s]')
-            rows.append('2026-09-14 07:00:00:360 [INFO] EncoderVal [1340], TurnTableSpeed [50.0 mm/s]')
-            log.write_text('\n'.join(rows) + '\n', encoding='utf-8')
+            for i, value in enumerate(values):
+                ts = f'2026-09-14 07:00:00:{i*20:03d}'
+                rows += [f'{ts} Get EncoderVal, raw[{value}], filtered[{1000 + i * 10}]',
+                         f'{ts} EncoderVal [{1000 + i * 10}], TurnTableSpeed [50 mm/s]']
+            log.write_text('\n'.join(rows) + '\n')
             proc = run_script(script, str(log))
             self.assertEqual(proc.returncode, 0, proc.stderr)
             data = json.loads(proc.stdout)
-            facts = data['facts']
-            self.assertEqual(facts['primary_stream'], 'application_encoder')
-            self.assertGreaterEqual(facts['reverse_glitch_candidate_count'], 1)
-            self.assertGreaterEqual(facts['candidate_event_count'], 1)
-            events = [row for row in data['top_candidates'] if row['type'] == 'reverse_glitch_candidate']
-            self.assertTrue(events)
-            self.assertEqual(events[0]['pulse_delta'], -50)
-            self.assertTrue(events[0]['recovered'])
+            self.assertEqual(data['facts']['primary_stream'], 'raw_encoder')
+            self.assertEqual(data['facts']['samples_in_window'], 40)
+            self.assertTrue(data['candidates'])
+            self.assertEqual(data['facts']['delta_counts']['min'], -490)
+            self.assertNotIn('reported_speed_mm_s', data['facts'])
 
-    def test_encoder_health_keeps_consecutive_backsteps_as_reverse_interval(self):
+    def test_encoder_health_application_only_is_no_raw_data(self):
         script = ROOT / 'skills/encoder-health/scripts/encoder_health.py'
         with tempfile.TemporaryDirectory() as td:
             log = Path(td) / 'app.log'
-            rows = []
-            count = 1000
-            for i in range(15):
-                rows.append(f'2026-09-14 07:00:00:{i*20:03d} [INFO] EncoderVal [{count}], TurnTableSpeed [50.0 mm/s]')
-                count += 20
-            rows.extend([
-                '2026-09-14 07:00:00:300 [INFO] EncoderVal [1300], TurnTableSpeed [50.0 mm/s]',
-                '2026-09-14 07:00:00:320 [INFO] EncoderVal [1260], TurnTableSpeed [-8.0 mm/s]',
-                '2026-09-14 07:00:00:340 [INFO] EncoderVal [1220], TurnTableSpeed [-8.0 mm/s]',
-                '2026-09-14 07:00:00:360 [INFO] EncoderVal [1240], TurnTableSpeed [20.0 mm/s]',
-            ])
-            log.write_text('\n'.join(rows) + '\n', encoding='utf-8')
+            log.write_text('2026-09-14 07:00:00:000 EncoderVal [123], TurnTableSpeed [10 mm/s]\n')
             proc = run_script(script, str(log))
             self.assertEqual(proc.returncode, 0, proc.stderr)
-            data = json.loads(proc.stdout)
-            facts = data['facts']
-            self.assertGreaterEqual(facts['reverse_interval_candidate_count'], 1)
-            self.assertEqual(facts['reverse_glitch_candidate_count'], 0)
+            self.assertEqual(json.loads(proc.stdout)['status'], 'no_raw_data')
 
     def test_encoder_health_log_dir_analyzes_multiple_rotation_files_in_one_call(self):
         script = ROOT / 'skills/encoder-health/scripts/encoder_health.py'
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             (root / 'CowDisinfect-20260914-030001.log').write_text(
-                '2026-09-14 03:00:00:000 [INFO] Get EncoderVal, raw[100], filtered[100]\n'
-                '2026-09-14 03:00:00:020 [INFO] Get EncoderVal, raw[110], filtered[110]\n', encoding='utf-8')
+                '2026-09-14 03:00:00:000 Get EncoderVal, raw[100], filtered[100]\n'
+                '2026-09-14 03:00:00:020 Get EncoderVal, raw[110], filtered[110]\n')
             (root / 'CowDisinfect-20260914-030001.log.1').write_text(
-                '2026-09-14 03:00:00:040 [INFO] Get EncoderVal, raw[109], filtered[109]\n'
-                '2026-09-14 03:00:00:060 [INFO] Get EncoderVal, raw[120], filtered[120]\n', encoding='utf-8')
+                '2026-09-14 03:00:00:040 Get EncoderVal, raw[109], filtered[109]\n'
+                '2026-09-14 03:00:00:060 Get EncoderVal, raw[120], filtered[120]\n')
             (root / 'CowDisinfect-20260914-040001.log').write_text(
-                '2026-09-14 04:00:00:000 [INFO] Get EncoderVal, raw[999], filtered[999]\n', encoding='utf-8')
-            proc = run_script(
-                script,
-                '--log-dir', str(root),
-                '--start', '2026-09-14 03:00:00:000',
-                '--end', '2026-09-14 04:00:00:000',
-            )
+                '2026-09-14 04:00:00:000 Get EncoderVal, raw[999], filtered[999]\n')
+            proc = run_script(script, '--log-dir', str(root),
+                              '--start', '2026-09-14 03:00:00:000',
+                              '--end', '2026-09-14 04:00:00:000')
             self.assertEqual(proc.returncode, 0, proc.stderr)
             data = json.loads(proc.stdout)
-            self.assertEqual(len(data['logs']), 2)
+            self.assertEqual(len(data['inputs']), 2)
             self.assertEqual(data['facts']['samples_in_window'], 4)
             self.assertEqual(data['facts']['negative_steps_observed'], 1)
-            self.assertEqual(data['facts']['candidate_event_count'], 0)
+            self.assertEqual(data['candidates_total'], 0)
 
     def test_log_context_is_bounded_and_preserves_raw_lines(self):
         script = ROOT / 'skills/log-context/scripts/log_context.py'

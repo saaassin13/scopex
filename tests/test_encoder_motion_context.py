@@ -1,4 +1,4 @@
-"""Operating-pattern counterexamples; these are not physical fault labels."""
+"""Raw movement counterexamples: shape candidates are not mechanical fault labels."""
 from datetime import datetime, timedelta
 import json
 from pathlib import Path
@@ -8,83 +8,111 @@ import sys
 import tempfile
 import unittest
 
-SCRIPT = Path(__file__).resolve().parents[1] / 'skills/encoder-health/scripts/encoder_health.py'
+ROOT = Path(__file__).resolve().parents[1]
+SCRIPT = ROOT / "skills/encoder-health/scripts/encoder_health.py"
 ANALYZER = runpy.run_path(str(SCRIPT))
 
 
-def series(increments):
-    t, count = datetime(2026, 9, 15), 1000
-    rows = []
+def series(increments, initial=1000):
+    now, count, rows = datetime(2026, 9, 15), initial, []
     for dt, delta in [(0, 0)] + increments:
-        t += timedelta(milliseconds=dt)
+        now += timedelta(milliseconds=dt)
         count += delta
-        rows.append({'ts': t, 'ts_text': t.strftime('%Y-%m-%d %H:%M:%S:%f'),
-                     'count': count, 'source': 'synthetic.log', 'line_no': len(rows) + 1})
+        rows.append((now.strftime("%Y-%m-%d %H:%M:%S:%f")[:-3], count))
     return rows
 
 
-def detect(increments):
-    return ANALYZER['detect_count_events'](series(increments), flat_ms=1000,
-                                         gap_factor=5, gap_min_ms=500)
+def raw_text(rows):
+    return "".join(f"{t} [TRACE] Get EncoderVal, raw[{count}], filtered[0]\n" for t, count in rows)
 
 
-class EncoderMotionTests(unittest.TestCase):
-    def test_constant_velocity_is_not_a_spike_when_sampling_interval_changes(self):
-        facts, events, _, _ = detect([(20, 20)] * 25 + [(80, 80)] + [(20, 20)] * 25)
-        self.assertEqual(facts['positive_spike_candidate_count'], 0)
-        self.assertEqual(events, [])
+def analyze(increments, profile=None, initial=1000):
+    with tempfile.TemporaryDirectory() as td:
+        log = Path(td) / "raw.log"
+        log.write_text(raw_text(series(increments, initial)), encoding="utf-8")
+        return ANALYZER["scan"]([log], profile=profile)
 
-    def test_actual_rate_jump_is_still_visible(self):
-        facts, events, _, _ = detect([(20, 20)] * 25 + [(20, 200)] + [(20, 20)] * 25)
-        self.assertEqual(facts['positive_spike_candidate_count'], 1)
-        event = events[0]
-        self.assertEqual(event['rate_counts_s'], 10000)
-        self.assertEqual(event['motion_before']['rate_counts_s_median'], 1000)
 
-    def test_stop_rebound_keeps_stationary_context_instead_of_claiming_fault(self):
-        _, events, _, _ = detect([(20, 20)] * 25 + [(20, 10), (20, 4), (20, 0), (20, -8)] + [(20, 0)] * 100)
-        reverse = next(e for e in events if e['type'].startswith('reverse'))
-        self.assertEqual(reverse['motion_after']['stationary_fraction'], 1)
-        self.assertEqual(reverse['motion_after']['rate_counts_s_median'], 0)
-        self.assertNotIn('anomaly_confirmed', reverse)
-        selected = ANALYZER['select_events'](events, 6)
-        self.assertFalse(any(e['type'] == 'flat_count_candidate' for e in selected))
+def cli(*args):
+    proc = subprocess.run([sys.executable, str(SCRIPT), *map(str, args)],
+                          capture_output=True, text=True, timeout=30)
+    return proc, json.loads(proc.stdout)
 
-    def test_recovery_checks_elapsed_time_instead_of_three_samples(self):
-        # Recovery occurs 400ms later at either cadence, with >3 fine samples.
-        for dt in (20, 100):
-            with self.subTest(dt=dt):
-                _, events, _, _ = detect([(20, 20)] * 25 + [(20, -100)] +
-                                         [(dt, 0)] * (400 // dt - 1) + [(dt, 100)])
-                event = next(e for e in events if e['type'].startswith('reverse'))
-                self.assertTrue(event['recovered'])
-                self.assertEqual(event['recovery_observed_ms'], 400)
-                self.assertEqual(event['recovery_pulses'], 100)
 
-    def test_recovery_does_not_hide_an_independent_later_spike(self):
-        facts, events, _, _ = detect([(20, 20)] * 25 + [(20, -50), (20, 50), (20, 20), (20, 300)] + [(20, 20)] * 25)
-        self.assertEqual(facts['positive_spike_candidate_count'], 1)
-        self.assertEqual(next(e for e in events if e['type'] == 'positive_spike_candidate')['pulse_delta'], 300)
+class RawMotionTests(unittest.TestCase):
+    def test_constant_rate_cadence_change_is_not_a_spike(self):
+        s = analyze([(20, 20)] * 30 + [(100, 100)] * 30 + [(20, 20)] * 30)
+        self.assertEqual(s["candidates"], [])
+        self.assertEqual(s["facts"]["rate_counts_s"]["min"], 1000)
+        self.assertEqual(s["facts"]["rate_counts_s"]["max"], 1000)
 
-    def test_stops_cannot_displace_extreme_candidates(self):
-        events = [{'type': 'flat_count_candidate', 'duration_ms': 2000} for _ in range(12)]
-        largest = {'type': 'reverse_interval_candidate', 'abs_pulse_drop': 1863, 'candidate_threshold_pulses': 294}
-        events += [largest, {'type': 'reverse_interval_candidate', 'abs_pulse_drop': 100, 'candidate_threshold_pulses': 1}]
-        selected = ANALYZER['select_events'](events, 1)
-        self.assertEqual(selected, [largest])
+    def test_forward_and_reverse_are_symmetric(self):
+        increments = [(20, 20)] * 30 + [(20, 200), (20, -160)] + [(20, 20)] * 30
+        a, b = analyze(increments), analyze([(dt, -dc) for dt, dc in increments])
+        self.assertEqual([c["kinds"] for c in a["candidates"]], [c["kinds"] for c in b["candidates"]])
+        self.assertTrue(a["candidates"])
+        for s in (a, b):
+            r = ANALYZER["inspect"](s, s["candidates"][0]["id"])
+            self.assertEqual(r["status"], "unresolved")
+            self.assertFalse(r["stop_recommended"])
 
-    def test_saved_event_query_filters_window_without_logs(self):
+    def test_sustained_reverse_is_allowed_even_through_zero(self):
+        s = analyze([(100, -60)] * 120 + [(100, 0)] * 30 + [(100, 50)] * 30)
+        for c in s["candidates"]:
+            self.assertFalse(ANALYZER["inspect"](s, c["id"])["stop_recommended"])
+        self.assertLess(s["samples"][40]["count"], 0)
+
+    def test_stops_and_rebound_are_not_confirmed_faults(self):
+        s = analyze([(100, 10)] * 30 + [(100, 5), (100, 2), (100, -8),
+                    (100, 4), (100, -3), (100, 1), (100, -1)] + [(100, 0)] * 30)
+        for c in s["candidates"]:
+            r = ANALYZER["inspect"](s, c["id"])
+            self.assertFalse(r["stop_recommended"])
+        self.assertNotEqual(ANALYZER["report"](s)["status"], "confirmed_raw_anomaly")
+
+    def test_stationary_one_count_jitter_does_not_seed_candidates(self):
+        s = analyze([(100, 0)] * 30 + [(100, -1), (100, 1)] * 100 + [(100, 0)] * 30)
+        self.assertEqual(s["candidates"], [])
+
+    def test_isolated_positive_and_negative_departures_are_visible(self):
+        for delta in (1000, -1000):
+            s = analyze([(100, 10)] * 30 + [(100, delta), (100, 20 - delta)] + [(100, 10)] * 30)
+            self.assertTrue(any("local_rate_deviation" in c["kinds"] for c in s["candidates"]))
+
+    def test_near_zero_is_not_silently_removed_as_reset(self):
+        s = analyze([(100, 10)] * 30 + [(100, -1300), (100, 1320)] + [(100, 10)] * 30)
+        self.assertTrue(any("local_rate_deviation" in c["kinds"] for c in s["candidates"]))
+        self.assertEqual(s["facts"]["delta_counts"]["min"], -1300)
+
+    def test_persistent_rate_change_is_an_observation(self):
+        s = analyze([(100, 10)] * 30 + [(100, 100)] * 30)
+        self.assertTrue(any("rate_transition" in c["kinds"] for c in s["candidates"]))
+        for c in s["candidates"]:
+            self.assertFalse(ANALYZER["inspect"](s, c["id"])["stop_recommended"])
+
+    def test_later_independent_spike_remains_visible(self):
+        s = analyze([(100, 10)] * 30 + [(100, -100), (100, 120)]
+                    + [(100, 10)] * 30 + [(100, 500)] + [(100, 10)] * 30)
+        self.assertGreaterEqual(len(s["candidates"]), 2)
+
+    def test_multi_sample_offset_is_not_limited_to_three_points(self):
+        s = analyze([(100, 10)] * 30 + [(100, 1000)] + [(100, 10)] * 5
+                    + [(100, -980)] + [(100, 10)] * 30)
+        self.assertTrue(any("local_rate_deviation" in c["kinds"] for c in s["candidates"]))
+
+    def test_zero_point_shift_preserves_candidates_without_profile(self):
+        steps = [(100, 10)] * 30 + [(100, -300), (100, 320)] + [(100, 10)] * 30
+        a, b = analyze(steps, initial=1000), analyze(steps, initial=2**62)
+        self.assertEqual(a["candidates"], b["candidates"])
+        self.assertEqual(a["facts"]["delta_counts"], b["facts"]["delta_counts"])
+
+    def test_equivalent_file_order_and_rotation_preserve_counts(self):
         with tempfile.TemporaryDirectory() as td:
-            path = Path(td) / 'events.json'
-            path.write_text(json.dumps({'events': [
-                {'type': 'positive_spike_candidate', 'at': '2026-09-15 13:00:00:000', 'pulse_delta': 500},
-                {'type': 'positive_spike_candidate', 'at': '2026-09-15 14:00:00:000', 'pulse_delta': 900},
-            ]}))
-            proc = subprocess.run([sys.executable, str(SCRIPT), '--inspect-events', str(path),
-                                   '--start', '2026-09-15 13:00:00:000', '--end', '2026-09-15 14:00:00:000'],
-                                  capture_output=True, text=True, timeout=10)
-            self.assertEqual(proc.returncode, 0, proc.stderr)
-            result = json.loads(proc.stdout)
-            self.assertEqual(result['top_candidates'][0]['pulse_delta'], 500)
-            self.assertEqual(result['candidate_events_total'], 1)
-
+            paths = [Path(td) / name for name in ("a.log", "b.log")]
+            rows = series([(100, 10)] * 30)
+            paths[0].write_text(raw_text(rows[:15]))
+            paths[1].write_text(raw_text(rows[15:]))
+            a, b = ANALYZER["scan"](paths), ANALYZER["scan"](paths[::-1])
+            self.assertEqual(a["analysis_id"], b["analysis_id"])
+            self.assertEqual(a["facts"], b["facts"])
+            self.assertEqual(a["facts"]["samples_in_window"], 31)

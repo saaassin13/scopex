@@ -173,8 +173,8 @@ class TaskDataPackageTests(unittest.TestCase):
             root = Path(td)
             source = root / 'CowDisinfect-20260915-180000.log'
             source.write_text(
-                '2026-09-15 18:01:00:000 EncoderVal [1], TurnTableSpeed [1.0 mm/s]\n'
-                '2026-09-15 18:01:00:100 EncoderVal [2], TurnTableSpeed [1.0 mm/s]\n',
+                '2026-09-15 18:01:00:000 Get EncoderVal, raw[1], filtered[1]\n'
+                '2026-09-15 18:01:00:100 Get EncoderVal, raw[2], filtered[2]\n',
                 encoding='utf-8')
             access = root / 'data-access.jsonl'
             script = Path(__file__).resolve().parents[1] / 'skills/encoder-health/scripts/encoder_health.py'
