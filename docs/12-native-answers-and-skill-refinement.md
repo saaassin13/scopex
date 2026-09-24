@@ -37,7 +37,9 @@ result.json使用version=2、report_text、report_meta、execution_status、inve
 
 LocalRuntimeConfig/CLI默认compaction=false；--enable-compaction显式开启，--disable-compaction保留。**端侧deploy/edge/compose.yaml已经传入--enable-compaction**，不能把CLI默认关闭当作端侧有效配置。
 
-使用OpenClaw原生上下文机制，不自建压缩器或子Agent。Runtime Dockerfile固定OpenClaw2026.9.2。长任务实际触发、压缩后证据保留及overflow恢复仍需单独核验；历史溢出复盘不是当前所有任务失败的证明，也不能用短任务/过夜运行替代该专项。
+使用OpenClaw原生上下文机制，不自建压缩器或子Agent。Runtime Dockerfile固定OpenClaw2026.9.2。ScopeX 在每次模型请求登记并保存原始 wire 后，使用版本化的保守预算估算检查 messages、工具定义、历史结果、图片预留、输出预算和安全余量；超限请求本地 `fail-fast`，返回 `context_budget_exceeded`，不改写请求或盲目重试。上游明确的 context overflow 记录为 `context_overflow`；普通业务文本、HTTP 400 或 `stopReason=length` 不单独视为输入溢出。
+
+工具投影保留完整原始审计，并在可见 Evidence 上记录原始哈希、展示/遗漏行数与字符数、单行截断和投影状态。结构化事实超容量仍整块标为 `capacity_exceeded`，不剪残 JSON。当前不自动调用新的 `run_turn()` 做 overflow recovery，不把 conversation continuation 当作恢复；只有原生 OpenClaw 已自行恢复且最终 outcome 完整时才记录 `context_recovered`。长任务实际触发、压缩后证据保留及真实完成率/性能仍需专项 A/B 核验；历史溢出复盘不是当前所有任务失败的证明，也不能用短任务/过夜运行替代该专项。
 
 edge图片SCOPEX_IMAGE_LIMIT默认12同时进入vLLM和ScopeX；通用图片默认4，每次view_image最多2。端侧restart均no，模型、路径、额度由deployment.md描述；本次不改这些配置。
 

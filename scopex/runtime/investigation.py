@@ -284,6 +284,17 @@ class InvestigationCoordinator:
         for reason in (turn.runtime_limit_reason, turn.runtime_guard_reason, turn.process.stop_reason):
             if reason and reason not in errors:
                 errors.append(reason)
+        context_reason = turn.context_reason
+        context_events = list(turn.context_events)
+        if outcome is not None:
+            outcome_context_reason = outcome.flags.get("context_reason")
+            if isinstance(outcome_context_reason, str) and outcome_context_reason:
+                context_reason = context_reason or outcome_context_reason
+                if outcome_context_reason not in context_events:
+                    context_events.append(outcome_context_reason)
+        context_recovered = bool(context_events and outcome is not None and outcome.completed)
+        if context_reason and not context_recovered and context_reason not in errors:
+            errors.append(context_reason)
         if turn.process.returncode != 0:
             errors.append(f"openclaw_exit_{turn.process.returncode}")
         original = outcome.answer if outcome and outcome.answer else ""
@@ -315,6 +326,10 @@ class InvestigationCoordinator:
             "returncode": turn.process.returncode, "stop_reason": turn.process.stop_reason,
             "runtime_limit_reason": turn.runtime_limit_reason,
             "runtime_guard_reason": turn.runtime_guard_reason,
+            "context_reason": context_reason,
+            "context_events": context_events,
+            "context_recovered": context_recovered,
+            "context_recovery_attempts": 0,
             "postprocess_model_calls": 0, "content_redacted": redacted,
             "content_sha256": hashlib.sha256(original.encode()).hexdigest(),
             "unresolved_citation_refs": unknown_refs,

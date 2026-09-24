@@ -6,6 +6,15 @@ from typing import Any
 
 
 NATIVE_TOOL_LOOP_GUARD = "native_tool_loop_guard"
+CONTEXT_OVERFLOW = "context_overflow"
+_CONTEXT_OVERFLOW_MARKERS = (
+    "maximum context length",
+    "context length",
+    "context window",
+    "prompt contains at least",
+    "too many tokens",
+    "input token",
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -29,6 +38,24 @@ def _cli_value(text: str) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise ValueError("OpenClaw CLI result must be an object")
     return value
+
+
+def _context_overflow_error(meta: dict[str, Any]) -> bool:
+    error = meta.get("error")
+    if not isinstance(error, dict):
+        return False
+    code = error.get("code") or error.get("type")
+    if isinstance(code, str) and code.lower() in {
+        "context_length_exceeded",
+        "maximum_context_length",
+        "prompt_too_long",
+    }:
+        return True
+    message = error.get("message")
+    if not isinstance(message, str):
+        return False
+    normalized = message.strip().lower()
+    return any(marker in normalized for marker in _CONTEXT_OVERFLOW_MARKERS)
 
 
 def classify_cli_runtime_guard(text: str) -> str | None:
@@ -79,8 +106,11 @@ def parse_cli_outcome(text: str) -> CliOutcome:
     if trace.get("fallbackUsed") is not None and type(trace["fallbackUsed"]) is not bool:
         blockers.append("invalid_fallbackUsed_type")
 
+    context_reason = CONTEXT_OVERFLOW if _context_overflow_error(meta) else None
     if meta.get("error") is not None:
         blockers.append("error")
+    if context_reason is not None:
+        blockers.append(context_reason)
     if meta.get("aborted") is True:
         blockers.append("aborted")
     if trace.get("fallbackUsed") is True:
@@ -123,6 +153,7 @@ def parse_cli_outcome(text: str) -> CliOutcome:
         "timeoutPhase": meta.get("timeoutPhase"),
         "fallbackUsed": trace.get("fallbackUsed"),
         "stopReason": stop_reason,
+        "context_reason": context_reason,
     }
     partial_text = meta.get("finalAssistantVisibleText") if stop_reason == "length" else None
     answer = partial_text if isinstance(partial_text, str) and partial_text.strip() else visible[-1] if visible else None

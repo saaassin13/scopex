@@ -20,7 +20,7 @@ class RuntimeRequestHook:
         stop_gate: SafeStopGate,
         *,
         on_safe_stop: Callable[[StopBoundary], None] | None = None,
-        request_validator: Callable[[dict[str, Any]], None] | None = None,
+        request_validator: Callable[[dict[str, Any]], Any] | None = None,
     ) -> None:
         self.observer = observer
         self.stop_gate = stop_gate
@@ -28,9 +28,10 @@ class RuntimeRequestHook:
         self.request_validator = request_validator
         self.no_data: dict[str, Any] | None = None
 
-    def __call__(self, request_index: int, payload: dict[str, Any]) -> None:
+    def __call__(self, request_index: int, payload: dict[str, Any]) -> Any:
+        validation = None
         if self.request_validator is not None:
-            self.request_validator(payload)
+            validation = self.request_validator(payload)
         self.observer.observe_request(request_index, payload.get("messages", []))
         boundary = self.stop_gate.before_model_request(request_index)
         if boundary is None:
@@ -73,7 +74,7 @@ class RuntimeRequestHook:
                     f"数据源 {self.no_data['source']} 未找到匹配数据。本次检查已结束，"
                     "未改用其他时间的数据，也未作正常或异常判断。"
                 )
-            return
+            return validation
         if self.on_safe_stop is not None:
             self.on_safe_stop(boundary)
         raise StopBeforeForward(

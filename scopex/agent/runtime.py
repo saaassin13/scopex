@@ -51,6 +51,8 @@ class OpenClawTaskSpec:
     timeout_s: int = 600
     max_requests: int = 16
     max_tokens: int = 2048
+    context_window: int = 32768
+    context_safety_margin_tokens: int = 1024
     skills: tuple[str, ...] = ()
     tools: tuple[str, ...] = ("read", "exec", "process")
     sandbox_binds: tuple[str, ...] = ()
@@ -73,6 +75,8 @@ class OpenClawTurnResult:
     audit_dir: Path
     runtime_limit_reason: str | None = None
     runtime_guard_reason: str | None = None
+    context_reason: str | None = None
+    context_events: tuple[str, ...] = ()
     no_data: dict | None = None
 
 
@@ -126,6 +130,8 @@ class OpenClawTaskRuntime:
             self.spec.model_id,
             self.spec.max_tokens,
             frozenset(self.spec.tools),
+            context_window=self.spec.context_window,
+            context_safety_margin=self.spec.context_safety_margin_tokens,
         )
         hook = RuntimeRequestHook(
             self.observer,
@@ -159,6 +165,7 @@ class OpenClawTaskRuntime:
                     uid=self.spec.uid,
                     gid=self.spec.gid,
                     timeout_s=self.spec.timeout_s,
+                    context_window=self.spec.context_window,
                     request=ModelRequestSettings(
                         max_tokens=self.spec.max_tokens,
                         temperature=0.1,
@@ -212,6 +219,14 @@ class OpenClawTaskRuntime:
                         cli_outcome = None
 
             runtime_limit_reason = proxy.runtime_limit_reason
+            context_reason = proxy.context_reason
+            context_events = list(proxy.context_events)
+            if cli_outcome is not None:
+                cli_context_reason = cli_outcome.flags.get("context_reason")
+                if isinstance(cli_context_reason, str) and cli_context_reason:
+                    context_reason = context_reason or cli_context_reason
+                    if cli_context_reason not in context_events:
+                        context_events.append(cli_context_reason)
             # The runner and proxy use the same turn timeout. If the outer runner
             # wins the race, preserve the same semantic stop reason.
             if runtime_limit_reason is None and process.stop_reason == "timeout":
@@ -225,6 +240,8 @@ class OpenClawTaskRuntime:
                 audit_dir=audit,
                 runtime_limit_reason=runtime_limit_reason,
                 runtime_guard_reason=runtime_guard_reason,
+                context_reason=context_reason,
+                context_events=tuple(context_events),
                 no_data=hook.no_data,
             )
         finally:

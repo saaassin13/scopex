@@ -66,6 +66,32 @@ class OpenClawRunnerOutcomeTests(unittest.TestCase):
         self.assertFalse(outcome.completed)
         self.assertIn("error_payload", outcome.blockers)
 
+    def test_trusted_context_error_is_classified_without_treating_text_as_answer(self):
+        text = '''{
+          "meta": {
+            "error": {
+              "code": "context_length_exceeded",
+              "message": "maximum context length is 32768 tokens"
+            },
+            "executionTrace": {"fallbackUsed": false}
+          },
+          "payloads": [{"text": "maximum context length", "isReasoning": false}]
+        }'''
+        outcome = parse_cli_outcome(text)
+        self.assertFalse(outcome.completed)
+        self.assertIsNone(outcome.answer)
+        self.assertIn("context_overflow", outcome.blockers)
+        self.assertEqual(outcome.flags["context_reason"], "context_overflow")
+
+    def test_business_text_mentioning_context_does_not_classify_without_error_envelope(self):
+        text = '''{
+          "meta": {"executionTrace": {"fallbackUsed": false}},
+          "payloads": [{"text": "上下文长度需要说明，但任务已完成。", "isReasoning": false}]
+        }'''
+        outcome = parse_cli_outcome(text)
+        self.assertTrue(outcome.completed)
+        self.assertIsNone(outcome.flags["context_reason"])
+
 
 if __name__ == "__main__":
     unittest.main()

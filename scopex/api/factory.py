@@ -38,6 +38,8 @@ class LocalRuntimeConfig:
     timeout_s: int = 600
     max_requests: int = 16
     max_tokens: int = 2048
+    context_window: int = 32768
+    context_safety_margin_tokens: int = 1024
     finalizer_max_tokens: int = 768
     finalizer_timeout_s: int = 180
     report_max_tokens: int = 2048
@@ -72,6 +74,10 @@ class OpenClawRuntimeFactory:
             raise ValueError("timeout_s must be between 60 and 1200")
         if not 2 <= config.max_requests <= 30:
             raise ValueError("max_requests must be between 2 and 30")
+        if config.context_window <= config.max_tokens + config.context_safety_margin_tokens:
+            raise ValueError("context_window must exceed max_tokens plus safety margin")
+        if config.context_safety_margin_tokens < 0:
+            raise ValueError("context_safety_margin_tokens must be non-negative")
         if not 256 <= config.finalizer_max_tokens <= 1024:
             raise ValueError("finalizer_max_tokens must be between 256 and 1024")
         if not 256 <= config.report_max_tokens <= 2048:
@@ -148,6 +154,8 @@ class OpenClawRuntimeFactory:
             timeout_s=self.config.timeout_s,
             max_requests=self.config.max_requests,
             max_tokens=self.config.max_tokens,
+            context_window=self.config.context_window,
+            context_safety_margin_tokens=self.config.context_safety_margin_tokens,
             skills=self.config.skills,
             tools=tuple(tools),
             sandbox_binds=task_binds,

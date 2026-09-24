@@ -155,6 +155,9 @@ class OpenClawTaskRuntimeTests(unittest.TestCase):
         )
         self.assertTrue((self.root / "audit" / "turn-1" / "wire-01-meta.json").is_file())
         self.assertTrue((self.root / "audit" / "turn-2" / "wire-01-meta.json").is_file())
+        first_meta = json.loads((self.root / "audit" / "turn-1" / "wire-01-meta.json").read_text())
+        self.assertEqual(first_meta["context_budget"]["context_window"], 32768)
+        self.assertTrue(first_meta["context_budget"]["fits"])
 
     def test_requested_stop_blocks_before_model_forward(self):
         stop = SafeStopGate()

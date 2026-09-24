@@ -106,6 +106,8 @@ def main(argv=None) -> int:
     parser.add_argument("--timeout", type=int, default=600)
     parser.add_argument("--max-requests", type=int, default=16)
     parser.add_argument("--max-tokens", type=int, default=2048)
+    parser.add_argument("--context-window", type=int, default=32768)
+    parser.add_argument("--context-safety-margin", type=int, default=1024)
     parser.add_argument("--finalizer-max-tokens", type=int, default=768, help="legacy finalizer compatibility only")
     parser.add_argument("--report-max-tokens", type=int, default=2048)
     parser.add_argument("--max-active-tasks", type=int, default=2, help="independent task slots; not a GPU throughput guarantee")
@@ -176,6 +178,8 @@ def main(argv=None) -> int:
         timeout_s=args.timeout,
         max_requests=args.max_requests,
         max_tokens=args.max_tokens,
+        context_window=args.context_window,
+        context_safety_margin_tokens=args.context_safety_margin,
         finalizer_max_tokens=args.finalizer_max_tokens,
         report_max_tokens=args.report_max_tokens,
         finalizer_timeout_s=args.finalizer_timeout,

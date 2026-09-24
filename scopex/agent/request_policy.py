@@ -1,10 +1,62 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import json
+import math
 from typing import Any
 
-from scopex.agent.model_proxy import RequestRejected
-from scopex.model_capabilities import resolve_image_limit, validate_request_images
+from scopex.agent.model_proxy import (
+    CONTEXT_BUDGET_EXCEEDED,
+    CONTEXT_ESTIMATION_UNAVAILABLE,
+    ContextBudgetExceeded,
+    RequestRejected,
+)
+from scopex.model_capabilities import count_request_images, resolve_image_limit, validate_request_images
+
+
+CONTEXT_ESTIMATOR_VERSION = "utf8-json-upper-bound-v1"
+DEFAULT_CONTEXT_WINDOW = 32768
+DEFAULT_CONTEXT_SAFETY_MARGIN = 1024
+DEFAULT_IMAGE_TOKEN_RESERVE = 1024
+_JSON_BYTES_PER_TOKEN = 2
+_REQUEST_TEMPLATE_OVERHEAD = 128
+
+
+@dataclass(frozen=True, slots=True)
+class RequestBudget:
+    estimated_input_tokens: int
+    output_tokens: int
+    context_window: int
+    safety_margin: int
+    image_count: int
+    image_tokens: int
+    estimate_method: str = CONTEXT_ESTIMATOR_VERSION
+
+    @property
+    def projected_tokens(self) -> int:
+        return self.estimated_input_tokens + self.output_tokens + self.safety_margin
+
+    @property
+    def available_input_tokens(self) -> int:
+        return self.context_window - self.output_tokens - self.safety_margin
+
+    @property
+    def fits(self) -> bool:
+        return self.projected_tokens <= self.context_window
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "estimate_method": self.estimate_method,
+            "estimated_input_tokens": self.estimated_input_tokens,
+            "output_tokens": self.output_tokens,
+            "context_window": self.context_window,
+            "safety_margin": self.safety_margin,
+            "available_input_tokens": self.available_input_tokens,
+            "projected_tokens": self.projected_tokens,
+            "image_count": self.image_count,
+            "image_tokens": self.image_tokens,
+            "fits": self.fits,
+        }
 
 
 @dataclass(frozen=True, slots=True)
@@ -14,17 +66,47 @@ class OpenClawRequestPolicy:
     approved_tools: frozenset[str] = frozenset({"read", "exec", "process"})
 
     max_images_per_prompt: int = field(default_factory=resolve_image_limit)
+    context_window: int = DEFAULT_CONTEXT_WINDOW
+    context_safety_margin: int = DEFAULT_CONTEXT_SAFETY_MARGIN
+    image_token_reserve: int = DEFAULT_IMAGE_TOKEN_RESERVE
 
-    def validate(self, payload: dict[str, Any]) -> None:
-        """Validate model/runtime invariants without blocking OpenClaw utility calls.
+    def estimate(self, payload: dict[str, Any]) -> RequestBudget:
+        if self.context_window <= 0 or self.context_safety_margin < 0 or self.image_token_reserve < 0:
+            raise ValueError("context budget settings must be non-negative and context_window positive")
+        try:
+            encoded = json.dumps(
+                payload,
+                ensure_ascii=False,
+                separators=(",", ":"),
+                allow_nan=False,
+            ).encode("utf-8")
+        except (TypeError, ValueError) as exc:
+            raise ContextBudgetExceeded(
+                "request context cannot be safely estimated",
+                code=CONTEXT_ESTIMATION_UNAVAILABLE,
+                details={
+                    "estimate_method": CONTEXT_ESTIMATOR_VERSION,
+                    "reason": type(exc).__name__,
+                },
+            ) from exc
+        image_count = count_request_images(payload)
+        image_tokens = image_count * self.image_token_reserve
+        estimated_input = (
+            math.ceil(len(encoded) / _JSON_BYTES_PER_TOKEN)
+            + _REQUEST_TEMPLATE_OVERHEAD
+            + image_tokens
+        )
+        return RequestBudget(
+            estimated_input_tokens=estimated_input,
+            output_tokens=self.max_tokens,
+            context_window=self.context_window,
+            safety_margin=self.context_safety_margin,
+            image_count=image_count,
+            image_tokens=image_tokens,
+        )
 
-        Normal agent requests usually expose the configured tool surface, while
-        OpenClaw's internal utility requests (notably compaction summarization)
-        may intentionally omit ``tools``. Missing tools are capability-reducing,
-        not capability-expanding, so they are safe to forward. Whenever tools
-        are present, every exposed tool must still belong to the configured
-        allowlist and duplicate/malformed definitions remain rejected.
-        """
+    def validate(self, payload: dict[str, Any]) -> RequestBudget:
+        """Validate runtime invariants and conservatively bound model context."""
 
         problems: list[str] = []
         if payload.get("model") != self.model_id:
@@ -71,3 +153,13 @@ class OpenClawRequestPolicy:
 
         if problems:
             raise RequestRejected("; ".join(problems))
+
+        budget = self.estimate(payload)
+        if not budget.fits:
+            raise ContextBudgetExceeded(
+                "request context budget exceeded: "
+                f"projected {budget.projected_tokens} > {budget.context_window} tokens",
+                code=CONTEXT_BUDGET_EXCEEDED,
+                details=budget.as_dict(),
+            )
+        return budget

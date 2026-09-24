@@ -114,6 +114,20 @@ class NativeAnswerTests(unittest.TestCase):
         self.assertEqual(outcome.answer, "已检查局部数据")
         self.assertFalse(outcome.completed)
 
+    def test_context_overflow_remains_failed_with_structured_reason(self):
+        with tempfile.TemporaryDirectory() as td:
+            service, tid = self.run_task(
+                Path(td),
+                text="maximum context length is 32768 tokens",
+                meta={"error": {"code": "context_length_exceeded",
+                                 "message": "maximum context length is 32768 tokens"}},
+            )
+            result = service.get_result(tid)["result"]
+            self.assertFalse(result["valid"])
+            self.assertEqual(result["report_meta"]["context_reason"], "context_overflow")
+            self.assertIn("context_overflow", result["errors"])
+            self.assertEqual(result["report_meta"]["context_recovery_attempts"], 0)
+
     def test_native_length_stop_keeps_partial_answer_not_the_truncation_notice(self):
         with tempfile.TemporaryDirectory() as td:
             service, tid = self.run_task(Path(td), text="Output truncated.",

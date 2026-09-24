@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from scopex.agent.model_proxy import RequestRejected
+from scopex.agent.model_proxy import ContextBudgetExceeded, RequestRejected
 from scopex.agent.request_policy import OpenClawRequestPolicy
 
 
@@ -85,6 +85,32 @@ class RequestPolicyTests(unittest.TestCase):
         body = toolless_payload()
         body["tools"] = "read"
         with self.assertRaises(RequestRejected):
+            policy.validate(body)
+
+    def test_context_budget_includes_history_and_output_reserve(self):
+        policy = OpenClawRequestPolicy("local-model", 2048)
+        body = toolless_payload()
+        body["messages"][1]["content"] = "x" * 70000
+        with self.assertRaises(ContextBudgetExceeded) as raised:
+            policy.validate(body)
+        self.assertEqual(raised.exception.code, "context_budget_exceeded")
+        self.assertGreater(raised.exception.details["estimated_input_tokens"], 30000)
+        self.assertFalse(raised.exception.details["fits"])
+
+    def test_context_budget_reserves_image_capacity_even_with_short_url(self):
+        policy = OpenClawRequestPolicy(
+            "local-model",
+            2048,
+            context_window=3000,
+            context_safety_margin=256,
+            image_token_reserve=1024,
+        )
+        body = toolless_payload()
+        body["messages"].append({
+            "role": "user",
+            "content": [{"type": "image_url", "image_url": {"url": "file:///frame.png"}}],
+        })
+        with self.assertRaises(ContextBudgetExceeded):
             policy.validate(body)
 
 

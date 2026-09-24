@@ -18,6 +18,17 @@ REQUEST_LIMIT = 4 * 1024 * 1024
 RESPONSE_LIMIT = 8 * 1024 * 1024
 RUNTIME_LIMIT_MODEL_REQUESTS = "model_request_budget"
 RUNTIME_LIMIT_TURN_TIMEOUT = "turn_timeout_budget"
+CONTEXT_BUDGET_EXCEEDED = "context_budget_exceeded"
+CONTEXT_ESTIMATION_UNAVAILABLE = "context_estimation_unavailable"
+CONTEXT_OVERFLOW = "context_overflow"
+_CONTEXT_OVERFLOW_MARKERS = (
+    "maximum context length",
+    "context length",
+    "context window",
+    "prompt contains at least",
+    "too many tokens",
+    "input token",
+)
 
 
 class StopBeforeForward(RuntimeError):
@@ -30,6 +41,23 @@ class LocalTerminalAnswer(RuntimeError):
 
 class RequestRejected(RuntimeError):
     """Raised by request policy when a model request violates runtime invariants."""
+
+
+class ContextBudgetExceeded(RequestRejected):
+    """Raised when a request cannot fit the configured model context safely."""
+
+    def __init__(self, message: str, *, code: str, details: dict[str, Any]):
+        super().__init__(message)
+        self.code = code
+        self.details = dict(details)
+
+
+def classify_context_overflow(status: int, body: bytes) -> str | None:
+    """Recognize only an upstream error response that explicitly names overflow."""
+    if status < 400:
+        return None
+    text = body[:8192].decode("utf-8", errors="replace").lower()
+    return CONTEXT_OVERFLOW if any(marker in text for marker in _CONTEXT_OVERFLOW_MARKERS) else None
 
 
 def strict_json(raw: bytes) -> dict[str, Any]:
@@ -97,7 +125,7 @@ def _save_json(path: Path, value: Any) -> None:
         raise
 
 
-RequestHook = Callable[[int, dict[str, Any]], None]
+RequestHook = Callable[[int, dict[str, Any]], Any]
 
 
 class ModelProxy(ThreadingHTTPServer):
@@ -141,6 +169,8 @@ class ModelProxy(ThreadingHTTPServer):
         self.connections: set[http.client.HTTPConnection] = set()
         self.stopping = False
         self.runtime_limit_reason: str | None = None
+        self.context_reason: str | None = None
+        self.context_events: list[str] = []
         super().__init__(("127.0.0.1", 0), _ProxyHandler)
 
     @property
@@ -243,7 +273,10 @@ class _ProxyHandler(BaseHTTPRequestHandler):
             (proxy.audit_dir / f"wire-{index:02d}-request.json").write_bytes(body)
 
             if proxy.on_request is not None:
-                proxy.on_request(index, payload)
+                validation = proxy.on_request(index, payload)
+                as_dict = getattr(validation, "as_dict", None)
+                if callable(as_dict):
+                    record["context_budget"] = as_dict()
 
             remaining = proxy.deadline - time.monotonic()
             if remaining <= 0:
@@ -275,6 +308,7 @@ class _ProxyHandler(BaseHTTPRequestHandler):
             self.close_connection = True
 
             count = 0
+            response_sample = bytearray()
             with (proxy.audit_dir / f"wire-{index:02d}-response.bin").open("xb") as trace:
                 while True:
                     if proxy.stopping:
@@ -290,9 +324,16 @@ class _ProxyHandler(BaseHTTPRequestHandler):
                     count += len(chunk)
                     if count > RESPONSE_LIMIT:
                         raise RequestRejected("upstream response audit limit exceeded")
+                    if len(response_sample) < 8192:
+                        response_sample.extend(chunk[: 8192 - len(response_sample)])
                     trace.write(chunk)
                     self.wfile.write(chunk)
                     self.wfile.flush()
+            context_reason = classify_context_overflow(response.status, bytes(response_sample))
+            if context_reason is not None:
+                proxy.context_reason = context_reason
+                proxy.context_events.append(context_reason)
+                record["context_reason"] = context_reason
             record["response_bytes"] = count
             record["response_complete"] = True
 
@@ -331,12 +372,18 @@ class _ProxyHandler(BaseHTTPRequestHandler):
                 self._json_error(409, "request stopped before model forwarding")
         except RequestRejected as exc:
             if record is not None:
-                record["blocked"] = "policy"
+                record["blocked"] = "context_budget" if isinstance(exc, ContextBudgetExceeded) else "policy"
                 record["error_type"] = type(exc).__name__
                 record["error_message"] = str(exc)[:300]
+                if isinstance(exc, ContextBudgetExceeded):
+                    record["context_reason"] = exc.code
+                    record["context_budget"] = exc.details
+                    proxy.context_reason = exc.code
+                    proxy.context_events.append(exc.code)
             if not response_started:
                 persist_record()
-                self._json_error(422, str(exc)[:300])
+                status = 413 if isinstance(exc, ContextBudgetExceeded) else 422
+                self._json_error(status, str(exc)[:300])
         except Exception as exc:
             if record is not None:
                 record["blocked"] = "proxy_error"

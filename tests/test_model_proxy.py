@@ -13,6 +13,7 @@ from scopex.agent.model_proxy import (
     RUNTIME_LIMIT_TURN_TIMEOUT,
     StopBeforeForward,
 )
+from scopex.agent.request_policy import OpenClawRequestPolicy
 
 
 class UpstreamHandler(BaseHTTPRequestHandler):
@@ -133,6 +134,24 @@ class ModelProxyTests(unittest.TestCase):
         status, _response = self.send(body)
         self.assertEqual(status, 502)
         self.assertEqual(UpstreamHandler.bodies, [])
+
+    def test_context_budget_is_audited_and_rejected_before_upstream(self):
+        policy = OpenClawRequestPolicy("m", 2048)
+        self.start_proxy(hook=lambda _index, payload: policy.validate(payload))
+        body = json.dumps({
+            "model": "m",
+            "max_tokens": 2048,
+            "chat_template_kwargs": {"enable_thinking": False},
+            "messages": [{"role": "user", "content": "x" * 70000}],
+        }).encode()
+        status, response = self.send(body)
+        self.assertEqual(status, 413)
+        self.assertIn(b"context budget exceeded", response)
+        self.assertEqual(UpstreamHandler.bodies, [])
+        meta = json.loads((Path(self.tmp.name) / "wire-01-meta.json").read_text())
+        self.assertEqual(meta["blocked"], "context_budget")
+        self.assertEqual(meta["context_reason"], "context_budget_exceeded")
+        self.assertFalse(meta["forwarded"])
 
     def test_model_request_budget_exposes_authoritative_runtime_reason(self):
         self.start_proxy(max_requests=1)

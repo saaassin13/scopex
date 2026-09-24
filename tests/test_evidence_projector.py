@@ -160,6 +160,46 @@ class EvidenceProjectorTests(unittest.TestCase):
         self.assertTrue(catalog.items[0].metadata["line_truncated"])
         self.assertTrue(catalog.items[1].metadata["line_truncated"])
 
+    def test_read_projection_reports_omitted_lines_at_call_level(self):
+        catalog, _, projector = self.projector(max_read_lines=2, max_read_line_chars=4)
+        content = "abcdef\nsecond\nthird\n"
+        trace = AgentTrace(
+            calls=(ToolCall("c-read-bounded", "read", {"path": "/agent/app.log"}),),
+            results=(ToolResult("c-read-bounded", content),),
+        )
+        projector.process_trace(trace)
+        self.assertEqual([item.raw for item in catalog.items], ["abcd", "seco"])
+        self.assertTrue(all(item.metadata["projection_status"] == "partial" for item in catalog.items))
+        self.assertEqual(catalog.items[0].metadata["projection_shown_lines"], 2)
+        self.assertEqual(catalog.items[0].metadata["projection_omitted_lines"], 1)
+        self.assertEqual(catalog.items[0].metadata["projection_truncated_line_count"], 2)
+        self.assertGreater(catalog.items[0].metadata["projection_omitted_chars"], 0)
+
+    def test_exec_projection_marks_all_visible_lines_when_tail_is_omitted(self):
+        catalog, _, projector = self.projector(max_exec_lines=2, max_exec_chars=100)
+        content = "one\ntwo\nthree\n"
+        trace = AgentTrace(
+            calls=(ToolCall("c-exec-bounded", "exec", {"command": "x"}),),
+            results=(ToolResult("c-exec-bounded", content),),
+        )
+        projector.process_trace(trace)
+        self.assertEqual([item.raw for item in catalog.items], ["one", "two"])
+        self.assertTrue(all(item.metadata["result_projection_truncated"] for item in catalog.items))
+        self.assertEqual(catalog.items[0].metadata["projection_omitted_lines"], 1)
+        self.assertEqual(catalog.items[0].metadata["projection_status"], "partial")
+
+    def test_projection_exact_limit_is_complete(self):
+        catalog, _, projector = self.projector(max_exec_lines=2, max_exec_chars=6)
+        content = "one\ntwo\n"
+        trace = AgentTrace(
+            calls=(ToolCall("c-exec-exact", "exec", {"command": "x"}),),
+            results=(ToolResult("c-exec-exact", content),),
+        )
+        projector.process_trace(trace)
+        self.assertEqual(len(catalog.items), 2)
+        self.assertTrue(all(item.metadata["projection_status"] == "complete" for item in catalog.items))
+        self.assertTrue(all(not item.metadata["result_projection_truncated"] for item in catalog.items))
+
     def test_view_image_freezes_identity_from_explicit_read_only_bind(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)

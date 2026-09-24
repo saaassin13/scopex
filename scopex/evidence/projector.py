@@ -170,27 +170,69 @@ class OpenClawEvidenceProjector:
             self._processed_call_ids.add(call.id)
         return tuple(added)
 
+    @staticmethod
+    def _projection_summary(
+        content: str,
+        shown: list[tuple[int, str, str, bool]],
+        omitted: list[tuple[int, str]],
+        *,
+        limits: dict[str, int],
+    ) -> dict[str, object]:
+        truncated_count = sum(1 for _line_number, _raw, _rendered, truncated in shown if truncated)
+        omitted_chars = sum(len(raw) for _line_number, raw in omitted)
+        omitted_chars += sum(
+            max(0, len(raw) - len(rendered))
+            for _line_number, raw, rendered, _truncated in shown
+        )
+        partial = bool(omitted or truncated_count)
+        return {
+            "projection_status": "partial" if partial else "complete",
+            "projection_original_result_chars": len(content),
+            "projection_original_nonempty_lines": len(shown) + len(omitted),
+            "projection_shown_lines": len(shown),
+            "projection_projected_chars": sum(len(rendered) for _line_number, _raw, rendered, _truncated in shown),
+            "projection_omitted_lines": len(omitted),
+            "projection_omitted_chars": omitted_chars,
+            "projection_truncated_line_count": truncated_count,
+            "projection_limits": dict(limits),
+        }
+
     def _project_read(self, call: ToolCall, result: ToolResult) -> tuple[EvidenceItem, ...]:
         target = tool_target(call)
         if not target or not result.content.strip() or _is_internal_read_target(target):
             return ()
-        added: list[EvidenceItem] = []
-        nonempty_seen = 0
-        derived_working = target.startswith("/task-scratch/")
-        for line_number, raw_line in enumerate(result.content.splitlines(), 1):
-            if not raw_line.strip() or _is_openclaw_runtime_control_line(raw_line):
-                continue
-            nonempty_seen += 1
-            if nonempty_seen > self.max_read_lines:
+        eligible = [
+            (line_number, raw_line)
+            for line_number, raw_line in enumerate(result.content.splitlines(), 1)
+            if raw_line.strip() and not _is_openclaw_runtime_control_line(raw_line)
+        ]
+        shown: list[tuple[int, str, str, bool]] = []
+        omitted: list[tuple[int, str]] = []
+        for index, (line_number, raw_line) in enumerate(eligible):
+            if index >= self.max_read_lines:
+                omitted.extend(eligible[index:])
                 break
             truncated = len(raw_line) > self.max_read_line_chars
             line = raw_line[: self.max_read_line_chars] if truncated else raw_line
+            shown.append((line_number, raw_line, line, truncated))
+        summary = self._projection_summary(
+            result.content,
+            shown,
+            omitted,
+            limits={"max_lines": self.max_read_lines, "max_line_chars": self.max_read_line_chars},
+        )
+        digest = hashlib.sha256(result.content.encode("utf-8", errors="replace")).hexdigest()
+        added: list[EvidenceItem] = []
+        derived_working = target.startswith("/task-scratch/")
+        for line_number, raw_line, line, truncated in shown:
             metadata = {
                 "evidence_type": "file_line",
                 "tool": "read",
                 "line_number": line_number,
                 "line_truncated": truncated,
                 "original_line_chars": len(raw_line),
+                "result_sha256": digest,
+                **summary,
             }
             if derived_working:
                 metadata["evidence_role"] = "working_derived"
@@ -243,6 +285,19 @@ class OpenClawEvidenceProjector:
             if role == "business_facts":
                 raw = self._compact_business_facts(structured)
                 omitted = raw is None
+                projection = {
+                    "projection_status": "capacity_exceeded" if omitted else "complete",
+                    "projection_original_result_chars": len(content),
+                    "projection_original_nonempty_lines": len(
+                        [line for line in content.splitlines() if line.strip()]
+                    ),
+                    "projection_shown_lines": 1 if not omitted else 0,
+                    "projection_projected_chars": len(raw) if raw is not None else 0,
+                    "projection_omitted_lines": 1 if omitted else 0,
+                    "projection_omitted_chars": len(content) if omitted else max(0, len(content) - len(raw)),
+                    "projection_truncated_line_count": 0,
+                    "projection_limits": {"max_chars": self.max_exec_chars},
+                }
                 return (
                     self.collector.add(
                         source=f"business_facts:{structured.get('source') or call.id}",
@@ -251,38 +306,50 @@ class OpenClawEvidenceProjector:
                         metadata={
                             "evidence_type": "structured_business_facts",
                             "evidence_role": "working_derived" if omitted else "business_facts",
-                            "projection_status": "capacity_exceeded" if omitted else "complete",
                             "tool": "exec",
                             "exec_host": actual_host,
                             "command": command if isinstance(command, str) else None,
                             "title": title if isinstance(title, str) else None,
                             "result_sha256": digest,
                             "original_result_chars": len(content),
+                            **projection,
                         },
                     ),
                 )
 
-        added: list[EvidenceItem] = []
-        nonempty_seen = 0
+        eligible = [
+            (line_number, raw_line)
+            for line_number, raw_line in enumerate(content.splitlines(), 1)
+            if raw_line.strip() and not _is_openclaw_runtime_control_line(raw_line)
+        ]
+        shown: list[tuple[int, str, str, bool]] = []
+        omitted: list[tuple[int, str]] = []
         projected_chars = 0
-        output_truncated = False
-        for line_number, raw_line in enumerate(content.splitlines(), 1):
-            if not raw_line.strip() or _is_openclaw_runtime_control_line(raw_line):
-                continue
-            if nonempty_seen >= self.max_exec_lines or projected_chars >= self.max_exec_chars:
-                output_truncated = True
+        for index, (line_number, raw_line) in enumerate(eligible):
+            if index >= self.max_exec_lines or projected_chars >= self.max_exec_chars:
+                omitted.extend(eligible[index:])
                 break
-            nonempty_seen += 1
             remaining = self.max_exec_chars - projected_chars
             per_line_limit = min(self.max_exec_line_chars, remaining)
             if per_line_limit <= 0:
-                output_truncated = True
+                omitted.extend(eligible[index:])
                 break
             line_truncated = len(raw_line) > per_line_limit
             line = raw_line[:per_line_limit] if line_truncated else raw_line
             projected_chars += len(line)
-            if line_truncated:
-                output_truncated = True
+            shown.append((line_number, raw_line, line, line_truncated))
+        summary = self._projection_summary(
+            content,
+            shown,
+            omitted,
+            limits={
+                "max_lines": self.max_exec_lines,
+                "max_line_chars": self.max_exec_line_chars,
+                "max_chars": self.max_exec_chars,
+            },
+        )
+        added: list[EvidenceItem] = []
+        for line_number, raw_line, line, line_truncated in shown:
             added.append(
                 self.collector.add(
                     source=f"exec:{call.id}",
@@ -299,7 +366,8 @@ class OpenClawEvidenceProjector:
                         "original_line_chars": len(raw_line),
                         "result_sha256": digest,
                         "original_result_chars": len(content),
-                        "result_projection_truncated": output_truncated,
+                        "result_projection_truncated": summary["projection_status"] != "complete",
+                        **summary,
                     },
                 )
             )

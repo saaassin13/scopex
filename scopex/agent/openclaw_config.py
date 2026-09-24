@@ -116,8 +116,8 @@ def build_openclaw_config(spec: OpenClawConfigSpec) -> dict:
         raise ValueError("a non-empty single-line local proxy token is required")
     if spec.uid < 0 or spec.gid < 0:
         raise ValueError("uid/gid must be non-negative")
-    if spec.timeout_s <= 0 or spec.request.max_tokens <= 0:
-        raise ValueError("timeouts/token limits must be positive")
+    if spec.timeout_s <= 0 or spec.request.max_tokens <= 0 or spec.context_window <= spec.request.max_tokens:
+        raise ValueError("timeouts/token limits/context window are invalid")
     if spec.request.enable_thinking is not False:
         raise ValueError("ScopeX validated OpenClaw runtime requires thinking=false")
     if not spec.tools:
