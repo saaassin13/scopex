@@ -230,9 +230,10 @@ vLLM 镜像和模型升级需要单独准备、验证；不包含在 Runtime/San
 ### 编码器与上下文修复的部署验收（2026-09-15）
 
 本次涉及 Python、Skill 和 Compose，按普通代码更新流程同步并重新启动 ScopeX，
-无需因本次修改重新制作镜像。Compose 已显式开启 `--enable-compaction`，保留
-不自动重启的部署策略。启动日志应显示 `compaction: enabled`，新任务生成的
-OpenClaw 配置应为 `agents.defaults.compaction.enabled=true`。
+无需因本次修改重新制作镜像。Compose 已显式开启 `--enable-compaction`，运行时同时
+启用 `agents.defaults.compaction.midTurnPrecheck.enabled=true`，保留不自动重启的部署策略。
+启动日志应显示 `compaction: enabled`，新任务生成的 OpenClaw 配置应同时包含
+`agents.defaults.compaction.enabled=true` 与 `agents.defaults.compaction.midTurnPrecheck.enabled=true`。
 
 复查固定时间窗 `2026-09-15 17:56:13` 至 `2026-09-15 18:26:13`，确认完整交付，
 并保留归零、瞬时回归及采样缺口的区别。另验证一次足够长的上下文确实触发原生

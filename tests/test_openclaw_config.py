@@ -32,6 +32,7 @@ class OpenClawConfigTests(unittest.TestCase):
         docker = sandbox["docker"]
         self.assertEqual(defaults["thinkingDefault"], "off")
         self.assertTrue(defaults["compaction"]["enabled"])
+        self.assertTrue(defaults["compaction"]["midTurnPrecheck"]["enabled"])
         self.assertFalse(defaults["compaction"]["memoryFlush"]["enabled"])
         self.assertFalse(cfg["agents"]["entries"]["sx1"]["memory"]["search"]["enabled"])
         self.assertEqual(sandbox["workspaceAccess"], "ro")
@@ -53,6 +54,7 @@ class OpenClawConfigTests(unittest.TestCase):
     def test_compaction_can_be_disabled_for_regression_debugging(self):
         cfg = build_openclaw_config(replace(self.spec(), compaction_enabled=False))
         self.assertFalse(cfg["agents"]["defaults"]["compaction"]["enabled"])
+        self.assertFalse(cfg["agents"]["defaults"]["compaction"]["midTurnPrecheck"]["enabled"])
         self.assertFalse(cfg["agents"]["entries"]["sx1"]["memory"]["search"]["enabled"])
 
     def test_read_only_data_binds_use_openclaw_docker_binds(self):

@@ -211,6 +211,7 @@ def build_openclaw_config(spec: OpenClawConfigSpec) -> dict:
                 "timeoutSeconds": spec.timeout_s,
                 "compaction": {
                     "enabled": spec.compaction_enabled,
+                    "midTurnPrecheck": {"enabled": spec.compaction_enabled},
                     # Memory Search / durable memory remain disabled for Step 6.
                     # Compaction only keeps one long-running task/session usable.
                     "memoryFlush": {"enabled": False},
