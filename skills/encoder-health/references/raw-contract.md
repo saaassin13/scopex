@@ -2,6 +2,8 @@
 
 The first version detects local signed-rate deviations and persistent rate transitions.
 It does not certify slow drift, scale error, physical reversal, or mechanical rebound.
+The analysis window is user-selected; trigger cadence is external and windows are
+not deduplicated against one another.
 All calculations use raw count differences and actual log intervals; those intervals
 are not automatically the hardware acquisition intervals.
 
@@ -35,6 +37,10 @@ never influences raw validity.
 
 Saved schema 6 contains captured raw lines, file-content hashes, samples, context,
 checks and reviewed/unresolved state. `inspect` works after original logs rotate.
+`plot` reads this same snapshot and writes working PNG artifacts; it does not rescan
+logs. Each plot has raw count, actual `dt`, signed raw delta and signed short-window
+raw-derived speed (`501.144 / 4096 mm/count`). It never displays or uses `filtered`
+or `TurnTableSpeed`.
 Input changes during scan fail rather than silently mixing snapshots. Files must
 belong to the same encoder; the known format has no reliable device identity to
 automatically separate mixed devices. Use data-locator's single-device source.

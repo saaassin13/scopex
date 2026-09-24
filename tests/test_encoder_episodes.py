@@ -11,16 +11,66 @@ RATE_PROFILE = {"source": "test fixture: verified continuous counter and sample-
 
 
 class RawReviewTests(unittest.TestCase):
-    def test_first_confirmed_block_stops_with_later_blocks_unseen(self):
+    def test_confirmed_block_does_not_stop_full_window_review(self):
         s = analyze([(100, 10)] * 30 + [(100, 500), (100, -480)]
                     + [(100, 10)] * 30 + [(100, 600)] + [(100, 10)] * 30,
                     profile=RATE_PROFILE)
         r = ANALYZER["inspect"](s, s["candidates"][0]["id"])
-        self.assertTrue(r["stop_recommended"])
+        self.assertFalse(r["stop_recommended"])
         summary = ANALYZER["report"](s)
         self.assertEqual(summary["status"], "confirmed_raw_anomaly")
         self.assertGreater(summary["unseen_total"], 0)
         self.assertEqual(summary["confirmed_total"], 1)
+        self.assertFalse(summary["stop_recommended"])
+
+    def test_decision_context_is_independent_of_display_context(self):
+        with tempfile.TemporaryDirectory() as td:
+            log = Path(td) / "raw.log"
+            rows = series([(100, 10)] * 30 + [(100, 500)] + [(100, 10)] * 30)
+            text = raw_text(rows)
+            insertion = "2026-09-15 00:00:02:950 ResetEncoderValOnSerialPort\n"
+            text = text.replace("2026-09-15 00:00:03:000", insertion + "2026-09-15 00:00:03:000", 1)
+            log.write_text(text)
+            state = ANALYZER["scan"]([log], profile=RATE_PROFILE)
+            candidate = state["candidates"][0]["id"]
+            narrow = ANALYZER["inspect"](state, candidate, context_ms=0)
+            narrow_outcome = narrow["checks"][0]["outcome"]
+            wide = ANALYZER["inspect"](state, candidate, context_ms=5000)
+            self.assertEqual(narrow_outcome, wide["checks"][0]["outcome"])
+            self.assertFalse(narrow["stop_recommended"])
+            self.assertFalse(wide["stop_recommended"])
+
+    def test_raw_short_window_speed_preserves_signed_net_motion(self):
+        state = analyze([(100, 10)] * 8)
+        speeds = ANALYZER["_speed_values"](state, 200)
+        self.assertAlmostEqual(speeds[2], 20 * (501.144 / 4096) * 1000 / 200)
+        reverse = analyze([(100, -10)] * 8)
+        self.assertAlmostEqual(ANALYZER["_speed_values"](reverse, 200)[2],
+                               -20 * (501.144 / 4096) * 1000 / 200)
+
+    def test_plot_is_generated_from_snapshot_with_raw_only_panels(self):
+        with tempfile.TemporaryDirectory() as td:
+            state_path = Path(td) / "state.json"
+            out_dir = Path(td) / "plots"
+            state = analyze([(100, 10)] * 20 + [(100, 500), (100, -480)] + [(100, 10)] * 20)
+            ANALYZER["save"](state_path, state)
+            candidate_id = state["candidates"][0]["id"]
+            proc, result = cli("plot", state_path, "--out-dir", out_dir,
+                               "--candidate", candidate_id)
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertEqual(len(result["artifacts"]), 2)
+            self.assertEqual(result["raw_only"], True)
+            for artifact in result["artifacts"]:
+                image = Path(artifact["path"])
+                self.assertTrue(image.exists())
+                self.assertEqual(image.read_bytes()[:8], b"\x89PNG\r\n\x1a\n")
+                self.assertEqual(artifact["panels"],
+                                 ["raw_count", "sample_dt_ms", "signed_delta_raw", "raw_speed_mm_s"])
+            self.assertNotIn("filtered", str(result))
+            self.assertNotIn("TurnTableSpeed", str(result))
+            proc, summary = cli("report", state_path)
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertEqual(summary["plots"]["status"], "plots_written")
 
     def test_suspected_then_confirmed_does_not_require_resolving_first(self):
         s = analyze([(100, 10)] * 30 + [(100, 30)] * 30 + [(100, 500)] + [(100, 10)] * 30,
@@ -36,7 +86,7 @@ class RawReviewTests(unittest.TestCase):
         s = analyze([(100, 10)] * 4, initial=100,
                     profile={"source": "fixture known register range", "count_max": 120})
         r = ANALYZER["inspect"](s, s["candidates"][0]["id"])
-        self.assertTrue(r["stop_recommended"])
+        self.assertFalse(r["stop_recommended"])
         self.assertIn("Get EncoderVal, raw", r["evidence"][0]["text"])
         self.assertEqual(r["checks"][0]["profile_source"], "fixture known register range")
 

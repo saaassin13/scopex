@@ -1,14 +1,14 @@
 # 原始 raw 编码器分析：方案与首版状态
 
-更新：2026-09-21。首版已在 `feature/raw-encoder-analysis` 本地实现，未部署。现场准确率和实际端侧 27B 模型回放尚未验收。本文件替代此前同路径中多数据流、schema 5 迁移前的设计描述。
+更新：2026-09-24。raw-only 首版和快照绘图已在当前开发分支实现，尚未部署。现场准确率和实际端侧模型回放尚未验收。本文件替代此前同路径中多数据流、schema 5 迁移前的设计描述。
 
 ## 1. 已确定的范围
 
-只分析 `Get EncoderVal, raw[...]` 的原始数值。filtered 和应用 EncoderVal 不参与判定，不作缺少 raw 时的替代来源。其他日志仅为复位、通信、设备参数变化等解释提供上下文。
+只分析 `Get EncoderVal, raw[...]` 的原始数值。`filtered`、`TurnTableSpeed` 和应用 EncoderVal 不参与判定，不作缺少 raw 时的替代来源。其他日志仅为复位、通信、设备参数变化等解释提供上下文。
 
 停止、启动、正转、反转都是允许行为。负增量、大反向距离、持续时间和出现次数不独立证明异常。“模型无法解释”也不是充分异常证据。
 
-默认回答“是否存在 raw 数据异常”：完成一块的必要核对并确证后，结束后续深挖。仅有怀疑时可扩大上下文或比较下一块；其他块可以提供反证，不按重复次数投票。偶发也可能是真异常。统计频率、周期性、全部异常或根因是用户另行要求的调查深度。
+默认回答“是否存在 raw 数据异常”：扫描用户指定的整个非重叠分析区间，筛出明显疑点并逐候选复核。确认一块不会结束后续候选检查；仅有怀疑时可扩大固定判定上下文或保留未决状态。统计频率、周期性、全部异常或根因是用户另行要求的调查深度。
 
 ## 2. 能力与分工
 
@@ -18,7 +18,8 @@
 | --- | --- |
 | scan | 严格提取 raw，校验时间/格式，计算全窗基础指标，生成全部候选与分页摘要，保存可复核证据 |
 | inspect | 查看候选 R ID 或任意已捕获时间范围，提供核心变化、前后参考、原始行、分页样本、控制日志和检查结果，持久化本次检查 |
-| report | 从同一快照恢复已确认、未决、未查看状态，给出停止建议、覆盖缺口及来源 |
+| plot | 从同一快照生成 raw-only 四面板总览及候选局部 PNG，不重新读取日志 |
+| report | 从同一快照恢复已确认、未决、未查看状态，给出完整窗口摘要、覆盖缺口及来源 |
 
 模型选择问题、调用入口、关联必要日志并表达证据。数值提取、差分、比较和有明确条件的确认由工具完成。强模型可以帮助开发与找反例，但其结论不作为真值。
 
@@ -35,7 +36,8 @@
 - 首版输入为同一设备的数据源。现有日志格式不能可靠拆分混入的其他设备；不宣称已自动识别设备身份。
 - 默认容量为 256 MiB 日志、250,000 raw 样本、64 个文件。超限报错而非产出部分正常结论。分页不截断 JSON；未呈现数量可见。
 - 任意窗口查看可以核对漏入候选的疑点，但不能保证模型主动发现所有漏检。
-- inspect 区分核心范围和背景范围。默认背景可扩至 60 秒，边界/缺口会标记不完整；原始样本按页提供，核心极值及其源行不依赖翻到某页才可见。首版未生成图，图形是后续辅助能力，不依赖模型视觉能力。
+- inspect 区分核心范围和展示背景范围；判定使用固定的短上下文，不因展示窗口缩放而改变控制事件解释。边界/缺口会标记不完整；原始样本按页提供，核心极值及其源行不依赖翻到某页才可见。
+- `plot` 从保存快照生成四面板 raw-only PNG：累计 raw、实际采样 `dt`、signed `Δraw`、短窗 raw-derived speed。图是工作态派生可视化，辅助 Agent/人工定位，不改变结构化数值结论；缺口不连线，降采样不替代分析输入。
 
 ## 4. 检测与确认条件
 
@@ -56,28 +58,27 @@
 
 | 结果 | 动作 |
 | --- | --- |
-| confirmed_raw_anomaly | 已完成有依据检查；默认结束后续深挖并报告至少一处异常 |
+| confirmed_raw_anomaly | 已完成有依据检查；仍需保留并复核同一窗口的其他候选 |
 | unresolved | 检查能改变结论的上下文，或比较下一块；无新证据时报告未决 |
 | compatible_motion / no_anomaly_evidence | 当前块没有建立异常；仍有候选则继续 |
 | no_raw_data / error | 报告无 raw 或执行失败，不改用应用值 |
 | 已完成预定检查，无疑点且覆盖足够 | 本次检查未发现异常证据，不作设备健康保证 |
 
-日志缺片只能确认覆盖问题，不作为“raw 读数异常”的提前结束理由。报告保留已确认、未决及未查看数量；打开某块不等于解决该块。提前结束不能宣称唯一异常、全部频率、最严重事件或根因。
+日志缺片只能确认覆盖问题，不作为“raw 读数异常”的异常证据。报告保留已确认、未决及未查看数量；打开某块不等于解决该块。单次分析不因首个确认自动结束，不能宣称唯一异常、全部频率、最严重事件或根因。
 
-基础 scan 仍遍历输入文件。提前停止节省的是局部检查与模型调用，不宣称省去了已经发生的文件读取。存在性调查结束后，检测器离线评测仍需检查完整案例，以免掩盖漏检。
+基础 scan 和候选筛查均遍历输入文件。plot 只读取保存快照，不重新解释源日志；候选复核也不因首个确认自动停止。检测器离线评测仍需检查完整案例，以免掩盖漏检。
 
 ## 6. 接口迁移
 
-旧主脚本的应用优先、候选 schema 4、运动过程 schema 5 实现已被替换，不并存第二套判定。原 `--motion-report` 与 schema 3–5 查看入口退出；调用方和产品 Skill 改用 scan/inspect/report。
+旧主脚本的应用优先、候选 schema 4、运动过程 schema 5 实现已被替换，不并存第二套判定。原 `--motion-report` 与 schema 3–5 查看入口退出；调用方和产品 Skill 改用 scan/plot/inspect/report。
 
-位置文件调用保留为 raw scan，`--events-out` 仅为 `--out` 别名。历史结果与源日志不改写，旧快照须重新 scan 才能使用新入口。数据访问审计继续记录 encoder_health、请求时间窗和实际输入文件。默认产品链不要求 schema 6 才能交付普通文字，也不重启历史 Finalizer。
+位置文件调用保留为 raw scan，`--events-out` 仅为 `--out` 别名。历史结果与源日志不改写，旧快照须重新 scan 才能使用新入口。数据访问审计继续记录 encoder_health、请求时间窗和实际输入文件。`plot` 输出任务 scratch 下的 working-derived PNG，不自动升级为原始图片 Evidence；默认产品链不要求 schema 6 才能交付普通文字，也不重启历史 Finalizer。
 
 ## 7. 验证与未验证范围
 
 本地 Python 3.12 / macOS，已执行：
 
-- 编码器专项 42 项通过：raw 与阈值/filtered/application 分离、有符号打印、无效边界、时间倒退/缺口、正常正反转与启停、单/多点偏离、分页、任意区间、来源消失后复核、检查状态持久化、提前结束、时间误差和局部参考不足反例。
-- 关联的业务工具、数据包、Skill 配置、证据投影和可读性测试 42 项通过，与编码器专项合计 84 项。命令：`PYTHONPATH=tests python3 -m unittest test_encoder_motion_context test_encoder_invalid_boundaries test_encoder_episodes test_business_skill_tools test_task_data_package test_skill_provisioning test_evidence_projector test_product_answer_readability -q`。旧编码器测试的运动、边界和证据不变量迁移到 raw 契约，原应用优先/filtered 无效判定预期退出。
+- 当前受影响专项 85 项通过：raw 与阈值/filtered/application 分离、有符号打印、无效边界、跨轮转坏行、跨小时日志选择、短窗 signed 速度、raw-only 四面板 PNG、全窗候选复核、固定判定上下文、分页、任意区间、来源消失后复核、时间误差和局部参考不足反例。命令：`PYTHONPATH=tests python3 -m unittest test_encoder_motion_context test_encoder_invalid_boundaries test_encoder_episodes test_business_skill_tools test_skill_provisioning test_evidence_projector test_image_working_set test_image_evidence_qualification -q`。
 - compileall 与 git diff --check 通过。
 - 通用 skill-creator 校验器不认识既有 OpenClaw 字段 user-invocable；仅在临时验证副本中去除此扩展后通过，其余正文不变。原文件扩展的 YAML 类型及引用路径另外检查通过，未改变 OpenClaw 调用属性。
 - 全量回归曾在沙箱内因回环 socket 权限失败；放开本地测试权限并使用 /private/tmp 后，当时 688 项中 685 通过、3 项因既有 Linux-only 前置条件在 macOS 不通过。随后新增的编码器专项反例也已单独通过。未改平台门禁来冒充通过。
@@ -87,6 +88,8 @@
 真实日志只读试跑：输入 `/Users/yanlan/Downloads/xintai_log/CowDisinfect-20260920-180000.log.1`，请求 18:35–19:00；实际 raw 为 18:35:35.817–18:47:29.780，共 39,876 条，2 处速率变化候选。两块查看均为 compatible_motion；请求窗口存在未覆盖边缘，因此整窗报告仍为 inconclusive。这仅验证真实格式、覆盖与调查链，不是有标签的健康结论。
 
 该输入 SHA-256 为 `d5374a5d0be5f5e774e35a2096a1da1b1a22343f992635cdc9ac661b7e2e07d6`，25,165,890 字节；一次本地 scan 并保存快照实测 2.39 秒（含 shell 管道，非多次基准），不能外推为端侧性能。查看和 report 均使用保存快照完成。
+
+2026-09-24 当前分支对用户提供的 `/Users/yanlan/Downloads/CowDisinfect-20260924-120000.log` 做只读试跑：SHA-256 为 `02044ea13092a03afa06dff63fd3828a7033f00d6d1c34c28d552f9a5ce78c4b`，raw 共 21,281 条，实际覆盖 `12:53:42.553–12:59:59.982`，筛出 1 个候选；scan 状态为 `inconclusive`，不是健康结论。随后从同一快照生成 `overview.png` 和 `candidate-R1.png`，均为可读 PNG，SHA-256 与产物元数据匹配。该日志没有人工异常标签，不据此计算准确率或误报率；PNG 保留在本地任务 scratch 验证目录，不作为部署或发布证据。
 
 原先 09-17 参考任务附件路径已不存在，未声称重放该附件。对应缺失时段/业务阈值误读已用回归反例覆盖。没有部署、调用现场模型或建立独立真实异常标签集，因此尚不能公布业务准确率。
 

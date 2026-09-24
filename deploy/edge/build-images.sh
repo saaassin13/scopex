@@ -16,5 +16,5 @@ else
     --build-arg "BASE_IMAGE=$SANDBOX_BASE_IMAGE" -t "$SANDBOX_IMAGE" "$ROOT"
 fi
 docker run --rm --network none --entrypoint python3 "$SANDBOX_IMAGE" \
-  -c 'import cv2,PIL,numpy,pandas,scipy,skimage; print("sandbox OK")'
+  -c 'import cv2,PIL,numpy,pandas,scipy,skimage,matplotlib; matplotlib.use("Agg"); print("sandbox OK")'
 printf 'built %s\nbuilt %s\n' "$RUNTIME_IMAGE" "$SANDBOX_IMAGE"

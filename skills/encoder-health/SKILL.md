@@ -1,14 +1,15 @@
 ---
 name: encoder-health
-description: Check raw CowDisinfect encoder readings for data anomalies, inspect local evidence progressively, and stop once one anomaly is confirmed.
+description: Scan a user-selected raw CowDisinfect encoder window, generate review plots, and inspect clear candidates without stopping the full-window review.
 user-invocable: true
 ---
 
 # Raw encoder analysis
 
 Analyze only the number in `Get EncoderVal, raw[...]`. Forward/reverse motion,
-starts and stops are allowed. Other logs can explain raw changes; filtered and
-application values are not alternative measurements for this task.
+starts and stops are allowed. Other logs can explain raw changes; `filtered`,
+`TurnTableSpeed` and application values are not measurements for this task.
+The user supplies the trigger interval and each non-overlapping analysis window.
 
 ## Scan once
 
@@ -23,10 +24,29 @@ python3 {baseDir}/scripts/encoder_health.py scan /agent-data/logs/<file1> /agent
 Check raw coverage, gaps and issues first. `no_raw_data` means there are no raw
 samples, not normal operation; do not fall back to application readings.
 `error` means no completed analysis. A candidate is a place to inspect, not a fault.
+The scan covers the whole requested window and does not stop at the first candidate.
 
-## Inspect one question at a time
+## Generate plots from the saved snapshot
 
-Start with a returned candidate ID:
+Generate the overview and candidate local plots from the same saved JSON snapshot:
+
+```bash
+python3 {baseDir}/scripts/encoder_health.py plot /task-scratch/encoder-raw.json \
+  --out-dir /task-scratch/encoder-plots
+```
+
+The overview has four raw-only panels: cumulative raw count, actual sample `dt`,
+signed `delta_raw`, and a signed raw-derived speed using a 200 ms net-delta
+window. Candidate plots include bounded context and highlight the candidate core.
+The speed is `(raw_end - raw_start) / actual_time * 501.144 / 4096`; it never uses
+`filtered` or `TurnTableSpeed`. Missing data and blocked pairs remain breaks.
+If `view_image` is available, inspect `overview.png` and the candidate plots as
+working-derived visual aids. The saved raw numbers and source lines remain the
+authoritative evidence; a plot cannot upgrade an unresolved candidate.
+
+## Inspect every candidate
+
+Inspect each returned candidate ID so the requested window is covered:
 
 ```bash
 python3 {baseDir}/scripts/encoder_health.py inspect /task-scratch/encoder-raw.json --candidate R1
@@ -45,14 +65,14 @@ log messages. Keep newly retrieved evidence distinct from the saved scan.
 A reset request is not proof that reset completed. Repeated shapes do not prove
 a fault; an isolated occurrence is not automatically normal.
 
-## Decide whether to continue
+## Decide how to describe each candidate
 
-- `confirmed_raw_anomaly`: source-backed range/rate checks established an anomaly.
-  For “is there an anomaly?”, stop inspecting later blocks and get the report.
-- `unresolved`: inspect more relevant context or compare another candidate.
+- `confirmed_raw_anomaly`: a supplied profile-backed range/rate check established
+  an anomaly. Continue inspecting other candidates; this is not a stop signal.
+- `unresolved`: inspect the fixed decision context or report the missing distinction.
   Do not promote a suspicious shape to confirmed solely by model judgment.
 - `compatible_motion` / `no_anomaly_evidence`: no anomaly was established in this
-  region under the implemented checks; continue if other candidates remain.
+  region under the implemented checks; continue through the remaining candidates.
 - When no new evidence is available or the task budget ends, report the unresolved
   question. Opening a region does not mean it was resolved.
 
@@ -72,10 +92,10 @@ Never create physical limits from the observed maximum or model guesses.
 
 ## Answer
 
-Use the tool's times, raw values and evidence. State at least one confirmed
-anomaly when established, and that later candidates were not individually checked.
-Do not infer total frequency, periodicity, unique cause or hardware failure from
-that stopping point. If unresolved, name the missing distinction/evidence.
-“No anomaly evidence in completed checks” is limited by coverage and detector
-scope; it is not a health certificate. Continue beyond the first confirmed block
-only for a user request about all events, frequency, impact or cause.
+Use the tool's times, raw values, plots and evidence. Distinguish confirmed
+profile-backed checks, unresolved candidates, compatible motion and data-quality
+boundaries. State the number of candidates inspected and any remaining unseen
+candidates. Do not infer total frequency, periodicity, unique cause or hardware
+failure from a shape candidate. If unresolved, name the missing distinction or
+evidence. “No anomaly evidence in completed checks” is limited by coverage and
+detector scope; it is not a health certificate.

@@ -101,6 +101,41 @@ class RawBoundaryTests(unittest.TestCase):
         self.assertEqual(result["status"], "no_samples_in_region")
         self.assertEqual(s["reviews"], {})
 
+    def test_rotation_tail_malformed_line_blocks_next_file(self):
+        with tempfile.TemporaryDirectory() as td:
+            first, second = Path(td) / "a.log", Path(td) / "b.log"
+            first.write_text(
+                "2026-09-15 00:00:00:000 Get EncoderVal, raw[100]\n"
+                "2026-09-15 00:00:00:020 Get EncoderVal, raw[110]\n"
+                "2026-09-15 00:00:00:040 Get EncoderVal, raw[broken]\n")
+            second.write_text("2026-09-15 00:00:00:060 Get EncoderVal, raw[5000]\n")
+            state = ANALYZER["scan"]([first, second])
+            self.assertEqual(state["facts"]["delta_counts"]["n"], 1)
+            self.assertEqual(state["pairs"][-1]["blocked"], True)
+
+    def test_log_dir_selects_group_that_started_before_natural_hour(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            log = root / "CowDisinfect-20260914-035500.log"
+            log.write_text("2026-09-14 03:59:30:000 Get EncoderVal, raw[100]\n")
+            (root / "CowDisinfect-20260914-041000.log").write_text(
+                "2026-09-14 04:10:00:000 Get EncoderVal, raw[200]\n")
+            start = ANALYZER["millis"]("2026-09-14 03:59:00:000")
+            end = ANALYZER["millis"]("2026-09-14 04:00:00:000")
+            state = ANALYZER["scan"](ANALYZER["discover_logs"](root, start, end), start, end)
+            self.assertEqual(state["facts"]["samples_in_window"], 1)
+            self.assertEqual(state["inputs"][0]["path"], str(log.absolute()))
+
+    def test_short_gap_breaks_motion_comparison(self):
+        state = analyze([(20, 10)] * 5 + [(400, 4000)] + [(20, 10)] * 5)
+        self.assertEqual(state["facts"]["sampling_gap_count"], 1)
+        self.assertEqual(state["facts"]["negative_steps_observed"], 0)
+
+    def test_negative_only_profile_upper_bound_is_valid(self):
+        state = self.scan_text(raw_text(series([(20, -1)], initial=-5)),
+                               profile={"source": "fixture signed range", "count_max": -1})
+        self.assertEqual(state["facts"]["invalid_samples"], 0)
+
     def test_capacity_error_does_not_save_partial_as_complete(self):
         with tempfile.TemporaryDirectory() as td:
             p, out = Path(td) / "raw.log", Path(td) / "state.json"
