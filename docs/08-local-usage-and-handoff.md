@@ -1,5 +1,7 @@
 # ScopeX 阶段交接与本地使用
 
+视觉监控 POC 已停止；关键结论见 [FINAL-CONCLUSION.md](video-monitoring/FINAL-CONCLUSION.md)。本文件其余内容为 ScopeX 主线交接，不受本次清理影响。
+
 更新：2026-09-16，main 集成及用户端侧运行回执收口。代码核对基线：`cb90d028773b4fac4eabf4b429ecb3fed97f1c51`。本轮只同步文档，不修改架构、运行代码、Skill、Compose、模型或端侧服务。
 
 ## 1. 当前状态与证据
