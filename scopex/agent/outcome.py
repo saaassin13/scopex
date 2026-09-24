@@ -15,6 +15,12 @@ _CONTEXT_OVERFLOW_MARKERS = (
     "too many tokens",
     "input token",
 )
+_CONTEXT_OVERFLOW_TEXT_MARKERS = (
+    "context overflow: prompt too large for the model",
+    "context-overflow-midturn-precheck",
+    "context-overflow-recovery",
+    "exhausted provider overflow recovery",
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -28,6 +34,14 @@ class CliOutcome:
     @property
     def completed(self) -> bool:
         return not self.blockers and self.answer is not None
+
+
+def classify_context_overflow_text(text: str) -> bool:
+    """Recognize an explicit OpenClaw overflow diagnostic outside JSON meta."""
+    if not isinstance(text, str):
+        return False
+    normalized = text.strip().lower()
+    return any(marker in normalized for marker in _CONTEXT_OVERFLOW_TEXT_MARKERS)
 
 
 def _cli_value(text: str) -> dict[str, Any]:

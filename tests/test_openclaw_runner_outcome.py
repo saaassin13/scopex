@@ -6,7 +6,7 @@ import unittest
 
 from scopex.agent.openclaw import OpenClawCommandBuilder
 from scopex.agent.openclaw_runner import OpenClawTurnRunner
-from scopex.agent.outcome import parse_cli_outcome
+from scopex.agent.outcome import classify_context_overflow_text, parse_cli_outcome
 
 
 class OpenClawRunnerOutcomeTests(unittest.TestCase):
@@ -82,6 +82,11 @@ class OpenClawRunnerOutcomeTests(unittest.TestCase):
         self.assertIsNone(outcome.answer)
         self.assertIn("context_overflow", outcome.blockers)
         self.assertEqual(outcome.flags["context_reason"], "context_overflow")
+
+    def test_openclaw_midturn_overflow_text_is_classified(self):
+        text = "[context-overflow-midturn-precheck] Context overflow: prompt too large for the model."
+        self.assertTrue(classify_context_overflow_text(text))
+        self.assertTrue(classify_context_overflow_text("exhausted provider overflow recovery"))
 
     def test_business_text_mentioning_context_does_not_classify_without_error_envelope(self):
         text = '''{

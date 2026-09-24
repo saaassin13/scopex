@@ -19,7 +19,13 @@ from scopex.agent.openclaw_config import (
     build_openclaw_config,
 )
 from scopex.agent.openclaw_runner import OpenClawProcessResult, OpenClawTurnRunner
-from scopex.agent.outcome import CliOutcome, classify_cli_runtime_guard, parse_cli_outcome
+from scopex.agent.outcome import (
+    CONTEXT_OVERFLOW,
+    CliOutcome,
+    classify_cli_runtime_guard,
+    classify_context_overflow_text,
+    parse_cli_outcome,
+)
 from scopex.agent.proxy_control import RuntimeRequestHook
 from scopex.agent.request_policy import OpenClawRequestPolicy
 from scopex.agent.sandbox import SandboxCleanupResult, SandboxManager
@@ -206,21 +212,30 @@ class OpenClawTaskRuntime:
             cli_outcome = None
             runtime_guard_reason = None
             stdout_text = ""
-            if process.stop_reason is None:
+            stderr_text = ""
+            try:
+                stdout_text = process.stdout_path.read_text(encoding="utf-8")
+            except (OSError, UnicodeError):
+                stdout_text = ""
+            try:
+                stderr_text = process.stderr_path.read_text(encoding="utf-8")
+            except (OSError, UnicodeError):
+                stderr_text = ""
+            if stdout_text:
+                runtime_guard_reason = classify_cli_runtime_guard(stdout_text)
                 try:
-                    stdout_text = process.stdout_path.read_text(encoding="utf-8")
-                except (OSError, UnicodeError):
-                    stdout_text = ""
-                if stdout_text:
-                    runtime_guard_reason = classify_cli_runtime_guard(stdout_text)
-                    try:
-                        cli_outcome = parse_cli_outcome(stdout_text)
-                    except ValueError:
-                        cli_outcome = None
+                    cli_outcome = parse_cli_outcome(stdout_text)
+                except ValueError:
+                    cli_outcome = None
 
             runtime_limit_reason = proxy.runtime_limit_reason
             context_reason = proxy.context_reason
             context_events = list(proxy.context_events)
+            plain_stdout_overflow = cli_outcome is None and classify_context_overflow_text(stdout_text)
+            if plain_stdout_overflow or classify_context_overflow_text(stderr_text):
+                context_reason = context_reason or CONTEXT_OVERFLOW
+                if CONTEXT_OVERFLOW not in context_events:
+                    context_events.append(CONTEXT_OVERFLOW)
             if cli_outcome is not None:
                 cli_context_reason = cli_outcome.flags.get("context_reason")
                 if isinstance(cli_context_reason, str) and cli_context_reason:

@@ -14,12 +14,43 @@ from scopex.agent.model_proxy import (
 from scopex.model_capabilities import count_request_images, resolve_image_limit, validate_request_images
 
 
-CONTEXT_ESTIMATOR_VERSION = "utf8-json-upper-bound-v1"
+CONTEXT_ESTIMATOR_VERSION = "utf8-json-upper-bound-v2"
 DEFAULT_CONTEXT_WINDOW = 32768
 DEFAULT_CONTEXT_SAFETY_MARGIN = 1024
 DEFAULT_IMAGE_TOKEN_RESERVE = 1024
 _JSON_BYTES_PER_TOKEN = 2
 _REQUEST_TEMPLATE_OVERHEAD = 128
+_IMAGE_BLOCK_TYPES = ("image_url", "input_image", "image")
+
+
+def _image_payload_chars(payload: dict[str, Any]) -> int:
+    """Char size of image attachment data already priced as image tokens.
+
+    Base64 data URIs are transport encoding; the serving stack counts them as
+    vision tokens, not text tokens. count_request_images prices each block via
+    image_token_reserve, so the same chars must not also inflate the text
+    upper bound (double billing rejected in-flight image turns that fit).
+    Blocks without a string URL keep their conservative text treatment.
+    """
+    messages = payload.get("messages")
+    if not isinstance(messages, list):
+        return 0
+    total = 0
+    for message in messages:
+        if not isinstance(message, dict):
+            continue
+        parts = message.get("content")
+        if not isinstance(parts, list):
+            continue
+        for part in parts:
+            if not isinstance(part, dict) or part.get("type") not in _IMAGE_BLOCK_TYPES:
+                continue
+            holder = part.get("image_url")
+            if not isinstance(holder, dict):
+                holder = part.get("input_image")
+            if isinstance(holder, dict) and isinstance(holder.get("url"), str):
+                total += len(holder["url"])
+    return total
 
 
 @dataclass(frozen=True, slots=True)
@@ -91,8 +122,9 @@ class OpenClawRequestPolicy:
             ) from exc
         image_count = count_request_images(payload)
         image_tokens = image_count * self.image_token_reserve
+        text_chars = max(0, len(encoded) - _image_payload_chars(payload))
         estimated_input = (
-            math.ceil(len(encoded) / _JSON_BYTES_PER_TOKEN)
+            math.ceil(text_chars / _JSON_BYTES_PER_TOKEN)
             + _REQUEST_TEMPLATE_OVERHEAD
             + image_tokens
         )

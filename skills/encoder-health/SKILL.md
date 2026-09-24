@@ -13,7 +13,9 @@ The user supplies the trigger interval and each non-overlapping analysis window.
 
 ## Scan once
 
-Use data-locator to resolve the explicit files and requested window. Run:
+Read this Skill once at the start of the task and reuse its procedure; do not
+re-open it after every tool call. Use data-locator to resolve the explicit files
+and requested window. Run:
 
 ```bash
 python3 {baseDir}/scripts/encoder_health.py scan /agent-data/logs/<file1> /agent-data/logs/<file2> \
@@ -42,7 +44,9 @@ The speed is `(raw_end - raw_start) / actual_time * 501.144 / 4096`; it never us
 `filtered` or `TurnTableSpeed`. Missing data and blocked pairs remain breaks.
 If `view_image` is available, inspect `overview.png` and the candidate plots as
 working-derived visual aids. The saved raw numbers and source lines remain the
-authoritative evidence; a plot cannot upgrade an unresolved candidate.
+authoritative evidence; a plot cannot upgrade an unresolved candidate. The plot
+command returns only compact artifact metadata (path, hash, size and panels); do
+not re-read or restate the full saved plot metadata in the conversation.
 
 ## Inspect every candidate
 
@@ -54,6 +58,9 @@ python3 {baseDir}/scripts/encoder_health.py inspect /task-scratch/encoder-raw.js
 
 The result contains measured changes, exact source lines, local raw samples,
 counter-log context and check outcomes. It persists the check for later reports.
+Pages are dense by default (a few trace rows and context lines per call); the
+saved snapshot keeps every sample, so page with `--offset`/`--limit` or widen
+`--context-ms` only for a candidate that needs a closer look.
 For a different view, use `--context-ms 5000` or an arbitrary captured
 `--start ... --end ...` range instead of `--candidate`.
 Trace is paginated raw data, not a continuous reconstructed curve; `--offset`
@@ -76,13 +83,17 @@ a fault; an isolated occurrence is not automatically normal.
 - When no new evidence is available or the task budget ends, report the unresolved
   question. Opening a region does not mean it was resolved.
 
-List remaining candidates or resume after context compaction:
+List remaining candidates or resume after context compaction. Reuse the saved
+snapshot and request only the next page; do not repeat pages or embed prior plot
+metadata in later prompts:
 
 ```bash
 python3 {baseDir}/scripts/encoder_health.py report /task-scratch/encoder-raw.json
-# Follow next_offset to retrieve another candidate page:
-python3 {baseDir}/scripts/encoder_health.py report /task-scratch/encoder-raw.json --offset 5
+# Follow next_offset exactly; use the returned page size rather than assuming 5:
+python3 {baseDir}/scripts/encoder_health.py report /task-scratch/encoder-raw.json --offset <next_offset>
 ```
+Stop tool calls once every candidate has been inspected and the requested
+coverage/quality boundaries are reported.
 
 A profile is optional. Without it the first version screens shape changes but
 does not automatically confirm mechanical inconsistency. Read

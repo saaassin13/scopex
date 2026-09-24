@@ -23,6 +23,10 @@ EPOCH = datetime(1970, 1, 1)
 MM_PER_COUNT = 501.144 / 4096
 DEFAULT_SPEED_WINDOW_MS = 200
 DECISION_CONTEXT_MS = 1000
+# Dense per-call pages: full evidence stays in the saved snapshot; agents page
+# with --offset or --context-ms when a candidate needs a closer look.
+INSPECT_TRACE_LIMIT = 4
+INSPECT_CONTEXT_SLICE = 3
 MAX_PLOT_POINTS = 20000
 STAMP = re.compile(r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}:\d{3})(?!\d)")
 RAW = re.compile(r"\bGet EncoderVal, raw\[(-?\d+)\]")
@@ -344,6 +348,33 @@ def public_candidate(state, candidate):
     return result
 
 
+def plot_summary(state, *, include_panels=False):
+    plots = state.get("plots")
+    if not isinstance(plots, dict):
+        return None
+    artifacts = plots.get("artifacts")
+    compact_artifacts = []
+    if isinstance(artifacts, list):
+        for artifact in artifacts:
+            if not isinstance(artifact, dict):
+                continue
+            keys = ["kind", "candidate_id", "filename", "path", "sha256", "bytes"]
+            if include_panels:
+                keys.append("panels")
+            compact = {key: artifact[key] for key in keys if key in artifact}
+            compact_artifacts.append(compact)
+    return {
+        "status": plots.get("status"),
+        "output_dir": plots.get("output_dir"),
+        "analysis_id": plots.get("analysis_id"),
+        "artifacts": compact_artifacts,
+        "candidates_requested": plots.get("candidates_requested", []),
+        "candidates_available": plots.get("candidates_available"),
+        "plot_points_limit": plots.get("plot_points_limit"),
+        "raw_only": plots.get("raw_only"),
+    }
+
+
 def report(state, offset=0, limit=5):
     reviewed = state["reviews"]
     confirmed = [v for v in reviewed.values() if v["status"] == "confirmed_raw_anomaly"]
@@ -387,10 +418,11 @@ def report(state, offset=0, limit=5):
             "gaps": state["gaps"][:8], "gaps_omitted": max(0, len(state["gaps"]) - 8),
             "issues": state["issues"][:8], "issues_total": len(state["issues"]),
             "inputs": state["inputs"], "profile": state["profile"], "limitations": LIMITATIONS,
-            "plots": state.get("plots")}
+            "plots": plot_summary(state)}
 
 
-def inspect(state, candidate_id=None, start=None, end=None, context_ms=1000, offset=0, limit=12):
+def inspect(state, candidate_id=None, start=None, end=None, context_ms=1000, offset=0,
+            limit=INSPECT_TRACE_LIMIT):
     rows = state["samples"]
     if not rows:
         raise ValueError("No raw samples in this analysis")
@@ -509,9 +541,10 @@ def inspect(state, candidate_id=None, start=None, end=None, context_ms=1000, off
                         "right_complete": times[-1] - times[hi] >= context_ms and not any(q["blocked"] for q in state["pairs"][hi:b - 1])},
             "evidence": evidence, "trace": trace, "trace_offset": offset,
             "next_offset": offset + limit if a + offset + limit < b else None,
-            "counter_log_context": relevant[:8], "counter_log_context_omitted": max(0, len(relevant) - 8),
-            "decision_counter_log_context": decision_relevant[:8],
-            "decision_counter_log_context_omitted": max(0, len(decision_relevant) - 8),
+            "counter_log_context": relevant[:INSPECT_CONTEXT_SLICE],
+            "counter_log_context_omitted": max(0, len(relevant) - INSPECT_CONTEXT_SLICE),
+            "decision_counter_log_context": decision_relevant[:INSPECT_CONTEXT_SLICE],
+            "decision_counter_log_context_omitted": max(0, len(decision_relevant) - INSPECT_CONTEXT_SLICE),
             "next_action": "Inspect the remaining candidates and report the full window; a confirmed result does not stop review."
                 if shape_only or confirmed else
                 "report"}
@@ -744,7 +777,7 @@ def main(argv=None):
     plot_ap.add_argument("--max-points", type=int, default=MAX_PLOT_POINTS)
     for sub in (detail, final):
         sub.add_argument("--offset", type=int, default=0)
-        sub.add_argument("--limit", type=int, default=12 if sub is detail else 5)
+        sub.add_argument("--limit", type=int, default=INSPECT_TRACE_LIMIT if sub is detail else 5)
     args = ap.parse_args(argv)
     try:
         if args.operation == "scan":
@@ -774,6 +807,7 @@ def main(argv=None):
                                    args.speed_window_ms, args.max_points)
             state["plots"] = result
             save(args.analysis, state)
+            result = plot_summary(state, include_panels=True)
         else:
             if args.offset < 0 or not 1 <= args.limit <= 32:
                 raise ValueError("offset must be nonnegative; limit must be 1..32")

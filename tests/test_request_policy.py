@@ -113,6 +113,34 @@ class RequestPolicyTests(unittest.TestCase):
         with self.assertRaises(ContextBudgetExceeded):
             policy.validate(body)
 
+    def test_base64_image_data_is_not_double_billed_as_text(self):
+        """Regression: 2x190k-char data URIs must not be rejected on a 65536 window.
+
+        The serving stack prices attached images as vision tokens; charging the
+        base64 transport encoding as text tokens as well rejected in-flight
+        image turns that actually fit (task-d711f848cb25 wire-08).
+        """
+        policy = OpenClawRequestPolicy(
+            "local-model",
+            2048,
+            frozenset({"read", "exec", "process", "view_image"}),
+            context_window=65536,
+        )
+        body = toolless_payload()
+        body["tools"] = [{"type": "function", "function": {"name": "read", "parameters": {}}}]
+        body["messages"].append({
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "inspect these plots"},
+                {"type": "image_url", "image_url": {"url": "data:image/png;base64," + "A" * 190000}},
+                {"type": "image_url", "image_url": {"url": "data:image/png;base64," + "B" * 190000}},
+            ],
+        })
+        budget = policy.validate(body)
+        self.assertTrue(budget.fits)
+        self.assertEqual(budget.image_count, 2)
+        self.assertLess(budget.estimated_input_tokens, 5000)
+
 
 if __name__ == "__main__":
     unittest.main()

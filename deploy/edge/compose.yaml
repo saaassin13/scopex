@@ -25,7 +25,7 @@ services:
       - --port
       - "8000"
       - --max-model-len
-      - "32768"
+      - "98304"
       - --max-num-seqs
       - "1"
       - --gpu-memory-utilization
@@ -55,7 +55,7 @@ services:
     image: ${SCOPEX_RUNTIME_IMAGE}
     container_name: scopex-runtime
     restart: "no"
-    stop_grace_period: 1220s
+    stop_grace_period: 1820s
     network_mode: host
     user: ${SCOPEX_UID}:${SCOPEX_GID}
     group_add:
@@ -100,9 +100,9 @@ services:
       - "8787"
       - --allow-trusted-network-bind
       - --timeout
-      - "1200"
+      - "1800"
       - --max-requests
-      - "16"
+      - "48"
       - --max-tokens
       - "2048"
       - --max-active-tasks
@@ -116,6 +116,8 @@ services:
       - --collection-max-files
       - ${SCOPEX_COLLECTION_MAX_FILES:-5000}
       - --enable-compaction
+      - --context-window
+      - "98304"
       - --enable-view-image
     read_only: true
     tmpfs:

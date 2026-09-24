@@ -70,10 +70,10 @@ class OpenClawRuntimeFactory:
             raise ValueError("workspace symlink is not allowed")
         if not config.docker_host.startswith("unix://"):
             raise ValueError("local Runtime API requires a Unix Docker socket")
-        if not 60 <= config.timeout_s <= 1200:
-            raise ValueError("timeout_s must be between 60 and 1200")
-        if not 2 <= config.max_requests <= 30:
-            raise ValueError("max_requests must be between 2 and 30")
+        if not 60 <= config.timeout_s <= 1800:
+            raise ValueError("timeout_s must be between 60 and 1800")
+        if not 2 <= config.max_requests <= 64:
+            raise ValueError("max_requests must be between 2 and 64")
         if config.context_window <= config.max_tokens + config.context_safety_margin_tokens:
             raise ValueError("context_window must exceed max_tokens plus safety margin")
         if config.context_safety_margin_tokens < 0:

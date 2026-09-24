@@ -59,9 +59,13 @@ class EdgeDeploymentTests(unittest.TestCase):
         compose = (ROOT / "deploy" / "edge" / "compose.yaml").read_text()
         self.assertIn("/usr/bin/docker:/usr/local/bin/docker:ro", compose)
         self.assertIn("      - --enable-compaction", compose)
-        self.assertIn("    stop_grace_period: 1220s", compose)
-        self.assertIn('      - "1200"', compose)
+        # Grace period must exceed the runtime turn timeout so a scoped stop
+        # never truncates a running turn; both track the 1800s budget.
+        self.assertIn("    stop_grace_period: 1820s", compose)
+        self.assertIn('      - "1800"', compose)
         self.assertIn("      - --max-num-seqs\n      - \"1\"", compose)
+        self.assertIn('      - "98304"', compose)
+        self.assertIn('      - "48"', compose)
 
 if __name__ == "__main__":
     unittest.main()

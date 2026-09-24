@@ -233,7 +233,44 @@ vLLM 镜像和模型升级需要单独准备、验证；不包含在 Runtime/San
 无需因本次修改重新制作镜像。Compose 已显式开启 `--enable-compaction`，运行时同时
 启用 `agents.defaults.compaction.midTurnPrecheck.enabled=true`，保留不自动重启的部署策略。
 启动日志应显示 `compaction: enabled`，新任务生成的 OpenClaw 配置应同时包含
-`agents.defaults.compaction.enabled=true` 与 `agents.defaults.compaction.midTurnPrecheck.enabled=true`。
+`agents.defaults.compaction.enabled=true`、`agents.defaults.compaction.midTurnPrecheck.enabled=true`
+和 `agents.defaults.compaction.keepRecentTokens=8192`。该值为有界近期上下文保留量，
+为工具结果和原生 overflow recovery 留出工作区；不扩大 vLLM 的模型上下文窗口。
+
+### 上下文窗口扩容（2026-09-24）
+
+OpenClaw（含 2026.9.6）对 compaction reserve 有硬编码下限 `2e4` tokens且已将该调优项
+退役，mid-turn prompt 预算恒等于 `max_model_len - 20000`。在 32768 窗口下预算仅 12768
+tokens，多步工具任务（如编码器全窗口分析）必然溢出且压缩无法恢复。当日先把 vLLM
+`--max-model-len` 与 ScopeX `--context-window` 提升至 65536（prompt 预算 45536），
+经全窗口任务实测后最终定为 98304（见下方"最终预算定型"）；现网 KV cache（8 GiB）
+容量实测 114k–124k tokens，两档扩容均不增加显存。验收时确认 vLLM 启动日志
+`max_model_len=98304`，且新任务 wire 审计中 `context_budget.context_window=98304`。
+
+同日补充：OpenClaw 原生 compaction 的嵌入式安全超时默认 180 秒，低于本地 vLLM 单并发
+~7.7 tokens/s 吞吐下一次完整 summarization 生成（约 270 秒），导致 65536 窗口下首次
+真实压缩在中途被断开（BrokenPipe 后报 "Compaction timed out"）。生成的 OpenClaw 配置
+现显式设置 `agents.defaults.compaction.timeoutSeconds=600`。同时 encoder-health 的
+inspect 默认页密度收紧（trace 4 行、控制日志上下文各 3 条，`--offset`/`--limit`/
+`--context-ms` 分页语义不变），单次输出约减半，16 候选全窗口分析在 45536 预算内
+无需压缩即可完成。上述两项生效后，完整窗口任务继续暴露 ScopeX 自身
+`--max-requests 16` 上限不足（16 候选 inspect 加 report 分页与最终回答约需 23–25 次模型
+调用，实测第 17 次请求被 ModelProxy 以 422 拒绝、状态正确落 FAILED+unavailable）；
+edge `--max-requests` 提升至 32，factory 校验范围同步放宽到 2–64。
+
+随后修复请求预算估算的双重计费：`view_image` 之后的请求把 base64 图片数据同时按
+文本字符上界与图片 token 预留计费（task-d711f848cb25 wire-08 实测 20.6k 文本 + 两张
+data URI 被估为 212k tokens 而本地拒绝）。估算方法升级为 `utf8-json-upper-bound-v2`：
+已识别并计入 `image_tokens` 的 image_url 数据 URI 字符不再参与文本上界，同一 payload
+复算为 23k tokens、正常放行；短 URL 与图片预留语义不变。
+
+最终预算定型（task-f6f94604aaf6 实测后）：全窗口编码器任务真实需求为 46k prompt、
+~28 次模型调用（含 view_image 与 report 分页）、约 900 秒；65536/32/1200s 的配置在
+第 33 次调用处以 478 tokens 之差触发 precheck 溢出，且 compaction 恢复请求被 32 次
+上限拒绝。edge 最终值：vLLM 与 ScopeX 窗口 98304（prompt 预算 78304；模型原生
+262144、KV cache 约 121k tokens）、`--max-requests 48`、turn `--timeout 1800`（含一次
+600 秒 compaction 的余量）、`stop_grace_period 1820s`；factory 的 timeout_s 校验上限
+同步放宽到 1800。
 
 复查固定时间窗 `2026-09-15 17:56:13` 至 `2026-09-15 18:26:13`，确认完整交付，
 并保留归零、瞬时回归及采样缺口的区别。另验证一次足够长的上下文确实触发原生

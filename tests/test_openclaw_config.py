@@ -33,6 +33,8 @@ class OpenClawConfigTests(unittest.TestCase):
         self.assertEqual(defaults["thinkingDefault"], "off")
         self.assertTrue(defaults["compaction"]["enabled"])
         self.assertTrue(defaults["compaction"]["midTurnPrecheck"]["enabled"])
+        self.assertEqual(defaults["compaction"]["keepRecentTokens"], 8192)
+        self.assertEqual(defaults["compaction"]["timeoutSeconds"], 600)
         self.assertFalse(defaults["compaction"]["memoryFlush"]["enabled"])
         self.assertFalse(cfg["agents"]["entries"]["sx1"]["memory"]["search"]["enabled"])
         self.assertEqual(sandbox["workspaceAccess"], "ro")
@@ -55,6 +57,7 @@ class OpenClawConfigTests(unittest.TestCase):
         cfg = build_openclaw_config(replace(self.spec(), compaction_enabled=False))
         self.assertFalse(cfg["agents"]["defaults"]["compaction"]["enabled"])
         self.assertFalse(cfg["agents"]["defaults"]["compaction"]["midTurnPrecheck"]["enabled"])
+        self.assertEqual(cfg["agents"]["defaults"]["compaction"]["keepRecentTokens"], 8192)
         self.assertFalse(cfg["agents"]["entries"]["sx1"]["memory"]["search"]["enabled"])
 
     def test_read_only_data_binds_use_openclaw_docker_binds(self):

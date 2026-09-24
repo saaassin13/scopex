@@ -159,6 +159,46 @@ class OpenClawTaskRuntimeTests(unittest.TestCase):
         self.assertEqual(first_meta["context_budget"]["context_window"], 32768)
         self.assertTrue(first_meta["context_budget"]["fits"])
 
+    def test_stderr_overflow_is_propagated_as_context_reason(self):
+        cli = self.root / "overflow-openclaw"
+        cli.write_text(
+            "#!/usr/bin/env python3\n" + textwrap.dedent(
+                """
+                import sys
+                sys.stderr.write("[context-overflow-midturn-precheck] Context overflow: prompt too large for the model.\\n")
+                print("Context overflow: prompt too large for the model.")
+                raise SystemExit(1)
+                """
+            ),
+            encoding="utf-8",
+        )
+        cli.chmod(0o755)
+        runtime, _events = self.make_runtime(spec=replace(self.spec(), cli_path=cli))
+        result = runtime.run_turn("overflow", turn_name="turn-overflow")
+        self.assertEqual(result.context_reason, "context_overflow")
+        self.assertIn("context_overflow", result.context_events)
+        self.assertEqual(result.process.returncode, 1)
+
+    def test_structured_answer_mentioning_overflow_is_not_classified(self):
+        cli = self.root / "quoted-overflow-openclaw"
+        cli.write_text(
+            "#!/usr/bin/env python3\n" + textwrap.dedent(
+                """
+                import json
+                print(json.dumps({
+                    "meta": {"executionTrace": {"fallbackUsed": False}},
+                    "payloads": [{"text": "说明 Context overflow: prompt too large for the model. 是框架提示。", "isReasoning": False}]
+                }))
+                """
+            ),
+            encoding="utf-8",
+        )
+        cli.chmod(0o755)
+        runtime, _events = self.make_runtime(spec=replace(self.spec(), cli_path=cli))
+        result = runtime.run_turn("quoted overflow", turn_name="turn-quoted-overflow")
+        self.assertIsNone(result.context_reason)
+        self.assertTrue(result.cli_outcome.completed)
+
     def test_requested_stop_blocks_before_model_forward(self):
         stop = SafeStopGate()
         stop.request("user stop")

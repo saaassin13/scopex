@@ -10,6 +10,11 @@ APPROVED_TOOLS = frozenset({"read", "exec", "process", "view_image", "progress_c
 EXEC_HOSTS = frozenset({"sandbox", "gateway", "node"})
 EXEC_MODES = frozenset({"deny", "allowlist", "ask", "auto", "full"})
 TASK_SCRATCH_PATH = "/task-scratch"
+DEFAULT_COMPACTION_KEEP_RECENT_TOKENS = 8192
+# The OpenClaw embedded default is 180s; a full summarization generation on the
+# local single-sequence vLLM needs ~270s, so native compaction must be allowed
+# to run longer than that to ever succeed.
+DEFAULT_COMPACTION_TIMEOUT_SECONDS = 600
 
 
 @dataclass(frozen=True, slots=True)
@@ -52,6 +57,8 @@ class OpenClawConfigSpec:
     exec_mode: str = "full"
     container_prefix: str = "scopex-"
     compaction_enabled: bool = True
+    compaction_keep_recent_tokens: int = DEFAULT_COMPACTION_KEEP_RECENT_TOKENS
+    compaction_timeout_seconds: int = DEFAULT_COMPACTION_TIMEOUT_SECONDS
 
 
 def _require_loopback_v1(url: str) -> None:
@@ -118,6 +125,10 @@ def build_openclaw_config(spec: OpenClawConfigSpec) -> dict:
         raise ValueError("uid/gid must be non-negative")
     if spec.timeout_s <= 0 or spec.request.max_tokens <= 0 or spec.context_window <= spec.request.max_tokens:
         raise ValueError("timeouts/token limits/context window are invalid")
+    if not 1 <= spec.compaction_keep_recent_tokens < spec.context_window:
+        raise ValueError("compaction keepRecentTokens must be positive and below context window")
+    if spec.compaction_timeout_seconds <= 0:
+        raise ValueError("compaction timeoutSeconds must be positive")
     if spec.request.enable_thinking is not False:
         raise ValueError("ScopeX validated OpenClaw runtime requires thinking=false")
     if not spec.tools:
@@ -212,6 +223,13 @@ def build_openclaw_config(spec: OpenClawConfigSpec) -> dict:
                 "compaction": {
                     "enabled": spec.compaction_enabled,
                     "midTurnPrecheck": {"enabled": spec.compaction_enabled},
+                    # Keep a bounded recent tail while leaving the remainder of the
+                    # model context available for tool results and recovery.
+                    "keepRecentTokens": spec.compaction_keep_recent_tokens,
+                    # The embedded default (180s) is shorter than one summarization
+                    # generation on the local vLLM (~7.7 tok/s output); give the
+                    # native compaction room to finish instead of aborting mid-stream.
+                    "timeoutSeconds": spec.compaction_timeout_seconds,
                     # Memory Search / durable memory remain disabled for Step 6.
                     # Compaction only keeps one long-running task/session usable.
                     "memoryFlush": {"enabled": False},

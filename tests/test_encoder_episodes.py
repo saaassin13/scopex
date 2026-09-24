@@ -71,6 +71,9 @@ class RawReviewTests(unittest.TestCase):
             proc, summary = cli("report", state_path)
             self.assertEqual(proc.returncode, 0, proc.stderr)
             self.assertEqual(summary["plots"]["status"], "plots_written")
+            self.assertEqual(len(summary["plots"]["artifacts"]), 2)
+            self.assertNotIn("sample_count", summary["plots"]["artifacts"][0])
+            self.assertNotIn("panels", summary["plots"]["artifacts"][0])
 
     def test_suspected_then_confirmed_does_not_require_resolving_first(self):
         s = analyze([(100, 10)] * 30 + [(100, 30)] * 30 + [(100, 500)] + [(100, 10)] * 30,

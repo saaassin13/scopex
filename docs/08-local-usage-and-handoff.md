@@ -70,9 +70,10 @@ POST /runs 或定时触发
 |---|---|
 | 原生 compaction | CLI/LocalRuntimeConfig 默认 false；edge Compose 显式 --enable-compaction |
 | OpenClaw | Runtime Dockerfile 安装版本2026.9.2；现场有效版本仍以运行资产为准 |
+| 上下文窗口 | vLLM `--max-model-len` 与 ScopeX `--context-window` 均为 98304（2026-09-24 晚，实测全窗口任务需 46k prompt、~28 次调用后从 65536 再上调）；OpenClaw mid-turn prompt 预算恒为 `窗口-20000`（reserve 硬下限、调优项已退役），现值 78304；模型原生 262144，KV cache 实测约 121k tokens（98304 为上限内的安全值），扩容不增加显存 |
 | 图片 | edge.env 默认 SCOPEX_IMAGE_LIMIT=12，同时供 vLLM 和 ScopeX；通用默认4，每次view_image最多2 |
 | 并发/等待 | 2活动、16等待、600秒排队；活动名额范围1–4 |
-| 调查预算 | edge turn 1200秒、模型请求16、每次输出2048 tokens；CLI通用默认仍为600秒，不是端到端绝对耗时承诺 |
+| 调查预算 | edge turn 1800秒、模型请求48（CLI 默认仍 16/600秒）、每次输出2048 tokens；1800 容纳一次 600秒原生 compaction 加余下调查，不是端到端绝对耗时承诺 |
 | 模型 | served id=qwen3.8-27b-nvfp4，本机18002/v1；Compose max-num-seqs=1 |
 | API | CLI默认loopback；edge显式绑定VPN IP及可信网络参数；不是任意公网开放 |
 | 目录 | app/代码、config/设备配置、data/运行资产、model/权重分离 |
