@@ -193,6 +193,7 @@ docker compose --env-file /opt/ScalingRobotics/scopex/config/edge.env --env-file
 | `SCOPEX_RUNTIME_IMAGE` | `scopex-runtime:2026.09.15` |
 | `SCOPEX_SANDBOX_IMAGE` | `scopex-sandbox-analysis:2026.09.15` |
 | `SCOPEX_API_KEY` | 默认空；这是 ScopeX 请求模型的凭据，填写不会自动为 vLLM 开启鉴权 |
+| `SCOPEX_MONITOR_ENABLED` 等 | 牛掉落监控相关变量与 `config/monitor.json`，见第 10 节 |
 
 **修改日志或图片路径时，还必须同步修改 `app/config/data-catalog.json` 中对应数据源的 `host_path`。** 当前没有自动联动。`agent_path` 保持原值；数据时间戳时区在对应 `layout.timezone` 配置，应依据数据来源确认。
 
@@ -226,6 +227,62 @@ vLLM 镜像和模型升级需要单独准备、验证；不包含在 Runtime/San
 ## 9. 数据保留
 
 不要执行 `docker compose down -v`，不要对 `/opt/ScalingRobotics/scopex/` 整体使用 `rsync --delete`。代码同步的删除范围仅限 `app/`。停止、启动及导入镜像无需删除任务历史或工作区。
+
+## 10. 监控服务（牛掉落，可选）
+
+监控是独立的 compose 服务（`monitor` profile），**默认关闭**——不启用时部署行为与第 3/6 节完全一致。启用后拓扑：
+
+```
+相机 192.168.40.96 ──(仅端侧可路由)──> 端侧 10.200.0.14（ssh 隧道转发，零新增进程）
+workstation 宿主 autossh -L 127.0.0.1:8554 -> 192.168.40.96:554
+scopex-monitor 容器（host 网络）ffmpeg 拉 127.0.0.1:8554 → 检测 → 事件落 data/monitor/cow-fall/
+scopex-runtime 容器 127.0.0.1:8790 控制监控；页面"常驻监控"启停/看事件/发起模型确认
+```
+
+### 10.1 镜像
+
+`deploy/edge/build-images.sh` 会额外构建 `scopex-monitor`（`docker/monitor.Dockerfile`：分析沙箱镜像 + ffmpeg + onnxruntime），并在构建时验证 `cv2/numpy/onnxruntime` 同进程导入与 ffmpeg 可用。`export-images.sh` / `import-images.sh` 已包含 `monitor.tar.gz`。
+
+已部署环境首次启用监控：只需在准备机导出镜像、传输后 `docker load < monitor.tar.gz`（其余镜像不变），不需要走第 8 节全量流程。
+
+### 10.2 配置（全部走配置文件）
+
+**`config/edge.env`**（第 7 节体系，0600）追加：
+
+| 配置项 | 说明 |
+| --- | --- |
+| `SCOPEX_MONITOR_ENABLED` | `1` 启用；start.sh 据此加载 compose monitor profile 并做镜像/目录预检 |
+| `SCOPEX_MONITOR_IMAGE` | 默认 `scopex-monitor:2026.09.26` |
+| `SCOPEX_MONITOR_MODEL_DIR` | 默认 `/opt/ScalingRobotics/scopex/models-monitor`（内含 yolov8n-coco.onnx） |
+| `COW_FALL_RTSP_URL` | 完整 RTSP 地址（含凭据）。凭据经 compose environment 注入，`docker inspect` 对 docker 组成员可见——与 `SCOPEX_API_KEY` 同一信任层级 |
+
+**`config/monitor.json`**（首次启用时 start.sh 自动从 `deploy/edge/monitor.json.example` 拷贝，0600）：相机标识、`scopex_api_url`（**必须填本机 VPN IP 的 `http://<VPN_IP>:8787`，ScopeX 不监听 127.0.0.1**）、`auto_start`（容器启动即拉流）、`auto_confirm`（事件自动建模型确认任务，默认关）、看门狗/退避/保留策略。检测区域来自**监控标定页面**的当前启用版本（`data/calibrations/<camera>/`），启动时合成；启用新版本后在页面"常驻监控"里点"重启以应用新标定"。
+
+### 10.3 ssh 隧道常驻
+
+workstation 上以 systemd 用户级服务维持隧道（模板 `deploy/systemd/cow-fall-tunnel.service`）：
+
+```bash
+# 前置：apt install autossh；首次 ssh scaling@10.200.0.14 完成免密登录
+mkdir -p ~/.config/systemd/user
+cp app/deploy/systemd/cow-fall-tunnel.service ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now cow-fall-tunnel
+loginctl enable-linger "$USER"   # 注销后隧道保持
+```
+
+隧道必须绑定回环（模板已写 `-L 127.0.0.1:8554:...`）。**不要写 `-L 8554:...` 或 `-L *:8554`**——那会把相机流暴露到 VPN 网段。
+
+### 10.4 启用与验收
+
+1. `config/edge.env` 置 `SCOPEX_MONITOR_ENABLED=1` 并填 `COW_FALL_RTSP_URL`；确认标定页面已有启用版本。
+2. `./deploy/edge/start.sh`（重启全部服务）；`docker ps` 应见 `scopex-monitor`（healthy）。
+3. 页面"常驻监控"：点启动 → 状态变"运行中"、画面延迟秒级、无重启计数增长。
+4. **拔隧道演练**：`systemctl --user stop cow-fall-tunnel`，60 秒内监控页应出现"画面无新帧"并自动重启退避；`start` 隧道后监控自动恢复运行（退避序列 5/10/20/60s）。
+5. 确认链路（建议 `auto_confirm` 先保持关，手动在事件上点"发确认"）：确认任务能读到 `/agent-data/cow-fall/events/<id>/` 的帧并给出结论（依赖 `config/data-catalog.json` 的 `cow_fall_events` 源与 start.sh 预建目录）。真实 1080p 帧 view_image 抽样 2~4 张在图片额度内。
+6. 观察半天~一天无异常事件（正常场景零误报为基线，见 docs/monitoring/01-cow-fall-monitor.md）。
+
+事件档案默认保留 30 天且至少 50 个（`monitor.json` 可调）；监控日志 `docker logs scopex-monitor`（10MB×3 轮转）。
 
 ### 编码器与上下文修复的部署验收（2026-09-15）
 

@@ -126,7 +126,9 @@ POST /runs 或定时触发
 
 **下一步（按依赖序）**：① RTSP 凭据就绪后经 ssh 隧道实时接入（CLI 已支持，全链路已验证）；② workstation 常驻部署（先手动进程）；③ 真实掉落样本验证；④ VLM 确认任务接入（ScopeX API 建任务读事件帧目录）；⑤ 页面启停入口与事件列表。
 
-**提交状态**：牛掉落模块已提交（c793a20，22 文件：monitor/cow_fall 全模块、7 个测试文件、scan_foreground.py、设计文档与 zones 标定 JSON 及本 handoff），分支 `feature/video-inference-validation`，未推送；此前上下文链路修复为 605d7ca。端侧 10.200.0.14 全程只读（本次仅复制录像），未动任务服务。
+**功能补完与容器化（2026-09-26 第二轮，①②④⑤ 已实现，待部署验收）**：监控从"一次性 CLI"补完为可部署功能，全部走镜像与配置文件管理——`monitor/cow_fall/daemon.py`（会话守护：退避重启 5/10/20/60s + **帧龄看门狗**（ssh 隧道静默死亡时 ffmpeg 无限阻塞，唯一可靠信号是 latest 帧时间戳超 60s）+ 孤儿事件收尾 + 事件保留清理 + 127.0.0.1:8790 控制面 + 单 worker 带冷却的自动确认）；`docker/monitor.Dockerfile`（沙箱镜像 + ffmpeg + onnxruntime，build/export/import 脚本同步）；compose `monitor` profile（`SCOPEX_MONITOR_ENABLED=1` 启用，默认零影响，host 网络 + UID 对齐 + unless-stopped + healthcheck）；ScopeX API `/monitor/*` 代理（503 语义）；catalog 增 `cow_fall_events` 源（确认任务经 `/agent-data/cow-fall/` 读帧，`scopex_api_url` 必须用 VPN IP——ScopeX 不监听回环）；前端按任务三类重组导航（临时任务/定期任务/常驻监控/监控标定），常驻监控页含启停、标定版本不一致"重启生效"、事件列表与抽稀帧图、手动/自动确认。部署步骤与验收（含拔隧道演练）见 deployment.md 第 10 节。测试：daemon 27 项、代理 6 项、部署资产断言同步。剩余：用户按文档部署 workstation 并验收；真实掉落样本召回仍未验证（③）。
+
+**提交状态**：牛掉落检测内核已提交（c793a20）；编码器修复/直白化/标定页面与监控功能补完在分支 `feature/video-inference-validation` 后续提交（fc62b7b、52ada6c、7522619 起），未推送。端侧 10.200.0.14 全程只读（仅复制录像与 RTSP 验证），未动任务服务。
 
 编码器 PNG 只是从同一 raw 快照生成的 `working-derived` 可视化，不是原始图片 Evidence；task-149b8b45c37d 报告的 R6 已由用户确认为问题数据（同窗口其余 15 候选 compatible_motion），但整体检测仍无准确率/召回率/误报率统计，`no_anomaly_evidence`、`compatible_motion` 和无 raw 结果均不能写成设备健康证明。
 

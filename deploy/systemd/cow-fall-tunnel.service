@@ -1,0 +1,28 @@
+# Cow-fall camera RTSP tunnel: forward the camera (reachable only from the
+# edge host) to workstation loopback for the scopex-monitor container.
+#
+# Install as a systemd USER unit (see docs/deployment.md 第 10.3 节):
+#   mkdir -p ~/.config/systemd/user
+#   cp app/deploy/systemd/cow-fall-tunnel.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload && systemctl --user enable --now cow-fall-tunnel
+#   loginctl enable-linger "$USER"
+#
+# The forward binds 127.0.0.1 on purpose. NEVER widen it to -L 8554:... or
+# -L *:8554 - that would expose the camera stream to the VPN segment.
+[Unit]
+Description=Cow-fall camera RTSP tunnel via edge host
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=/usr/bin/autossh -M 0 -N \
+  -o ServerAliveInterval=30 \
+  -o ServerAliveCountMax=3 \
+  -o ExitOnForwardFailure=yes \
+  -L 127.0.0.1:8554:192.168.40.96:554 \
+  scaling@10.200.0.14
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target
