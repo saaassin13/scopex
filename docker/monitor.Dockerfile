@@ -3,12 +3,14 @@
 # onnxruntime for the YOLO detector. Built on the already validated
 # sandbox layer so cv2/numpy stay the apt versions the sandbox tests cover.
 #
-# pip installs against the TUNA mirror like the other offline builds.
-# onnxruntime is version-pinned for reproducibility; override with
-# --build-arg ONNXRUNTIME_VERSION=... The system numpy (1.26 via apt)
-# already satisfies onnxruntime's requirement, so pip keeps it and the
-# apt-built cv2 stays ABI-compatible - build-images.sh re-verifies the
-# three imports in one process to catch any regression here.
+# The sandbox base already points apt at the TUNA mirror (see
+# sandbox-analysis.Dockerfile), so this layer only installs packages.
+# python3-pip is required: the sandbox ships no pip module. onnxruntime
+# is version-pinned for reproducibility; override with --build-arg
+# ONNXRUNTIME_VERSION=... (aarch64 wheels exist since 1.20). The system
+# numpy (apt) already satisfies onnxruntime's requirement, so pip keeps
+# it and the apt-built cv2 stays ABI-compatible - build-images.sh
+# re-verifies the three imports in one process to catch regressions.
 #
 # Example:
 #   docker build \
@@ -25,14 +27,9 @@ USER root
 
 RUN set -eux; \
     command -v apt-get >/dev/null || { echo 'apt-get unavailable in base image' >&2; exit 1; }; \
-    . /etc/os-release; \
-    case "${ID:-}" in \
-      ubuntu) echo "deb https://mirrors.tuna.tsinghua.edu.cn/ubuntu/ ${VERSION_CODENAME:-noble} main universe" > /etc/apt/sources.list ;; \
-      debian) echo "deb https://mirrors.tuna.tsinghua.edu.cn/debian/ ${VERSION_CODENAME:-bookworm} main" > /etc/apt/sources.list ;; \
-      *) echo "unsupported apt base distribution: ${ID:-unknown}" >&2; exit 1 ;; \
-    esac; \
     apt-get update; \
-    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ffmpeg; \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        ffmpeg python3-pip; \
     rm -rf /var/lib/apt/lists/*; \
     python3 -m pip install --break-system-packages \
         --index-url "$TUNA_PYPI" \
