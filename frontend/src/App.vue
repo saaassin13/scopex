@@ -14,8 +14,9 @@ import ActivityPanel from './components/ActivityPanel.vue'
         </span>
       </RouterLink>
       <nav class="topnav">
-        <RouterLink to="/">任务与对话</RouterLink>
-        <RouterLink to="/schedules">定时任务</RouterLink>
+        <RouterLink to="/">临时任务</RouterLink>
+        <RouterLink to="/schedules">定期任务</RouterLink>
+        <RouterLink to="/monitor">常驻监控</RouterLink>
         <RouterLink to="/calibrations">监控标定</RouterLink>
       </nav>
       <ActivityPanel />

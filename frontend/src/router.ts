@@ -4,6 +4,7 @@ import SchedulesView from './views/SchedulesView.vue'
 import ScheduleHistoryView from './views/ScheduleHistoryView.vue'
 import TaskView from './views/TaskView.vue'
 import CalibrationView from './views/CalibrationView.vue'
+import MonitorView from './views/MonitorView.vue'
 
 export default createRouter({
   history: createWebHashHistory(),
@@ -13,5 +14,6 @@ export default createRouter({
     { path: '/schedules/:id/history', name: 'schedule-history', component: ScheduleHistoryView },
     { path: '/tasks/:id', name: 'task', component: TaskView },
     { path: '/calibrations', name: 'calibrations', component: CalibrationView },
+    { path: '/monitor', name: 'monitor', component: MonitorView },
   ],
 })

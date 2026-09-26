@@ -180,6 +180,45 @@ export interface CalibrationSaveResult {
   verify: { status: string; note: string; command: string }
 }
 
+export interface MonitorCalibration {
+  camera: string
+  version: number
+  source: string
+}
+
+export type MonitorState = 'running' | 'stopped' | 'backoff' | 'starting' | 'error'
+
+export interface MonitorStatus {
+  state: MonitorState
+  user_stopped: boolean
+  frame_age_s: number | null
+  restart_count: number
+  backoff_wait_s: number | null
+  session_started_at: number | null
+  source: string | null
+  running_calibration: MonitorCalibration | null
+  active_calibration: MonitorCalibration | null
+  auto_confirm: boolean
+  camera: string
+  output_root: string
+  last_error: string | null
+}
+
+export interface MonitorEvent {
+  schema: number
+  event_id: string
+  status: 'open' | 'closed'
+  rules: string[]
+  opened_at: number
+  last_seen_at: number
+  center: number[]
+  confirm_task_id?: string | null
+  confirm_error?: string | null
+  frame_count: number
+  pre_count: number
+  post_count: number
+}
+
 export interface DataPackageOption {
   mode: DataPackageMode
   label: string

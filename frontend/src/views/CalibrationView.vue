@@ -29,6 +29,7 @@ const note = ref('')
 const canvas = ref<HTMLCanvasElement | null>(null)
 const image = ref<HTMLImageElement | null>(null)
 const dragIndex = ref<{ list: 'carousel' | 'line' | 'forbidden'; zone: number; point: number } | null>(null)
+const hoverPoint = ref<Point | null>(null)
 
 const steps = [
   '上传参考帧',
@@ -40,6 +41,22 @@ const steps = [
 
 const canSave = computed(() =>
   frameSize.value !== null && carousel.value.length >= 3 && step.value === 4)
+
+// 未画完不给进下一步，避免懵着走完保存出无效标定
+const stepBlockedHint = computed(() => {
+  if (step.value === 1 && carousel.value.length < 3)
+    return `转盘区域至少要 3 个点才能围成面（已点 ${carousel.value.length} 个）`
+  if (step.value === 2 && !forbidden.some((zone) => zone.length >= 3))
+    return '至少圈出一块禁区（3 个点以上），或点"按转盘自动生成"先出一版再修正'
+  return ''
+})
+
+const toolHint = computed(() => ({
+  carousel: '正在圈转盘（绿）：沿转盘外沿每点一下落一个点，虚线是连线预览；拖动圆点修正，右键删除。这一步只动转盘。',
+  forbidden: '正在圈禁区（红）：沿掉落物落地的地面边缘点击。转盘（绿）已锁定不会被碰到，到最后确认步可统一微调。',
+  line: '正在画平台线（蓝）：沿平台边缘点 2 个点即可，可跳过。',
+  edit: '微调模式：所有形状的顶点都可以拖动，右键删除。',
+}[tool.value]))
 
 onMounted(refresh)
 
@@ -143,6 +160,27 @@ function redraw() {
   }
   drawPolygon(carousel.value, '#2e9e5b', 'rgba(46,158,91,0.18)', true)
   forbidden.forEach((zone) => drawPolygon(zone, '#c0392b', 'rgba(192,57,43,0.18)', zone.length >= 3))
+  // 画点过程中的连线预览：最后一点 → 鼠标位置 →（多边形时）回到起点
+  const preview: { points: Point[]; stroke: string; close: boolean }[] = []
+  if (tool.value === 'carousel' && carousel.value.length) preview.push({ points: carousel.value, stroke: '#2e9e5b', close: true })
+  else if (tool.value === 'forbidden' && forbidden.length && forbidden[forbidden.length - 1].length)
+    preview.push({ points: forbidden[forbidden.length - 1], stroke: '#c0392b', close: true })
+  else if (tool.value === 'line' && line.value.length === 1) preview.push({ points: line.value, stroke: '#2563eb', close: false })
+  const hover = hoverPoint.value
+  if (hover) {
+    for (const { points, stroke, close } of preview) {
+      const last = points[points.length - 1]
+      ctx.setLineDash([6, 6])
+      ctx.beginPath()
+      ctx.moveTo(last[0] * scale, last[1] * scale)
+      ctx.lineTo(hover[0] * scale, hover[1] * scale)
+      if (close) ctx.lineTo(points[0][0] * scale, points[0][1] * scale)
+      ctx.strokeStyle = stroke
+      ctx.lineWidth = 2
+      ctx.stroke()
+      ctx.setLineDash([])
+    }
+  }
   if (line.value.length) {
     ctx.beginPath()
     ctx.moveTo(line.value[0][0] * scale, line.value[0][1] * scale)
@@ -183,35 +221,60 @@ function onCanvasClick(event: MouseEvent) {
   redraw()
 }
 
+// 每个步骤只允许拖动/删除当前正在画的形状；最后确认步（edit）全部放开统一微调
+function editableTargets(): { list: 'carousel' | 'line' | 'forbidden'; zone: number }[] {
+  if (tool.value === 'edit') {
+    const targets: { list: 'carousel' | 'line' | 'forbidden'; zone: number }[] = [
+      { list: 'carousel', zone: -1 },
+      { list: 'line', zone: -1 },
+    ]
+    forbidden.forEach((_, zone) => targets.push({ list: 'forbidden', zone }))
+    return targets
+  }
+  if (tool.value === 'carousel') return [{ list: 'carousel', zone: -1 }]
+  if (tool.value === 'line') return [{ list: 'line', zone: -1 }]
+  return forbidden.map((_, zone) => ({ list: 'forbidden' as const, zone }))
+}
+
+function pointsOf(target: { list: 'carousel' | 'line' | 'forbidden'; zone: number }): Point[] {
+  if (target.list === 'carousel') return carousel.value
+  if (target.list === 'line') return line.value
+  return forbidden[target.zone]
+}
+
 function onCanvasRightClick(event: MouseEvent) {
   const point = toFrameCoords(event)
-  const removeFrom = (list: Point[]) => {
-    const index = list.findIndex((p) => hitPoint(p, point))
-    if (index >= 0) list.splice(index, 1)
-    return index >= 0
+  for (const target of editableTargets()) {
+    const points = pointsOf(target)
+    const index = points.findIndex((p) => hitPoint(p, point))
+    if (index >= 0) {
+      points.splice(index, 1)
+      if (target.list === 'forbidden' && !points.length) forbidden.splice(target.zone, 1)
+      redraw()
+      return
+    }
   }
-  if (removeFrom(carousel.value) || removeFrom(line.value)) { redraw(); return }
-  for (const zone of forbidden) if (removeFrom(zone)) { redraw(); return }
 }
 
 function onCanvasDown(event: MouseEvent) {
   if (event.button !== 0) return
   const point = toFrameCoords(event)
-  const find = (list: Point[]): number => list.findIndex((p) => hitPoint(p, point))
-  let index = find(carousel.value)
-  if (index >= 0) { dragIndex.value = { list: 'carousel', zone: -1, point: index }; return }
-  index = find(line.value)
-  if (index >= 0) { dragIndex.value = { list: 'line', zone: -1, point: index }; return }
-  for (let z = 0; z < forbidden.length; z += 1) {
-    index = find(forbidden[z])
-    if (index >= 0) { dragIndex.value = { list: 'forbidden', zone: z, point: index }; return }
+  for (const target of editableTargets()) {
+    const index = pointsOf(target).findIndex((p) => hitPoint(p, point))
+    if (index >= 0) { dragIndex.value = { ...target, point: index }; return }
   }
 }
 
 function onMouseMove(event: MouseEvent) {
-  const drag = dragIndex.value
-  if (!drag) return
   const point = toFrameCoords(event)
+  const drag = dragIndex.value
+  if (!drag) {
+    if (hoverPoint.value?.[0] !== point[0] || hoverPoint.value?.[1] !== point[1]) {
+      hoverPoint.value = point
+      redraw()
+    }
+    return
+  }
   if (drag.list === 'carousel') carousel.value[drag.point] = point
   else if (drag.list === 'line') line.value[drag.point] = point
   else forbidden[drag.zone][drag.point] = point
@@ -219,6 +282,14 @@ function onMouseMove(event: MouseEvent) {
 }
 
 function stopDrag() { dragIndex.value = null }
+
+function onCanvasLeave() {
+  dragIndex.value = null
+  if (hoverPoint.value) {
+    hoverPoint.value = null
+    redraw()
+  }
+}
 
 function expandFromCarousel() {
   if (carousel.value.length < 3) {
@@ -324,10 +395,8 @@ watch(step, (value) => {
         <canvas v-else ref="canvas"
                 @click="onCanvasClick" @contextmenu.prevent="onCanvasRightClick"
                 @mousedown="onCanvasDown" @mousemove="onMouseMove"
-                @mouseup="stopDrag" @mouseleave="stopDrag" />
-        <p v-if="frameUrl" class="hint">
-          左键加点，拖动圆点调整，右键删除顶点。绿=转盘，红=禁区，蓝=平台线。
-        </p>
+                @mouseup="stopDrag" @mouseleave="onCanvasLeave" />
+        <p v-if="frameUrl" class="hint">{{ toolHint }}</p>
       </div>
 
       <div class="calibration-panel">
@@ -357,12 +426,12 @@ watch(step, (value) => {
         </div>
 
         <div v-else-if="step === 1">
-          <p>沿转盘外沿点击一圈（至少 3 个点），把转盘整个圈住。</p>
+          <p>在画面上沿转盘外沿依次点击：每点一下落一个点，点与点自动连成线，围一圈后自动闭合成一个面。至少 3 个点，建议 6~10 个点更贴合边缘。画歪的点直接拖走，右键删掉。</p>
           <button @click="carousel = []; redraw()">清空重来</button>
         </div>
 
         <div v-else-if="step === 2">
-          <p>圈出掉落物会落到的地面（禁区）。机器人手臂经过的地方可以画进来——它驻留不超过 {{ params.trigger_sustain_s }} 秒，不会触发。</p>
+          <p>用同样的方式圈出掉落物会落到的地面（禁区，红色）。转盘（绿色）在这一步是锁定的，碰不到。机器人手臂经过的地方可以画进来——它驻留不超过 {{ params.trigger_sustain_s }} 秒，不会触发。</p>
           <button @click="forbidden.push([])">新建一块禁区</button>
           <button @click="expandFromCarousel">按转盘自动生成（再手动修正）</button>
           <button @click="forbidden.pop(); redraw()">删除最后一块</button>
@@ -393,8 +462,9 @@ watch(step, (value) => {
 
         <div v-if="frameSize" class="nav-buttons">
           <button :disabled="step === 0" @click="step -= 1">上一步</button>
-          <button :disabled="step >= 4" @click="step += 1">下一步</button>
+          <button :disabled="step >= 4 || !!stepBlockedHint" @click="step += 1">下一步</button>
         </div>
+        <p v-if="stepBlockedHint" class="warn">{{ stepBlockedHint }}</p>
 
         <div v-if="activeCamera" class="history">
           <h4>{{ activeCamera.camera }} 的版本历史</h4>

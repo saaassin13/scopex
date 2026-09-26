@@ -13,6 +13,8 @@ import type {
   CalibrationCamera,
   CalibrationSaveResult,
   CalibrationVersion,
+  MonitorEvent,
+  MonitorStatus,
 } from './types'
 
 export class ApiError extends Error {
@@ -157,4 +159,14 @@ export const api = {
       `/calibrations/${encodeURIComponent(camera)}/versions/${version}/verify`, {
         method: 'POST', body: JSON.stringify({ result, note }),
       }),
+  monitorStatus: () => request<MonitorStatus>('/monitor/status'),
+  monitorStart: () => request<MonitorStatus>('/monitor/start', { method: 'POST' }),
+  monitorStop: () => request<MonitorStatus>('/monitor/stop', { method: 'POST' }),
+  monitorEvents: (limit = 100) =>
+    request<{ events: MonitorEvent[] }>(`/monitor/events?limit=${limit}`),
+  monitorConfirm: (eventId: string) =>
+    request<{ ok: boolean; queued: string }>(
+      `/monitor/events/${encodeURIComponent(eventId)}/confirm`, { method: 'POST' }),
+  monitorFrameUrl: (eventId: string, name: string) =>
+    `/monitor/events/${encodeURIComponent(eventId)}/frames/${encodeURIComponent(name)}`,
 }
