@@ -307,6 +307,23 @@ class ConfirmWorkerTests(unittest.TestCase):
             worker._process("fall-x", manual=True)
             self.assertIn("scopex_api_url", store.read_meta("fall-x")["confirm_error"])
 
+    def test_manual_confirm_works_with_auto_confirm_off(self):
+        """The page's confirm button must function with the switch off."""
+        with tempfile.TemporaryDirectory() as td:
+            store = self._store_with_event(td)
+            cfg = fast_config(output_root=Path(td), auto_confirm=False)
+            daemon = CowFallDaemon(cfg, None)
+            daemon.confirmer = ConfirmWorker("", store)  # no api url configured
+            daemon.confirmer.submit("fall-x", manual=True)
+            daemon.confirmer.start()
+            try:
+                self.assertTrue(
+                    wait_for(lambda: store.read_meta("fall-x").get("confirm_error")),
+                    "worker must drain the queue even with auto_confirm off")
+                self.assertIn("scopex_api_url", store.read_meta("fall-x")["confirm_error"])
+            finally:
+                daemon.confirmer.stop()
+
 
 class SessionSupervisorTests(unittest.TestCase):
     def setUp(self):

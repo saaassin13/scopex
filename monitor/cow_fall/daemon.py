@@ -616,9 +616,12 @@ class CowFallDaemon:
     def __init__(self, cfg: DaemonConfig, rtsp_url: str | None) -> None:
         self.cfg = cfg
         self.store = EventStore(cfg.output_root)
+        # The worker always runs: auto_confirm only decides whether events
+        # are queued automatically - manual confirm from the page must work
+        # with the switch off.
         self.confirmer = ConfirmWorker(
-            cfg.scopex_api_url if cfg.auto_confirm else "",
-            self.store, cooldown_s=cfg.confirm_cooldown_s, timeout_s=cfg.confirm_timeout_s)
+            cfg.scopex_api_url, self.store,
+            cooldown_s=cfg.confirm_cooldown_s, timeout_s=cfg.confirm_timeout_s)
         self.supervisor = SessionSupervisor(
             cfg, rtsp_url, on_event=self._on_event)
         self._http: _DaemonHTTPServer | None = None
@@ -639,8 +642,7 @@ class CowFallDaemon:
             print(f"[retention] closed {closed} orphan event(s)", flush=True)
         self.cfg.output_root.mkdir(parents=True, exist_ok=True)
         self.supervisor.start()
-        if self.cfg.auto_confirm:
-            self.confirmer.start()
+        self.confirmer.start()
         self._retention_thread = threading.Thread(
             target=self._retention_loop, name="cow-fall-retention", daemon=True)
         self._retention_thread.start()
