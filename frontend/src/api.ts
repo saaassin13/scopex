@@ -139,6 +139,9 @@ export const api = {
   listCalibrations: () => request<{ cameras: CalibrationCamera[] }>('/calibrations'),
   getCalibration: (camera: string) =>
     request<CalibrationCamera>(`/calibrations/${encodeURIComponent(camera)}`),
+  getCalibrationVersion: (camera: string, version: number) =>
+    request<{ camera: string; version: number; config: Record<string, unknown> }>(
+      `/calibrations/${encodeURIComponent(camera)}/versions/${version}/config`),
   uploadCalibrationFrame: (camera: string, imageB64: string) =>
     request<{ frame_id: string }>(`/calibrations/${encodeURIComponent(camera)}/frames`, {
       method: 'POST', body: JSON.stringify({ image_b64: imageB64 }),

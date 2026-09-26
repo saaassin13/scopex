@@ -4,7 +4,7 @@
   "bind_port": 8790,
   "model_path": "/opt/ScalingRobotics/scopex/models-monitor/yolov8n-coco.onnx",
   "output_root": "/opt/ScalingRobotics/scopex/data/monitor/cow-fall",
-  "calibrations_root": "/opt/ScalingRobotics/scopex/data/calibrations",
+  "calibrations_root": "/opt/ScalingRobotics/scopex/data/runtime-api/calibrations",
   "auto_start": false,
   "auto_confirm": false,
   "scopex_api_url": "http://10.200.0.2:8787",

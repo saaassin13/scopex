@@ -84,6 +84,13 @@ class CalibrationServiceTests(unittest.TestCase):
             service.activate("camera-96", 2)
             self.assertEqual(service.camera_detail("camera-96")["active_version"], 2)
 
+            # Saved versions load back into the editor with full zones.
+            reloaded = service.version_config("camera-96", 1)
+            self.assertEqual(reloaded["zones"]["carousel"][0], [100, 100])
+            self.assertNotIn("model_path", reloaded)
+            with self.assertRaises(CalibrationError):
+                service.version_config("camera-96", 99)
+
             verified = service.record_verify("camera-96", 2, "failed", "静止片段 40s 出现 1 次占用")
             self.assertEqual(verified["verify"]["status"], "failed")
             self.assertIn("静止片段", service.camera_detail("camera-96")["versions"][1]["verify"]["note"])

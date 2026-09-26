@@ -243,6 +243,8 @@ scopex-runtime 容器 127.0.0.1:8790 控制监控；页面"常驻监控"启停/�
 
 `deploy/edge/build-images.sh` 会额外构建 `scopex-monitor`（`docker/monitor.Dockerfile`：分析沙箱镜像 + ffmpeg + onnxruntime），并在构建时验证 `cv2/numpy/onnxruntime` 同进程导入与 ffmpeg 可用。`export-images.sh` / `import-images.sh` 已包含 `monitor.tar.gz`。
 
+**端侧网络与依赖来源**：镜像构建的 apt 与 pip 源已全部固定为清华 TUNA（无公网要求，与既有镜像构建一致；如需更换，改 Dockerfile 里的 mirror 变量为阿里源即可）。YOLO 模型 `yolov8n-coco.onnx` 是本地转换产物（POC 时期离线转换），**不从网络下载**——新设备部署时从现有设备的 `models-monitor/` 目录复制，首次安装前放到位即可。onnxruntime wheel（含 aarch64）由清华 PyPI 源提供。
+
 已部署环境首次启用监控：只需在准备机导出镜像、传输后 `docker load < monitor.tar.gz`（其余镜像不变），不需要走第 8 节全量流程。
 
 ### 10.2 配置（全部走配置文件）
@@ -256,7 +258,7 @@ scopex-runtime 容器 127.0.0.1:8790 控制监控；页面"常驻监控"启停/�
 | `SCOPEX_MONITOR_MODEL_DIR` | 默认 `/opt/ScalingRobotics/scopex/models-monitor`（内含 yolov8n-coco.onnx） |
 | `COW_FALL_RTSP_URL` | 完整 RTSP 地址（含凭据）。凭据经 compose environment 注入，`docker inspect` 对 docker 组成员可见——与 `SCOPEX_API_KEY` 同一信任层级 |
 
-**`config/monitor.json`**（首次启用时 start.sh 自动从 `deploy/edge/monitor.json.example` 拷贝，0600）：相机标识、`scopex_api_url`（**必须填本机 VPN IP 的 `http://<VPN_IP>:8787`，ScopeX 不监听 127.0.0.1**）、`auto_start`（容器启动即拉流）、`auto_confirm`（事件自动建模型确认任务，默认关）、看门狗/退避/保留策略。检测区域来自**监控标定页面**的当前启用版本（`data/calibrations/<camera>/`），启动时合成；启用新版本后在页面"常驻监控"里点"重启以应用新标定"。
+**`config/monitor.json`**（首次启用时 start.sh 自动从 `deploy/edge/monitor.json.example` 拷贝，0600）：相机标识、`scopex_api_url`（**必须填本机 VPN IP 的 `http://<VPN_IP>:8787`，ScopeX 不监听 127.0.0.1**）、`auto_start`（容器启动即拉流）、`auto_confirm`（事件自动建模型确认任务，默认关）、看门狗/退避/保留策略。检测区域来自**监控标定页面**的当前启用版本（存储在 `data/runtime-api/calibrations/<camera>/`，`calibrations_root` 必须指向该目录），启动时合成；启用新版本后在页面"常驻监控"里点"重启以应用新标定"。
 
 ### 10.3 ssh 隧道常驻
 
@@ -379,3 +381,20 @@ onnxruntime 1.20.1 aarch64 wheel 可用）；edge.env 中 RTSP URL 含 `&`，赋
 当前配置：`auto_start=true`、`auto_confirm=false`（事件确认走页面手动）；
 zones 使用 `docs/monitoring/zones-camera-96-v1.json` 兜底（标定页面启用版本
 前优先级更高）。真实掉落召回仍待现场样本。
+
+### 2026-09-26 fall-1 事件复盘与标定链路修正
+
+fall-1（19:03，121 帧）人工核对帧档案修正结论：当时为**夜间红外模式、转盘无牛**，
+走道右下部堆放着白色覆盖物与拖地软管（真实异物）；监控 19:01 刚启动、MOG2 背景
+仍在学习期，静止异物被计为持续前景（主判据），夜视下 YOLO 将白色覆盖物误检为牛
+（R1）。确认层判"明显误报"正确；"走道应无物"的检测语义也成立——但该异物长期
+存在，收敛后不再触发；监控每次重启的学习期（约 1~2 分钟）对走道静止异物可能
+再报一次，确认忽略即可。
+
+标定链路修正三处：① 标定页面存储实际在 `data/runtime-api/calibrations/`，
+monitor.json 的 `calibrations_root` 与 start.sh 预建目录已统一到该路径（此前误配
+`data/calibrations`，页面标定 daemon 读不到）；② 标定页面版本历史新增"查看"，
+可将已保存版本（zones+参数+参考帧）载入画布续改；③ 手工兜底 zones
+（9/23 时期，禁区右侧凸起误罩转盘台面 29% 重叠，即 fall-1 前段分析的病灶之一）
+已由用户在页面导入为 camera-96 v1，daemon 与页面版本已对齐
+（running == active == v1）。重标时重点：禁区右段沿转盘台面前缘走线，勿上凸。

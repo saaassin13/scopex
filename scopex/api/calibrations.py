@@ -181,6 +181,18 @@ class CalibrationService:
         return {"camera": camera, "active_version": meta.get("active"),
                 "versions": meta.get("versions", [])}
 
+    def version_config(self, camera: str, version: int) -> dict:
+        """The saved zones config for one version, to load into the editor."""
+        meta = self._read_meta(camera)
+        if meta is None:
+            raise CalibrationError(f"没有相机 {camera} 的标定记录")
+        if not any(item.get("version") == version for item in meta.get("versions", [])):
+            raise CalibrationError(f"版本 v{version} 不存在")
+        path = self._camera_dir(camera) / f"zones-v{version}.json"
+        if not path.is_file():
+            raise CalibrationError(f"版本 v{version} 的配置文件缺失")
+        return json.loads(path.read_text(encoding="utf-8"))
+
     def _read_meta(self, camera: str) -> dict | None:
         path = self._camera_dir(camera) / "meta.json"
         if not path.is_file():

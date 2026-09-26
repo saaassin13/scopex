@@ -47,8 +47,9 @@ if [ "${SCOPEX_MONITOR_ENABLED:-0}" = "1" ]; then
   docker image inspect "${SCOPEX_MONITOR_IMAGE:-scopex-monitor:2026.09.26}" >/dev/null
   [ -d "${SCOPEX_MONITOR_MODEL_DIR:-/opt/ScalingRobotics/scopex/models-monitor}" ] || { echo "missing directory: ${SCOPEX_MONITOR_MODEL_DIR}" >&2; exit 1; }
   # Event root must exist before compose up: the data-catalog bind that
-  # lets confirmation tasks read event frames is existing_only.
-  mkdir -p "$SCOPEX_DATA_DIR/monitor/cow-fall" "$SCOPEX_DATA_DIR/calibrations"
+  # lets confirmation tasks read event frames is existing_only. The
+  # calibration store lives under the Runtime API data-root.
+  mkdir -p "$SCOPEX_DATA_DIR/monitor/cow-fall" "$SCOPEX_DATA_DIR/runtime-api/calibrations"
   if [ ! -f "$ROOT/config/monitor.json" ]; then
     cp "$SCOPEX_APP_DIR/deploy/edge/monitor.json.example" "$ROOT/config/monitor.json"
     chmod 600 "$ROOT/config/monitor.json"

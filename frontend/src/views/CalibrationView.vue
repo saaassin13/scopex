@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { api, ApiError } from '../api'
-import type { CalibrationCamera, Point } from '../types'
+import type { CalibrationCamera, CalibrationVersion, Point } from '../types'
 
 type ToolMode = 'carousel' | 'forbidden' | 'line' | 'edit'
 
@@ -358,6 +358,43 @@ async function activate(version: number) {
   }
 }
 
+// 把一个已保存版本载入画布查看/续改：zones、参数与参考帧全部回显，
+// 修改后保存会生成新版本，不动原版本。
+async function loadVersion(entry: CalibrationVersion) {
+  busy.value = true
+  error.value = ''
+  try {
+    const result = await api.getCalibrationVersion(camera.value, entry.version)
+    const config = result.config
+    const zones = (config.zones ?? {}) as Record<string, unknown>
+    carousel.value = ((zones.carousel as Point[]) ?? []).map((p) => [p[0], p[1]])
+    forbidden.splice(0, forbidden.length,
+      ...(((zones.forbidden_zones as Point[][]) ?? []).map((z) => z.map((p) => [p[0], p[1]] as Point))))
+    const platformLine = zones.platform_line as Point[] | null
+    line.value = platformLine ? platformLine.map((p) => [p[0], p[1]] as Point) : []
+    params.fps = Number(config.fps ?? params.fps)
+    params.min_area_ratio = Number(config.min_area_ratio ?? params.min_area_ratio)
+    params.warmup_frames = Number(config.warmup_frames ?? params.warmup_frames)
+    params.trigger_sustain_s = Number(config.trigger_sustain_s ?? params.trigger_sustain_s)
+    params.clear_sustain_s = Number(config.clear_sustain_s ?? params.clear_sustain_s)
+    params.merge_distance_px = Number(config.merge_distance_px ?? params.merge_distance_px)
+    params.min_on_carousel_ratio = Number(zones.min_on_carousel_ratio ?? params.min_on_carousel_ratio)
+    params.platform_line_margin_px = Number(zones.platform_line_margin_px ?? params.platform_line_margin_px)
+    params.min_conf = Number(zones.min_conf ?? params.min_conf)
+    if (entry.frame_id) {
+      frameId.value = entry.frame_id
+      frameUrl.value = api.calibrationFrameUrl(camera.value, entry.frame_id)
+      await loadImage()
+    }
+    saveResult.value = null
+    step.value = frameSize.value ? 1 : 0
+  } catch (exc) {
+    error.value = exc instanceof Error ? exc.message : String(exc)
+  } finally {
+    busy.value = false
+  }
+}
+
 async function markVerify(version: number, result: 'passed' | 'failed') {
   const remark = result === 'passed' ? '静止场景验证通过' : '静止场景出现误报'
   try {
@@ -480,6 +517,7 @@ watch(step, (value) => {
                 <td>{{ entry.note }}</td>
                 <td>{{ { pending: '待验证', passed: '通过', failed: '未通过' }[entry.verify.status] }}</td>
                 <td>
+                  <button class="link" @click="loadVersion(entry)">查看</button>
                   <button v-if="entry.version !== activeCamera.active_version" class="link"
                           @click="activate(entry.version)">启用</button>
                   <button v-if="entry.verify.status !== 'passed'" class="link" @click="markVerify(entry.version, 'passed')">✓</button>

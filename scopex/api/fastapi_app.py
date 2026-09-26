@@ -366,6 +366,11 @@ def create_app(
         def calibration_detail(camera: str) -> dict[str, Any]:
             return calibrations.camera_detail(camera)
 
+        @app.get("/calibrations/{camera}/versions/{version}/config")
+        def calibration_version_config(camera: str, version: int) -> dict[str, Any]:
+            return {"camera": camera, "version": version,
+                    "config": calibrations.version_config(camera, version)}
+
         @app.post("/calibrations/{camera}/frames", status_code=201)
         def upload_calibration_frame(camera: str, body: CalibrationFrameRequest) -> dict[str, Any]:
             return {"frame_id": calibrations.save_frame(camera, body.image_b64)}
