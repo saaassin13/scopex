@@ -107,16 +107,6 @@ async function onFrameChosen(event: Event) {
   }
 }
 
-async function reuseFrame(existing: CalibrationCamera) {
-  const latest = existing.versions.filter((v) => v.frame_id).at(-1)
-  if (!latest?.frame_id) return
-  camera.value = existing.camera
-  frameId.value = latest.frame_id
-  frameUrl.value = api.calibrationFrameUrl(existing.camera, latest.frame_id)
-  await loadImage()
-  step.value = 1
-}
-
 function loadImage() {
   return new Promise<void>((resolve) => {
     const img = new Image()
@@ -456,8 +446,6 @@ watch(step, (value) => {
             <div v-for="entry in cameras" :key="entry.camera" class="camera-row">
               <button class="link" @click="selectCamera(entry)">{{ entry.camera }}</button>
               <span>当前版本 v{{ entry.active_version ?? '—' }}（{{ entry.versions.length }} 个版本）</span>
-              <button v-if="entry.versions.some((v) => v.frame_id)" class="link"
-                      @click="reuseFrame(entry)">复用参考帧</button>
             </div>
           </div>
         </div>
