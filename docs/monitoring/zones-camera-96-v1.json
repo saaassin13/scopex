@@ -1,0 +1,25 @@
+{
+  "fps": 2.0,
+  "min_area_ratio": 0.02,
+  "warmup_frames": 50,
+  "trigger_sustain_s": 30.0,
+  "clear_sustain_s": 10.0,
+  "merge_distance_px": 300.0,
+  "model_path": "/opt/ScalingRobotics/scopex/models-monitor/yolov8n-coco.onnx",
+  "output_root": "/opt/ScalingRobotics/scopex/data/cow-fall",
+  "zones": {
+    "carousel": [
+      [0, 0], [1400, 0], [1420, 450], [1250, 850], [0, 850]
+    ],
+    "forbidden_zones": [
+      [
+        [180, 780], [560, 900], [900, 1080], [1300, 1080],
+        [1350, 820], [1200, 700], [700, 830]
+      ]
+    ],
+    "platform_line": null,
+    "min_on_carousel_ratio": 0.5,
+    "platform_line_margin_px": 8.0,
+    "min_conf": 0.5
+  }
+}

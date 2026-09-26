@@ -96,13 +96,41 @@ POST /runs 或定时触发
 
 | 场景 | 当前状态 | 下一步边界 |
 | --- | --- | --- |
-| 编码器明显异常 | raw-only 首版已在当前分支实现，尚未部署 | 用户自行指定触发间隔和非重叠分析区间；按 `scan → plot → inspect → report` 完整复核，筛选明显 raw 疑点 |
-| 牛掉落/倒地 | 未实现，视觉 POC 已停止 | 先定义掉落/倒地标签、连续时间窗口、误报处理、首报时限和资源预算，再选择 RTSP 每秒识图方案 |
-| 机器人断线 | 未实现 | 先确认心跳来源和时间戳语义，再定义超过 10 分钟的断线状态机、告警去重、恢复条件和通知方式 |
+| 编码器明显异常 | raw-only 链路已实现、部署并通过完整窗口任务（task-149b8b45c37d） | 定时由页面上设置（用户自行配置）；R6 已由用户确认为问题数据，其形态（静止→1000+ counts/s、端点残差 51 counts）可作后续参考模式 |
+| 牛掉落（转盘滑落） | 离线回放验证完成（POC 遗留录像 50 分钟扫描 + CLI 端到端零误报），待实时 RTSP 接入（见下方专节） | 凭据就绪后接入实时流；VLM 仅作事件解释与二次确认；不做告警；异常召回待真实样本 |
+| 机器人断线 | 不在本项目实现，用户移至云平台处理 | 无 |
 
-编码器 PNG 只是从同一 raw 快照生成的 `working-derived` 可视化，不是原始图片 Evidence；当前没有现场异常标签，也没有准确率、召回率、误报率或告警 SLA 验收。`no_anomaly_evidence`、`compatible_motion` 和无 raw 结果均不能写成设备健康证明。编码器当前实现不代表已部署或已接入生产调度。
+## 4.1 牛掉落检测：当前状态与交接（2026-09-26 更新）
 
-牛掉落和机器人断线仍是计划，不是已实现事实；不在本轮新增第二套 Agent Loop、专用调度引擎、复杂报告系统或生产部署。视觉方案的停止结论见 [FINAL-CONCLUSION.md](video-monitoring/FINAL-CONCLUSION.md)，后续若重启视觉方向需改为连续时序检测，VLM 仅作为异常触发后的解释器。
+**场景定义（用户确认）**：牛都在转盘上，两个监控视角都看不到整牛——监控1（全景，用于检测）可见机器人（黄色外衣）、转盘和牛腿/牛屁股部分；监控2 是消毒作业近景。异常 = 牛从转盘上滑落（后腿/屁股先掉），终态半悬挂或完全落地；首报越快越好无硬性时限；不做告警。
+
+**方案关键转折**：COCO cow 检测需要整牛形态，实测牛屁股近景 cow 零检出——主判据不能依赖 cow 检测。定为 **禁区前景检测为主**：转盘外走道正常无物体，MOG2 背景 ∩ 禁区多边形出现持续前景即触发；YOLO cow 为禁区占用时的辅助标注。并发契约：检测循环永不因事件处理阻塞；同一异常分析期间去重合并（空间 300px 内），空间分离第二事件独立触发；异常消失 ≥10s 事件关闭。
+
+**离线回放验证（2026-09-26 完成，替代 RTSP 联调）**：生产暂不能接 RTSP，改为复用 POC 遗留在端侧 `/home/scaling/scopex-video-capture-20260923/runs/` 的 4 组 camera-96 全景录像（已复制到 workstation `/opt/ScalingRobotics/scopex/video-replay/`，~760M；端侧只读复制未动源）。用 `scripts/scan_foreground.py` 全速扫描 + CLI `--video` 实时回放（`FileReplayCapture`，ffmpeg `-re`，时间语义与直播一致）：
+
+- 50 分钟三段录像（smoke/10m/20m/空转盘 20m）正常场景**零误报**：瞬态全部来自机器人机械臂（周期作业最长 4s；空转盘悬停最长 15.5s、前景比 0.37），已确认正常段（转盘停止、吸奶器阻挡）无持续占用；
+- **机器人臂与掉落区在图像上重叠，几何挖除不可行 → 时间尺度分离**：`trigger_sustain_s` 4→30s（掉落牛被处理前持续存在，30s 首报，无硬性时限）；风险保留：机器人故障驻留 >30s 会触发（宁多勿漏，VLM 确认兜底）；
+- **禁区必须用显式多边形**（`forbidden_zones`）：牛体高出转盘平台、转盘旋转使上部产生持续前景；"转盘外全部"模式只在无其他运动结构的视图成立；
+- 105 秒真实片段（含 15.5s 机器臂悬停）CLI 端到端回放零事件、正常退出；
+- **异常召回未验证**（无掉落历史样本）：触发链路已由合成视频集成测试覆盖，真实召回待部署后积累或模拟物测试。
+
+**本轮修复的关键 bug**：① capture `_read_loop` 的 `stdout.read(65536)` 等满 64KB 才返回，低码率流帧延迟无界（合成测试暴露）→ `read1`；② `load_session_config` 漏解析 `forbidden_zones`（CLI 回放首跑实际用"转盘外全部"模式，修复后重验）；③ detector 前处理三连（letterbox/RGB/**COCO cow=19 非 20**），已与 ultralytics 官方逐位对齐。
+
+**对抗性审查与修复（提交前，2026-09-26）**：25 agent 三镜头审查确认 14 项缺陷，全部处置——修复 11 项：CLI 默认 duration 路径 TypeError、`FallSession._stop` 类属性共享（曾使 quiet 回归测试假通过）、tracker pending 空间接力凑满 sustain 与并入 open event 后 stale pending 提前触发（各补回归测试）、检测线程无异常防护（静默失明）、ffmpeg 退出静默停摆（`stopped_at` + session 收尾 + main 轮询提前退出）、foreground `reset()` 不重置 warmup、`forbidden_zones` 无多边形校验、事件 meta 永停 open（补 `_mark_closed`）、SIGTERM 不清理 ffmpeg、扫描生成器泄漏 ffmpeg、CLI 测试弱断言；已知限制 3 项接受：同 chunk 多帧共享到达时间戳（30s 阈值下偏差 <1s）、follow-up 全量重扫 meta（事件量小）、标定默认值多处字面量（语义一致）。
+
+**实时接入路径（已预验证）**：workstation 到相机 40 网段不可达（ping/554/80 全不通，仅端侧可路由）；**ssh 隧道实测可行**：workstation `ssh -N -L 8554:192.168.40.96:554 scaling@10.200.0.14` → 检测连 `rtsp://localhost:8554/...`（端侧零新增进程）。长期 7×24 需端侧常驻 ffmpeg 转发的话需用户另行授权。凭据到位后的顺序：短时拉流验证基线一致 → 半天~一天零误报观察 → 常驻进程 → VLM 确认接入。
+
+**代码（monitor/cow_fall/，双端 38 项测试通过，已同步 workstation）**：zones（多边形+显式禁区+校验）、foreground（MOG2 禁区前景+质心+warmup+reset 复位）、rules（cow 辅助 R1/R2）、tracker（持续 30s 触发+空间绑定+去重+10s 关闭）、detector（YOLOv8n ONNX CPU）、capture（image2pipe+环形缓冲 300s+read1+FileReplayCapture+退出可见）、session（异常防护+事件 closed 落盘）、calibrate、`__main__`（stdin 凭据直播 / `--video` 回放+时长探测+SIGTERM 处理）。标定产物 `docs/monitoring/zones-camera-96-v1.json`（含标定依据），设计文档 `docs/monitoring/01-cow-fall-monitor.md`。
+
+**workstation 资产**：模型 `/opt/ScalingRobotics/scopex/models-monitor/yolov8n-coco.onnx`；venv `/opt/ScalingRobotics/scopex/monitor-venv`；录像 `/opt/ScalingRobotics/scopex/video-replay/`（4 段 mkv + refs 参考帧 + cut-empty-100s 验证段）；代码 `app/monitor/cow_fall/`、`app/scripts/scan_foreground.py`。相机在线 `192.168.40.96/98`。
+
+**下一步（按依赖序）**：① RTSP 凭据就绪后经 ssh 隧道实时接入（CLI 已支持，全链路已验证）；② workstation 常驻部署（先手动进程）；③ 真实掉落样本验证；④ VLM 确认任务接入（ScopeX API 建任务读事件帧目录）；⑤ 页面启停入口与事件列表。
+
+**未提交状态**：monitor/、tests/test_cow_fall_*.py（6 个文件）、scripts/scan_foreground.py、docs/monitoring/（设计文档+zones JSON）及本 handoff 更新均未提交（截至 2026-09-26）；此前上下文链路修复已提交（605d7ca）。端侧 10.200.0.14 全程只读（本次仅复制录像），未动任务服务。
+
+编码器 PNG 只是从同一 raw 快照生成的 `working-derived` 可视化，不是原始图片 Evidence；task-149b8b45c37d 报告的 R6 已由用户确认为问题数据（同窗口其余 15 候选 compatible_motion），但整体检测仍无准确率/召回率/误报率统计，`no_anomaly_evidence`、`compatible_motion` 和无 raw 结果均不能写成设备健康证明。
+
+牛掉落检测模块已按上节状态开发完成但未联调；机器人断线已移出本项目。不在本轮新增第二套 Agent Loop、专用调度引擎、复杂报告系统或生产部署。视觉 POC 的停止结论见 [FINAL-CONCLUSION.md](video-monitoring/FINAL-CONCLUSION.md)；牛掉落重启采用的"连续检测触发 + VLM 确认解释"符合该结论。
 
 以现有已部署服务为基础，不重新设计结果链。真实编码器正常/异常对照、乳头逐牛分母对账、图片覆盖、资源来源、长输入压缩及1路/2路整批收益仍分别记录；“运行正常”不要求被否定，也不自动替代这些专项。
 
