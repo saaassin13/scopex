@@ -12,6 +12,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field, StrictBool
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from scopex.api.calibrations import CalibrationService
 from scopex.api.schedules import ScheduleNotFoundError, ScheduleService
 from scopex.api.service import (
     TaskBusyError,
@@ -61,6 +62,24 @@ class DataPackageRequest(BaseModel):
     modes: list[Literal["image_evidence", "image_window", "encoder_window", "encoder_source_files", "working_plots"]] = Field(min_length=1, max_length=5)
 
 
+class CalibrationFrameRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    image_b64: str = Field(min_length=32)
+
+
+class CalibrationSaveRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    config: dict[str, Any]
+    note: str = Field(default="", max_length=200)
+    frame_id: str | None = None
+
+
+class CalibrationVerifyRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    result: Literal["pending", "passed", "failed"]
+    note: str = Field(default="", max_length=200)
+
+
 class ScheduleCreateRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     name: str = Field(min_length=1, max_length=120)
@@ -104,6 +123,7 @@ def create_app(
     service: TaskService,
     *,
     schedules: ScheduleService | None = None,
+    calibrations: "CalibrationService | None" = None,
     static_dir: Path | None = None,
     shutdown_timeout_s: float = 310.0,
 ) -> FastAPI:
@@ -131,8 +151,11 @@ def create_app(
     async def strict_json_guard(request: Request, call_next):
         if request.method in {"POST", "PUT", "PATCH"}:
             raw = await request.body()
-            if len(raw) > MAX_BODY:
-                return _error(413, "request_too_large", "JSON body exceeds 65536 bytes")
+            # Calibration frames are base64 images (~MBs); everything else
+            # stays under the strict JSON limit.
+            limit = 8 * 1024 * 1024 if request.url.path.startswith("/calibrations/") else MAX_BODY
+            if len(raw) > limit:
+                return _error(413, "request_too_large", f"JSON body exceeds {limit} bytes")
             if raw:
                 try:
                     _strict_object(raw)
@@ -332,6 +355,35 @@ def create_app(
         def delete_schedule(schedule_id: str):
             schedules.delete(schedule_id)
             return None
+
+    if calibrations is not None:
+        @app.get("/calibrations")
+        def list_calibrations() -> dict[str, Any]:
+            return {"cameras": calibrations.list_cameras()}
+
+        @app.get("/calibrations/{camera}")
+        def calibration_detail(camera: str) -> dict[str, Any]:
+            return calibrations.camera_detail(camera)
+
+        @app.post("/calibrations/{camera}/frames", status_code=201)
+        def upload_calibration_frame(camera: str, body: CalibrationFrameRequest) -> dict[str, Any]:
+            return {"frame_id": calibrations.save_frame(camera, body.image_b64)}
+
+        @app.get("/calibrations/{camera}/frames/{frame_id}")
+        def calibration_frame(camera: str, frame_id: str):
+            return FileResponse(calibrations.frame_path(camera, frame_id))
+
+        @app.post("/calibrations/{camera}", status_code=201)
+        def save_calibration(camera: str, body: CalibrationSaveRequest) -> dict[str, Any]:
+            return calibrations.save_version(camera, body.config, body.note, body.frame_id)
+
+        @app.post("/calibrations/{camera}/versions/{version}/activate")
+        def activate_calibration(camera: str, version: int) -> dict[str, Any]:
+            return calibrations.activate(camera, version)
+
+        @app.post("/calibrations/{camera}/versions/{version}/verify")
+        def verify_calibration(camera: str, version: int, body: CalibrationVerifyRequest) -> dict[str, Any]:
+            return calibrations.record_verify(camera, version, body.result, body.note)
 
     resolved_static = Path(static_dir).resolve() if static_dir is not None else None
     if resolved_static is not None and resolved_static.is_dir():

@@ -155,6 +155,31 @@ export interface Evaluation {
 
 export type DataPackageMode = 'image_evidence' | 'image_window' | 'encoder_window' | 'encoder_source_files' | 'working_plots'
 
+export type Point = [number, number]
+
+export interface CalibrationVersion {
+  version: number
+  created_at: string
+  note: string
+  frame_id: string | null
+  warnings: string[]
+  verify: { status: 'pending' | 'passed' | 'failed'; note: string; command: string }
+}
+
+export interface CalibrationCamera {
+  camera: string
+  active_version: number | null
+  versions: CalibrationVersion[]
+}
+
+export interface CalibrationSaveResult {
+  camera: string
+  version: number
+  active_version: number | null
+  warnings: string[]
+  verify: { status: string; note: string; command: string }
+}
+
 export interface DataPackageOption {
   mode: DataPackageMode
   label: string

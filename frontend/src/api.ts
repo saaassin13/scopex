@@ -10,6 +10,9 @@ import type {
   TaskSnapshot,
   DataPackageMode,
   DataPackageSnapshot,
+  CalibrationCamera,
+  CalibrationSaveResult,
+  CalibrationVersion,
 } from './types'
 
 export class ApiError extends Error {
@@ -131,4 +134,27 @@ export const api = {
     const response = await fetch(`/schedules/${encodeURIComponent(id)}`, { method: 'DELETE' })
     if (!response.ok) throw new ApiError(response.status, 'request_failed', response.statusText)
   },
+  listCalibrations: () => request<{ cameras: CalibrationCamera[] }>('/calibrations'),
+  getCalibration: (camera: string) =>
+    request<CalibrationCamera>(`/calibrations/${encodeURIComponent(camera)}`),
+  uploadCalibrationFrame: (camera: string, imageB64: string) =>
+    request<{ frame_id: string }>(`/calibrations/${encodeURIComponent(camera)}/frames`, {
+      method: 'POST', body: JSON.stringify({ image_b64: imageB64 }),
+    }),
+  calibrationFrameUrl: (camera: string, frameId: string) =>
+    `/calibrations/${encodeURIComponent(camera)}/frames/${encodeURIComponent(frameId)}`,
+  saveCalibration: (camera: string, config: Record<string, unknown>, note: string, frameId: string | null) =>
+    request<CalibrationSaveResult>(`/calibrations/${encodeURIComponent(camera)}`, {
+      method: 'POST', body: JSON.stringify({ config, note, frame_id: frameId }),
+    }),
+  activateCalibration: (camera: string, version: number) =>
+    request<{ camera: string; active_version: number }>(
+      `/calibrations/${encodeURIComponent(camera)}/versions/${version}/activate`, {
+        method: 'POST', body: '{}',
+      }),
+  verifyCalibration: (camera: string, version: number, result: 'pending' | 'passed' | 'failed', note: string) =>
+    request<{ camera: string; version: number; verify: CalibrationVersion['verify'] }>(
+      `/calibrations/${encodeURIComponent(camera)}/versions/${version}/verify`, {
+        method: 'POST', body: JSON.stringify({ result, note }),
+      }),
 }

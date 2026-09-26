@@ -17,6 +17,7 @@ import uvicorn
 
 from scopex.agent.docker_host import resolve_local_docker_host
 from scopex.agent.skills import DEFAULT_BUILTIN_SKILLS, prepare_workspace_skills
+from scopex.api.calibrations import CalibrationService
 from scopex.api.factory import LocalRuntimeConfig, OpenClawRuntimeFactory
 from scopex.api.fastapi_app import create_app
 from scopex.api.schedules import ScheduleService
@@ -207,10 +208,12 @@ def main(argv=None) -> int:
         assessment_classifier=factory.manual_assessment_classifier(),
     )
     schedules = ScheduleService(data_root / "scheduler", service)
+    calibrations = CalibrationService(data_root / "calibrations")
     static_dir = args.web_dist.expanduser().resolve()
     app = create_app(
         service,
         schedules=schedules,
+        calibrations=calibrations,
         static_dir=static_dir if static_dir.is_dir() else None,
         shutdown_timeout_s=max(args.timeout, 120) + 10,
     )
