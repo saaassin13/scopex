@@ -153,7 +153,7 @@ export interface Evaluation {
   updated_at: string
 }
 
-export type DataPackageMode = 'image_evidence' | 'image_window' | 'encoder_window' | 'encoder_source_files'
+export type DataPackageMode = 'image_evidence' | 'image_window' | 'encoder_window' | 'encoder_source_files' | 'working_plots'
 
 export interface DataPackageOption {
   mode: DataPackageMode

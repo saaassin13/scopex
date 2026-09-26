@@ -187,8 +187,63 @@ class TaskDataPackageTests(unittest.TestCase):
             self.assertEqual(proc.returncode, 0, proc.stderr)
             row = json.loads(access.read_text(encoding='utf-8'))
             self.assertEqual(row['purpose'], 'encoder_health')
-            self.assertEqual(row['source_files'], [str(source)])
-            self.assertEqual(row['start'], '2026-09-15 18:01:00:000000')
+            self.assertEqual(row['source_files'], [str(Path(source).resolve())])
+            self.assertEqual(row['start'], '2026-09-15 18:01:00:000')
+
+    def test_working_plots_mode_collects_snapshot_listed_pngs_with_roles(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            logs, camera = root / 'source-logs', root / 'source-camera'
+            logs.mkdir()
+            camera.mkdir()
+            service = self.service(root, logs, camera)
+            self.terminal_task(service, 'task-plots')
+            scratch = root / 'work' / 'task-plots' / 'scratch'
+            plots_dir = scratch / 'encoder-plots'
+            plots_dir.mkdir(parents=True)
+            (plots_dir / 'overview.png').write_bytes(b'overview-bytes')
+            (plots_dir / 'candidate-R1.png').write_bytes(b'candidate-bytes')
+            (scratch / 'encoder-raw.json').write_text(json.dumps({
+                'schema': 6,
+                'plots': {'output_dir': '/task-scratch/encoder-plots', 'artifacts': [
+                    {'kind': 'overview', 'filename': 'overview.png',
+                     'path': '/task-scratch/encoder-plots/overview.png',
+                     'sha256': hashlib.sha256(b'overview-bytes').hexdigest()},
+                    {'kind': 'candidate', 'candidate_id': 'R1', 'filename': 'candidate-R1.png',
+                     'path': '/task-scratch/encoder-plots/candidate-R1.png',
+                     'sha256': hashlib.sha256(b'candidate-bytes').hexdigest()},
+                ]},
+            }), encoding='utf-8')
+            (scratch / 'data-access.jsonl').write_text(json.dumps({
+                'schema': 1, 'purpose': 'encoder_health', 'operation': 'analyze',
+                'start': '2026-09-15 18:01:00:000', 'end': '2026-09-15 18:02:00:000',
+                'source_files': [],
+            }) + '\n', encoding='utf-8')
+
+            options = service.get_data_package('task-plots')['options']
+            plots_option = next(row for row in options if row['mode'] == 'working_plots')
+            self.assertEqual(plots_option['count'], 2)
+
+            result = service.build_data_package('task-plots', ['working_plots'])
+            self.assertTrue(result['package_ready'])
+            with zipfile.ZipFile(service.data_package_file('task-plots')) as archive:
+                self.assertEqual(set(archive.namelist()),
+                                 {'plots/overview.png', 'plots/candidate-R1.png', 'manifest.json'})
+                manifest = json.loads(archive.read('manifest.json'))
+            by_path = {row['archive_path']: row for row in manifest['files']}
+            self.assertEqual(by_path['plots/overview.png']['role'], 'working_derived_plot')
+            self.assertEqual(by_path['plots/overview.png']['plot_kind'], 'overview')
+            self.assertEqual(by_path['plots/candidate-R1.png']['candidate_id'], 'R1')
+            self.assertEqual(by_path['plots/overview.png']['sha256'],
+                             hashlib.sha256(b'overview-bytes').hexdigest())
+
+            # A changed plot file is still packaged, but the mismatch is recorded.
+            (plots_dir / 'overview.png').write_bytes(b'tampered')
+            service.build_data_package('task-plots', ['working_plots'])
+            with zipfile.ZipFile(service.data_package_file('task-plots')) as archive:
+                manifest = json.loads(archive.read('manifest.json'))
+            self.assertTrue(any(row.get('reason') == 'content_changed_current_copy_included'
+                                for row in manifest['missing']))
 
 
 if __name__ == '__main__':

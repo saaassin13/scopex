@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 from bisect import bisect_left, bisect_right
-from collections import Counter
 from datetime import datetime, timedelta
 import hashlib
 import json
@@ -18,6 +17,7 @@ import tempfile
 
 VERSION = "raw-1"
 SCHEMA = 6
+COMMANDS = ("scan", "inspect", "report", "plot")
 TS_FMT = "%Y-%m-%d %H:%M:%S:%f"
 EPOCH = datetime(1970, 1, 1)
 MM_PER_COUNT = 501.144 / 4096
@@ -28,9 +28,11 @@ DECISION_CONTEXT_MS = 1000
 INSPECT_TRACE_LIMIT = 4
 INSPECT_CONTEXT_SLICE = 3
 MAX_PLOT_POINTS = 20000
+PLOT_TOP_CANDIDATES = 5
 STAMP = re.compile(r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}:\d{3})(?!\d)")
 RAW = re.compile(r"\bGet EncoderVal, raw\[(-?\d+)\]")
 LOG = re.compile(r"^CowDisinfect-(\d{8})-(\d{6})\.log(?:\.\d+)?$")
+_CANDIDATE_KEY = re.compile(r"R\d+")
 CONTEXT = re.compile(
     r"ResetEncoderValOnSerialPort|Reset EncoderDevCounterVal|"
     r"Encoder is resetting|Read encoder value via master failed|"
@@ -51,6 +53,14 @@ def parse_time(text):
 
 def millis(text):
     return (parse_time(text) - EPOCH) // timedelta(milliseconds=1)
+
+
+def checked_time(text):
+    # CLI timestamps must carry exactly the 3-digit millisecond form the logs
+    # use; strptime's %f would happily left-pad '5' into 500 ms.
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}:\d{3}", text):
+        raise ValueError("Timestamps must be 'YYYY-MM-DD HH:MM:SS:mmm' with 3-digit milliseconds")
+    return millis(text)
 
 
 def stamp(ms):
@@ -83,6 +93,14 @@ def load(path):
     state = json.loads(Path(path).read_text(encoding="utf-8"))
     if not isinstance(state, dict) or state.get("schema") != SCHEMA or state.get("version") != VERSION:
         raise ValueError("Unsupported saved analysis; rerun scan with the raw-only tool.")
+    # Older snapshots mixed window views into "reviews"; keep candidate reviews only.
+    state.setdefault("window_reviews", {})
+    moved = {key: value for key, value in state["reviews"].items()
+             if not _CANDIDATE_KEY.fullmatch(key)}
+    if moved:
+        state["reviews"] = {key: value for key, value in state["reviews"].items()
+                            if _CANDIDATE_KEY.fullmatch(key)}
+        state["window_reviews"].update(moved)
     return state
 
 
@@ -114,7 +132,7 @@ def profile_checked(profile):
                                or not math.isfinite(profile[key]) or profile[key] < 0):
             raise ValueError(f"{key} must be finite and nonnegative")
     if "max_rate_counts_s" in profile:
-        if not profile["max_rate_counts_s"] or "timestamp_uncertainty_ms" not in profile:
+        if profile["max_rate_counts_s"] <= 0 or "timestamp_uncertainty_ms" not in profile:
             raise ValueError("A rate limit requires a positive limit and timestamp_uncertainty_ms")
         if profile.get("continuity_verified") is not True:
             raise ValueError("A rate limit requires verified reset/wrap continuity")
@@ -150,7 +168,7 @@ def scan(logs, start=None, end=None, profile=None, max_bytes=256 * 1024**2, max_
     profile = profile_checked(profile or {})
     if start is not None and end is not None and end <= start:
         raise ValueError("end must be after start")
-    logs = sorted(set(Path(p).absolute() for p in logs))
+    logs = sorted(set(Path(p).resolve() for p in logs))
     if not logs:
         raise ValueError("No input files")
     if len(logs) > 64:
@@ -166,7 +184,8 @@ def scan(logs, start=None, end=None, profile=None, max_bytes=256 * 1024**2, max_
 
     for path in logs:
         hasher = hashlib.sha256()
-        previous = None
+        max_t = None
+        rollback_until = None
         before_stat = path.stat()
         parsed = 0
         with path.open("rb") as handle:
@@ -185,8 +204,15 @@ def scan(logs, start=None, end=None, profile=None, max_bytes=256 * 1024**2, max_
                     t = millis(m[1]) if m else None
                 except ValueError:
                     t = None
-                if t is not None and ((start is not None and t < start) or (end is not None and t >= end)):
-                    continue
+                if t is not None:
+                    in_raw = (start is None or t >= start) and (end is None or t < end)
+                    # Decision context is captured with margin on both window edges
+                    # (e.g. a reset before --start, a control event after --end) so
+                    # edge readings stay explainable.
+                    in_context = ((start is None or t >= start - DECISION_CONTEXT_MS)
+                                  and (end is None or t < end + DECISION_CONTEXT_MS))
+                    if not in_raw and not (contextual and in_context):
+                        continue
                 source = {"source": str(path), "line_no": number}
                 if t is None:
                     issue("unparsed_time", **source)
@@ -194,32 +220,46 @@ def scan(logs, start=None, end=None, profile=None, max_bytes=256 * 1024**2, max_
                     continue
                 if len(line) > 4096:
                     raise ValueError("capacity_exceeded: encoder evidence line exceeds 4096 characters")
-                if contextual:
+                if contextual and in_context:
                     context.append({"t": t, "time": stamp(t), "text": line, **source})
                     if len(context) > max_samples:
                         raise ValueError("capacity_exceeded: context limit; no completed analysis")
                     pending = True
-                if not raw_marker:
+                if not raw_marker or not in_raw:
                     continue
-                m = RAW.search(line)
-                if not m:
+                readings = RAW.findall(line)
+                if not readings:
                     issue("unparsed_raw", time=stamp(t), **source)
                     pending = True
                     continue
-                printed = int(m[1])
-                count = printed
-                bits = profile.get("unsigned_print_bits")
-                if bits and 0 <= printed < 2**bits and printed >= 2**(bits - 1):
-                    count = printed - 2**bits
-                invalid = (("count_min" in profile and count < profile["count_min"])
-                           or ("count_max" in profile and count > profile["count_max"]))
-                if previous is not None and t <= previous:
-                    issue("non_increasing_source_time", time=stamp(t), **source)
-                    pending = True
-                samples.append({"t": t, "time": stamp(t), "count": count, "printed": str(printed),
-                                "text": line, "invalid": invalid, "barrier": pending, **source})
-                parsed += 1
-                pending, previous = False, t
+                if len(readings) > 1:
+                    # Every reading is kept; the equal timestamps form a local barrier below.
+                    issue("multiple_raw_per_line", time=stamp(t), readings=len(readings), **source)
+                if max_t is not None and t < max_t:
+                    if rollback_until is None:
+                        issue("non_increasing_source_time", time=stamp(t), **source)
+                    rollback_until = max_t
+                rollback_edge = False
+                if rollback_until is not None and t > rollback_until:
+                    rollback_until = None
+                    # The catch-up row bridges the clock discontinuity: its left
+                    # pair spans the rollback, so it carries a barrier of its own.
+                    rollback_edge = True
+                ambiguous = rollback_until is not None
+                for printed_text in readings:
+                    printed = int(printed_text)
+                    count = printed
+                    bits = profile.get("unsigned_print_bits")
+                    if bits and 0 <= printed < 2**bits and printed >= 2**(bits - 1):
+                        count = printed - 2**bits
+                    invalid = (("count_min" in profile and count < profile["count_min"])
+                               or ("count_max" in profile and count > profile["count_max"]))
+                    samples.append({"t": t, "time": stamp(t), "count": count, "printed": str(printed),
+                                    "text": line, "invalid": invalid,
+                                    "barrier": pending or ambiguous or rollback_edge, **source})
+                    parsed += 1
+                pending = False
+                max_t = t if max_t is None else max(max_t, t)
                 if len(samples) > max_samples or len(context) > max_samples or len(issues) > max_samples:
                     raise ValueError("capacity_exceeded: evidence limit; no completed analysis")
         after_stat = path.stat()
@@ -230,11 +270,8 @@ def scan(logs, start=None, end=None, profile=None, max_bytes=256 * 1024**2, max_
                        "bytes": after_stat.st_size})
     samples.sort(key=lambda r: (r["t"], r["source"], r["line_no"]))
     context.sort(key=lambda r: (r["t"], r["source"], r["line_no"]))
-    # A source clock rollback makes its ordered interval ambiguous even after sorting.
-    affected = {r["source"] for r in issues if r["kind"] == "non_increasing_source_time"}
-    for row in samples:
-        if row["source"] in affected:
-            row["barrier"] = True
+    # Rollback ambiguity was bounded during the scan to the interval until the
+    # source clock passes its pre-rollback maximum; equal timestamps stay local.
     for a, b in zip(samples, samples[1:]):
         if a["t"] == b["t"]:
             a["barrier"] = b["barrier"] = True
@@ -243,7 +280,7 @@ def scan(logs, start=None, end=None, profile=None, max_bytes=256 * 1024**2, max_
              "requested": {"start": stamp(start) if start is not None else None,
                            "end": stamp(end) if end is not None else None},
              "inputs": inputs, "samples": samples, "context": context, "issues": issues,
-             "reviews": {}}
+             "reviews": {}, "window_reviews": {}}
     state["analysis_id"] = digest({"inputs": inputs, "requested": state["requested"],
                                   "profile": profile, "version": VERSION})[:20]
     analyze(state)
@@ -259,8 +296,10 @@ def analyze(state):
     context_times = [r["t"] for r in state["context"]]
     pairs, gaps, seeds = [], [], []
 
-    def seed(lo, hi, kind):
-        seeds.append({"lo": lo, "hi": hi, "kind": kind})
+    def seed(lo, hi, kind, **metrics):
+        row = {"lo": lo, "hi": hi, "kind": kind}
+        row.update(metrics)
+        seeds.append(row)
 
     for i, row in enumerate(rows):
         if row["invalid"]:
@@ -281,7 +320,8 @@ def analyze(state):
             lower_rate = max(0, abs(delta) - profile.get("count_tolerance", 0)) * 1000 / (
                 dt + 2 * profile["timestamp_uncertainty_ms"])
             if lower_rate > profile["max_rate_counts_s"]:
-                seed(i, i + 1, "profile_rate_candidate")
+                seed(i, i + 1, "profile_rate_candidate",
+                     excess=round(lower_rate / profile["max_rate_counts_s"], 2))
 
     # Bounded local references on both sides. Signed rates treat reverse symmetrically.
     local_checked, local_unchecked = 0, 0
@@ -307,7 +347,8 @@ def analyze(state):
         scale = max(2 * 1000 / pair["dt_ms"], abs(center) * .1, 6 * spread)
         residual = pair["delta"] - center * pair["dt_ms"] / 1000
         if abs(pair["rate"] - center) > 8 * scale and abs(residual) > 5:
-            seed(i, i + 1, "local_rate_deviation")
+            seed(i, i + 1, "local_rate_deviation",
+                 deviation=round(abs(pair["rate"] - center) / scale, 2))
         # Persistent changes are observations, not anomalies, including normal starts/stops.
         if len(left) >= 4 and len(right) >= 4:
             l, r = statistics.median(left[:4]), statistics.median(right[:4])
@@ -315,18 +356,26 @@ def analyze(state):
                         statistics.median(abs(v - l) for v in left[:4]),
                         statistics.median(abs(v - r) for v in right[:4]))
             if abs(l - r) > max(8 * noise, .5 * max(abs(l), abs(r))):
-                seed(i, i + 1, "rate_transition")
+                seed(i, i + 1, "rate_transition",
+                     shift=round(abs(l - r) / max(noise, 1e-9), 2))
     seeds.sort(key=lambda s: (s["lo"], s["hi"], s["kind"]))
     candidates = []
     for s in seeds:
+        extra = {key: value for key, value in s.items() if key not in ("lo", "hi", "kind")}
         if candidates and s["lo"] <= candidates[-1]["hi"]:
             c = candidates[-1]
             c["hi"] = max(c["hi"], s["hi"])
             c["kinds"] = sorted(set(c["kinds"] + [s["kind"]]))
+            c["metrics"].update(extra)
         else:
-            candidates.append({"lo": s["lo"], "hi": s["hi"], "kinds": [s["kind"]]})
+            candidates.append({"lo": s["lo"], "hi": s["hi"], "kinds": [s["kind"]], "metrics": extra})
     for i, c in enumerate(candidates):
-        c.update(id=f"R{i + 1}", start=rows[c["lo"]]["time"], end=rows[c["hi"]]["time"])
+        core = [p for p in pairs[c["lo"]:c["hi"]] if not p["blocked"]]
+        peak = max((abs(p["rate"]) for p in core if p["rate"] is not None), default=None)
+        c.update(id=f"R{i + 1}", start=rows[c["lo"]]["time"], end=rows[c["hi"]]["time"],
+                 duration_ms=rows[c["hi"]]["t"] - rows[c["lo"]]["t"],
+                 samples=c["hi"] - c["lo"] + 1,
+                 peak_rate_counts_s=round(peak, 3) if peak is not None else None)
     state["pairs"], state["gaps"], state["candidates"] = pairs, gaps, candidates
     state["facts"] = {"primary_stream": "raw_encoder", "samples_in_window": len(rows),
                       "first_ts": rows[0]["time"] if rows else None,
@@ -346,6 +395,32 @@ def public_candidate(state, candidate):
     result.pop("hi")
     result["review_status"] = state["reviews"].get(candidate["id"], {}).get("status", "unseen")
     return result
+
+
+def batch_hint(state, skip=()):
+    """A copy-paste batched command for every still-unreviewed candidate.
+
+    Models follow a concrete command far more reliably than a prose rule, so
+    the tool itself steers every single-candidate detour back to batching.
+    """
+    remaining = [candidate["id"] for candidate in state["candidates"]
+                 if candidate["id"] not in state["reviews"] and candidate["id"] not in skip]
+    if not remaining:
+        return None
+    batch = " ".join(f"--candidate {candidate_id}" for candidate_id in remaining)
+    return (f"{len(remaining)} candidates remain unreviewed; review them in ONE batched "
+            f"call: python3 encoder_health.py inspect <analysis-path> {batch}")
+
+
+def candidate_order(state):
+    """Deterministic severity order: profile-backed first, then deviation size."""
+    def rank(candidate):
+        kinds = candidate["kinds"]
+        return (not any(kind.startswith("profile_") for kind in kinds),
+                "local_rate_deviation" not in kinds,
+                -max(candidate.get("metrics", {}).values(), default=0),
+                candidate["lo"])
+    return sorted(state["candidates"], key=rank)
 
 
 def plot_summary(state, *, include_panels=False):
@@ -368,7 +443,8 @@ def plot_summary(state, *, include_panels=False):
         "output_dir": plots.get("output_dir"),
         "analysis_id": plots.get("analysis_id"),
         "artifacts": compact_artifacts,
-        "candidates_requested": plots.get("candidates_requested", []),
+        "candidates_plotted": plots.get("candidates_plotted",
+                                        plots.get("candidates_requested", [])),
         "candidates_available": plots.get("candidates_available"),
         "plot_points_limit": plots.get("plot_points_limit"),
         "raw_only": plots.get("raw_only"),
@@ -388,17 +464,21 @@ def report(state, offset=0, limit=5):
         if requested[key] is not None and (actual is None or abs(millis(requested[key]) - millis(actual)) > facts["gap_threshold_ms"]):
             quality = True
             uncovered_edges.append({"edge": key, "requested": requested[key], "observed": actual})
+    # One source of truth for the inconclusive status and its listed reasons.
+    reasons = (["unreviewed_candidates"] if unseen else []) \
+        + (["unresolved_checks"] if unresolved else []) \
+        + (["incomplete_or_uncertain_data"] if quality else []) \
+        + (["insufficient_local_reference"] if facts["local_pairs_without_reference"] else []) \
+        + (["fewer_than_three_raw_samples"] if len(state["samples"]) < 3 else [])
     if confirmed:
         status = "confirmed_raw_anomaly"
     elif not state["samples"] and not state["issues"]:
         status = "no_raw_data"
-    elif unresolved or unseen or quality or len(state["samples"]) < 3:
+    elif reasons:
         status = "inconclusive"
     else:
         status = "no_anomaly_evidence_in_completed_checks"
-    ordered = sorted(state["candidates"],
-                     key=lambda c: (not any(k.startswith("profile_") for k in c["kinds"]),
-                                    "local_rate_deviation" not in c["kinds"], c["lo"]))
+    ordered = candidate_order(state)
     return {"scopex_role": "business_facts", "source": "encoder-health", "schema": SCHEMA,
             "analysis_id": state["analysis_id"], "facts": facts, "requested": requested,
             "status": status, "stop_recommended": False,
@@ -408,17 +488,19 @@ def report(state, offset=0, limit=5):
             "unresolved_total": len(unresolved), "unseen_total": unseen,
             "candidates_total": len(ordered),
             "coverage": {"uncovered_edges": uncovered_edges, "internal_gap_count": len(state["gaps"])},
-            "inconclusive_reasons": (["unreviewed_candidates"] if unseen else [])
-                + (["unresolved_checks"] if unresolved else [])
-                + (["incomplete_or_uncertain_data"] if quality else [])
-                + (["insufficient_local_reference"] if facts["local_pairs_without_reference"] else [])
-                + (["fewer_than_three_raw_samples"] if len(state["samples"]) < 3 else []),
+            "inconclusive_reasons": reasons,
             "candidates": [public_candidate(state, c) for c in ordered[offset:offset + limit]],
+            "next_action": batch_hint(state),
             "next_offset": offset + limit if offset + limit < len(ordered) else None,
             "gaps": state["gaps"][:8], "gaps_omitted": max(0, len(state["gaps"]) - 8),
             "issues": state["issues"][:8], "issues_total": len(state["issues"]),
             "inputs": state["inputs"], "profile": state["profile"], "limitations": LIMITATIONS,
-            "plots": plot_summary(state)}
+            "plots": plot_summary(state),
+            "review_guide": {"ordering": "severity: profile-backed checks first, then deviation size",
+                             "metrics": {"excess": "lower-bound rate over the profile limit (x)",
+                                         "deviation": "local rate deviation over local scale (x)",
+                                         "shift": "persistent rate change over local noise (x)",
+                                         "peak_rate_counts_s": "largest |rate| inside the candidate"}}}
 
 
 def inspect(state, candidate_id=None, start=None, end=None, context_ms=1000, offset=0,
@@ -444,11 +526,15 @@ def inspect(state, candidate_id=None, start=None, end=None, context_ms=1000, off
                     "start": stamp(start), "end": stamp(end), "stop_recommended": False}
         key = f"{stamp(start)}/{stamp(end)}"
     a, b = bisect_left(times, times[lo] - context_ms), bisect_right(times, times[hi] + context_ms)
-    relevant = [r for r in state["context"] if times[a] <= r["t"] <= times[b - 1]]
+    # Filter context by the requested time bounds themselves, not by neighboring
+    # sample times: events before the first or after the last raw sample still
+    # count as captured decision context.
+    relevant = [r for r in state["context"]
+                if times[lo] - context_ms <= r["t"] <= times[hi] + context_ms]
     decision_a = bisect_left(times, times[lo] - DECISION_CONTEXT_MS)
     decision_b = bisect_right(times, times[hi] + DECISION_CONTEXT_MS)
     decision_relevant = [r for r in state["context"]
-                         if times[decision_a] <= r["t"] <= times[decision_b - 1]]
+                         if times[lo] - DECISION_CONTEXT_MS <= r["t"] <= times[hi] + DECISION_CONTEXT_MS]
     core_pairs = state["pairs"][lo:hi]
     continuous = not any(p["blocked"] for p in core_pairs)
     left, right = [], []
@@ -518,7 +604,10 @@ def inspect(state, candidate_id=None, start=None, end=None, context_ms=1000, off
                         if transition_supported else "Direction and local shape alone do not distinguish allowed motion from a bad reading."})
     review = {"region": key, "start": rows[lo]["time"], "end": rows[hi]["time"],
               "status": status, "checks": reasons, "comparison": comparison}
-    state["reviews"][key] = review
+    # Window views inform but never close a candidate review; they are kept
+    # separately so report counts stay per-candidate.
+    bucket = state["reviews"] if candidate_id else state.setdefault("window_reviews", {})
+    bucket[key] = review
     # Only a full candidate inspection closes its review; opening a slice is not resolving it.
     indices = range(a + offset, min(b, a + offset + limit))
     trace = [{"time": rows[i]["time"], "raw_count": str(rows[i]["count"]),
@@ -545,9 +634,11 @@ def inspect(state, candidate_id=None, start=None, end=None, context_ms=1000, off
             "counter_log_context_omitted": max(0, len(relevant) - INSPECT_CONTEXT_SLICE),
             "decision_counter_log_context": decision_relevant[:INSPECT_CONTEXT_SLICE],
             "decision_counter_log_context_omitted": max(0, len(decision_relevant) - INSPECT_CONTEXT_SLICE),
-            "next_action": "Inspect the remaining candidates and report the full window; a confirmed result does not stop review."
+            "hint": batch_hint(state, skip=(key,)),
+            "next_action": batch_hint(state, skip=(key,)) or (
+                "Continue with the remaining candidates; a confirmed result does not stop review."
                 if shape_only or confirmed else
-                "report"}
+                "report")}
 
 
 def _speed_values(state, speed_window_ms):
@@ -570,9 +661,12 @@ def _speed_values(state, speed_window_ms):
 
 
 def _decimate_segment(xs, ys, limit):
+    # limit bounds the output point count; each bucket keeps at most five
+    # points (first, last, min, max, largest |value|).
     if len(xs) <= limit:
         return list(zip(xs, ys))
-    bucket_size = max(1, math.ceil(len(xs) / limit))
+    buckets = max(1, limit // 5)
+    bucket_size = max(1, math.ceil(len(xs) / buckets))
     selected = set()
     for start in range(0, len(xs), bucket_size):
         end = min(len(xs), start + bucket_size)
@@ -586,21 +680,28 @@ def _decimate_segment(xs, ys, limit):
 
 
 def _decimate_series(xs, ys, limit):
-    points, start = [], 0
+    # Split at non-finite values, then budget points across segments by length
+    # so a break anywhere no longer starves the segments after it.
+    segments = []
+    start = 0
     for index in range(len(xs) + 1):
         if index == len(xs) or not math.isfinite(ys[index]):
             if start < index:
-                segment_limit = max(2, limit // max(1, len(points) + 1))
-                points.extend(_decimate_segment(xs[start:index], ys[start:index], segment_limit))
-            if index < len(xs) and points and points[-1] != (math.nan, math.nan):
-                points.append((math.nan, math.nan))
+                segments.append((start, index))
             start = index + 1
-    if points and math.isnan(points[-1][0]):
-        points.pop()
+    if not segments:
+        return [], []
+    total = sum(end - seg_start for seg_start, end in segments)
+    points = []
+    for order, (seg_start, end) in enumerate(segments):
+        quota = max(2, limit * (end - seg_start) // total)
+        points.extend(_decimate_segment(xs[seg_start:end], ys[seg_start:end], quota))
+        if order < len(segments) - 1:
+            points.append((math.nan, math.nan))
     return [point[0] for point in points], [point[1] for point in points]
 
 
-def _plot_series(state, start, end, speed_window_ms):
+def _plot_series(state, start, end, speed_window_ms, max_points=MAX_PLOT_POINTS):
     rows = state["samples"]
     base = rows[start]["t"]
     raw_offset = rows[start]["count"]
@@ -626,10 +727,10 @@ def _plot_series(state, start, end, speed_window_ms):
     speed_x = [(rows[index]["t"] - base) / 1000 for index in range(start, end)]
     speed_y = [value if value is not None else math.nan for value in speed[start:end]]
     return {
-        "raw": _decimate_series(raw_x, raw_y, MAX_PLOT_POINTS),
-        "dt": _decimate_series(dt_x, dt_y, MAX_PLOT_POINTS),
-        "delta": _decimate_series(delta_x, delta_y, MAX_PLOT_POINTS),
-        "speed": _decimate_series(speed_x, speed_y, MAX_PLOT_POINTS),
+        "raw": _decimate_series(raw_x, raw_y, max_points),
+        "dt": _decimate_series(dt_x, dt_y, max_points),
+        "delta": _decimate_series(delta_x, delta_y, max_points),
+        "speed": _decimate_series(speed_x, speed_y, max_points),
         "raw_offset": raw_offset,
         "sample_count": end - start,
         "blocked_pair_count": sum(pair["blocked"] for pair in
@@ -637,7 +738,8 @@ def _plot_series(state, start, end, speed_window_ms):
     }
 
 
-def _write_plot(state, path, start, end, title, core=None, speed_window_ms=DEFAULT_SPEED_WINDOW_MS):
+def _write_plot(state, path, start, end, title, core=None, speed_window_ms=DEFAULT_SPEED_WINDOW_MS,
+                max_points=MAX_PLOT_POINTS, candidates=(), label_ids=frozenset()):
     if end <= start:
         raise ValueError("plot region has no samples")
     path = Path(path)
@@ -646,8 +748,9 @@ def _write_plot(state, path, start, end, title, core=None, speed_window_ms=DEFAU
     import matplotlib
     matplotlib.use("Agg", force=True)
     import matplotlib.pyplot as plt
+    import matplotlib.ticker as ticker
 
-    payload = _plot_series(state, start, end, speed_window_ms)
+    payload = _plot_series(state, start, end, speed_window_ms, max_points)
     fig, axes = plt.subplots(4, 1, figsize=(14, 11), sharex=True)
     panels = (("raw", f"raw cumulative count (offset {payload['raw_offset']}; plotted Δcount)", "count Δ"),
               ("dt", "raw sampling interval", "ms"),
@@ -659,14 +762,28 @@ def _write_plot(state, path, start, end, title, core=None, speed_window_ms=DEFAU
         axis.set_ylabel(unit)
         axis.set_title(label, loc="left", fontsize=10)
         axis.grid(True, alpha=0.25)
+    # Absolute wall-clock ticks so anomalies point at real log times directly.
+    base_ms = state["samples"][start]["t"]
     if core is not None:
         core_start, core_end = core
-        base = state["samples"][start]["t"]
-        axes[0].axvspan((state["samples"][core_start]["t"] - base) / 1000,
-                        (state["samples"][core_end]["t"] - base) / 1000,
+        axes[0].axvspan((state["samples"][core_start]["t"] - base_ms) / 1000,
+                        (state["samples"][core_end]["t"] - base_ms) / 1000,
                         color="#f2c14e", alpha=0.22, label="candidate core")
         axes[0].legend(loc="upper right")
-    axes[-1].set_xlabel("seconds from plotted region start")
+    axes[-1].xaxis.set_major_formatter(
+        ticker.FuncFormatter(lambda v, _: stamp(base_ms + v * 1000)[11:23]))
+    plt.setp(axes[-1].get_xticklabels(), rotation=30, ha="right", fontsize=7)
+    if candidates:
+        for candidate in candidates:
+            x = (state["samples"][candidate["lo"]]["t"] - base_ms) / 1000
+            for axis in axes:
+                axis.axvline(x, color="#c0392b", alpha=0.35, linewidth=0.8)
+            if candidate["id"] in label_ids:
+                axes[0].annotate(f"{candidate['id']} {candidate['start'][11:23]}",
+                                 xy=(x, 1), xycoords=("data", "axes fraction"),
+                                 rotation=90, fontsize=7, color="#c0392b",
+                                 va="top", ha="right")
+    axes[-1].set_xlabel("time of day (HH:MM:SS:mmm)")
     requested = state["requested"]
     fig.suptitle(title, fontsize=12)
     fig.text(0.01, 0.01,
@@ -686,7 +803,6 @@ def _write_plot(state, path, start, end, title, core=None, speed_window_ms=DEFAU
 
 def plot_snapshot(state, out_dir, candidate_ids=None, context_ms=1000,
                   speed_window_ms=DEFAULT_SPEED_WINDOW_MS, max_points=MAX_PLOT_POINTS):
-    global MAX_PLOT_POINTS
     if not state["samples"]:
         raise ValueError("No raw samples in this analysis")
     if not 0 <= context_ms <= 60000:
@@ -695,20 +811,22 @@ def plot_snapshot(state, out_dir, candidate_ids=None, context_ms=1000,
         raise ValueError("speed-window-ms must be 1..60000")
     if not 100 <= max_points <= 200000:
         raise ValueError("max-points must be 100..200000")
-    MAX_PLOT_POINTS = max_points
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
+    ordered = candidate_order(state)
+    selected = (ordered[:PLOT_TOP_CANDIDATES] if candidate_ids is None else
+                [next((candidate for candidate in ordered if candidate["id"] == candidate_id), None)
+                 for candidate_id in candidate_ids])
+    if any(candidate is None for candidate in selected):
+        raise ValueError("Unknown candidate ID")
+    label_ids = {candidate["id"] for candidate in selected}
     artifacts = []
     rows = state["samples"]
     overview = _write_plot(state, out_dir / "overview.png", 0, len(rows),
-                           "Encoder raw overview", speed_window_ms=speed_window_ms)
+                           "Encoder raw overview", speed_window_ms=speed_window_ms,
+                           max_points=max_points, candidates=ordered, label_ids=label_ids)
     overview.update(kind="overview", media_type="image/png", analysis_id=state["analysis_id"])
     artifacts.append(overview)
-    selected = state["candidates"] if candidate_ids is None else [
-        next((candidate for candidate in state["candidates"] if candidate["id"] == candidate_id), None)
-        for candidate_id in candidate_ids]
-    if any(candidate is None for candidate in selected):
-        raise ValueError("Unknown candidate ID")
     times = [row["t"] for row in rows]
     for candidate in selected:
         lo, hi = candidate["lo"], candidate["hi"]
@@ -716,38 +834,69 @@ def plot_snapshot(state, out_dir, candidate_ids=None, context_ms=1000,
         end = bisect_right(times, times[hi] + context_ms)
         artifact = _write_plot(
             state, out_dir / f"candidate-{candidate['id']}.png", start, end,
-            f"Encoder raw candidate {candidate['id']}", core=(lo, hi),
-            speed_window_ms=speed_window_ms)
+            f"Encoder raw candidate {candidate['id']}  {candidate['start']} – {candidate['end']}",
+            core=(lo, hi), speed_window_ms=speed_window_ms, max_points=max_points)
         artifact.update(kind="candidate", candidate_id=candidate["id"],
                         media_type="image/png", analysis_id=state["analysis_id"])
         artifacts.append(artifact)
     return {"scopex_role": "business_facts", "source": "encoder-health", "schema": SCHEMA,
             "analysis_id": state["analysis_id"], "status": "plots_written",
             "output_dir": str(out_dir), "artifacts": artifacts,
-            "candidates_requested": [candidate["id"] for candidate in selected],
-            "candidates_available": len(state["candidates"]),
+            "candidates_plotted": [candidate["id"] for candidate in selected],
+            "candidates_available": len(ordered),
+            "plot_note": (None if candidate_ids is not None else
+                          "overview marks every candidate; candidate plots default to the "
+                          f"{PLOT_TOP_CANDIDATES} highest-severity candidates; pass --candidate to select specific ones"),
             "plot_points_limit": max_points,
             "raw_only": True}
 
 
-def record_access(state):
+def _append_access(row):
     path = Path(os.environ.get("SCOPEX_DATA_ACCESS_LOG", "/task-scratch/data-access.jsonl"))
     if not path.parent.is_dir():
         return
+    # Best-effort audit trail: a failing append must never discard a completed
+    # analysis, so failures are swallowed on purpose.
+    try:
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+        with os.fdopen(fd, "a", encoding="utf-8") as handle:
+            handle.write(canonical(row) + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+    except OSError:
+        pass
+
+
+def record_access(state):
     request = state["requested"]
-    row = {"schema": 1, "source": "cowdisinfect_logs", "operation": "analyze",
-           "purpose": "encoder_health", "data_kind": "log", "content_filter": "encoder",
-           "start": parse_time(request["start"]).strftime(TS_FMT) if request["start"] else state["facts"]["first_ts"],
-           "end": parse_time(request["end"]).strftime(TS_FMT) if request["end"] else
-               stamp(state["samples"][-1]["t"] + 1) if state["samples"] else None,
-           "source_files": [p["path"] for p in state["inputs"]]}
-    with path.open("a", encoding="utf-8") as handle:
-        handle.write(canonical(row) + "\n")
+    start = request["start"] or state["facts"]["first_ts"]
+    end = request["end"] or (stamp(state["samples"][-1]["t"] + 1) if state["samples"] else None)
+    # Only complete windows are recorded: a null bound would break consumers
+    # that parse every access row.
+    if not (isinstance(start, str) and isinstance(end, str)):
+        return
+    _append_access({"schema": 1, "source": "cowdisinfect_logs", "operation": "analyze",
+                    "purpose": "encoder_health", "data_kind": "log", "content_filter": "encoder",
+                    "start": start, "end": end,
+                    "source_files": [p["path"] for p in state["inputs"]]})
+
+
+def record_failed_access(logs, start, end):
+    """A scan that fails mid-read still touched real log bytes; audit that."""
+    if not logs:
+        return
+    _append_access({"schema": 1, "source": "cowdisinfect_logs", "operation": "analyze",
+                    "purpose": "encoder_health", "data_kind": "log", "content_filter": "encoder",
+                    "start": start, "end": end, "completed": False,
+                    "source_files": [str(Path(p).resolve()) for p in logs]})
 
 
 def main(argv=None):
+    if hasattr(sys.stdout, "reconfigure"):
+        # Chinese control-log lines must survive non-UTF-8 locales.
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     argv = list(sys.argv[1:] if argv is None else argv)
-    if argv and argv[0] not in {"scan", "inspect", "report", "plot", "-h", "--help"}:
+    if argv and argv[0] not in {*COMMANDS, "-h", "--help"}:
         argv.insert(0, "scan")
     ap = argparse.ArgumentParser(description=__doc__)
     commands = ap.add_subparsers(dest="operation", required=True)
@@ -762,7 +911,7 @@ def main(argv=None):
     scan_ap.add_argument("--max-samples", type=int, default=250000)
     detail = commands.add_parser("inspect", help="Inspect any captured region or a candidate")
     detail.add_argument("analysis", type=Path)
-    detail.add_argument("--candidate")
+    detail.add_argument("--candidate", action="append")
     detail.add_argument("--start")
     detail.add_argument("--end")
     detail.add_argument("--context-ms", type=int, default=1000)
@@ -779,10 +928,11 @@ def main(argv=None):
         sub.add_argument("--offset", type=int, default=0)
         sub.add_argument("--limit", type=int, default=INSPECT_TRACE_LIMIT if sub is detail else 5)
     args = ap.parse_args(argv)
+    scan_files = []
     try:
         if args.operation == "scan":
-            start = millis(args.start) if args.start else None
-            end = millis(args.end) if args.end else None
+            start = checked_time(args.start) if args.start else None
+            end = checked_time(args.end) if args.end else None
             if args.log_dir and args.logs:
                 raise ValueError("Use explicit files or --log-dir, not both")
             logs = discover_logs(args.log_dir, start, end) if args.log_dir else args.logs
@@ -793,10 +943,11 @@ def main(argv=None):
             if args.out and args.profile and args.out.resolve() == args.profile.resolve():
                 raise ValueError("Output must not overwrite the device profile")
             profile = json.loads(args.profile.read_text()) if args.profile else {}
+            scan_files = logs
             state = scan(logs, start, end, profile, args.max_bytes, args.max_samples)
-            record_access(state)
             if args.out:
                 save(args.out, state)
+            record_access(state)
             result = report(state)
             result["analysis_path"] = str(args.out) if args.out else None
         elif args.operation == "plot":
@@ -805,9 +956,15 @@ def main(argv=None):
             state = load(args.analysis)
             result = plot_snapshot(state, args.out_dir, args.candidate, args.context_ms,
                                    args.speed_window_ms, args.max_points)
+            runs = state.setdefault("plot_runs", [])
+            runs.append({"output_dir": result["output_dir"],
+                         "candidates_plotted": result["candidates_plotted"],
+                         "artifacts": len(result["artifacts"])})
+            del runs[:-8]
             state["plots"] = result
             save(args.analysis, state)
             result = plot_summary(state, include_panels=True)
+            result["plot_runs"] = runs
         else:
             if args.offset < 0 or not 1 <= args.limit <= 32:
                 raise ValueError("offset must be nonnegative; limit must be 1..32")
@@ -819,13 +976,33 @@ def main(argv=None):
                     raise ValueError("context-ms must be 0..60000")
                 if args.candidate and (args.start or args.end):
                     raise ValueError("Use a candidate or a time window, not both")
-                result = inspect(state, args.candidate, millis(args.start) if args.start else None,
-                                 millis(args.end) if args.end else None,
-                                 args.context_ms, args.offset, args.limit)
-                save(args.analysis, state)
+                if len(args.candidate or []) > 1:
+                    # One load/save per batch; each item keeps its review durable.
+                    results = [inspect(state, candidate, None, None,
+                                       args.context_ms, args.offset, args.limit)
+                               for candidate in args.candidate]
+                    save(args.analysis, state)
+                    result = {"scopex_role": "business_facts", "source": "encoder-health",
+                              "schema": SCHEMA, "analysis_id": state["analysis_id"],
+                              "status": "batch_inspected",
+                              "inspections": [{"region": r["region"], "start": r["start"],
+                                               "end": r["end"], "status": r["status"],
+                                               "core": r["core"],
+                                               "checks": {c["check"]: c["outcome"] for c in r["checks"]}}
+                                              for r in results],
+                              "next_action": "report",
+                              "hint": batch_hint(state)}
+                else:
+                    result = inspect(state, (args.candidate or [None])[0],
+                                     checked_time(args.start) if args.start else None,
+                                     checked_time(args.end) if args.end else None,
+                                     args.context_ms, args.offset, args.limit)
+                    save(args.analysis, state)
         print(canonical(result))
         return 0
-    except (ValueError, OSError, KeyError, TypeError, OverflowError) as exc:
+    except (ValueError, OSError, KeyError, TypeError, OverflowError, ImportError) as exc:
+        if args.operation == "scan":
+            record_failed_access(scan_files, args.start, args.end)
         print(canonical({"source": "encoder-health", "status": "error", "error": str(exc),
                          "stop_recommended": False}))
         return 2

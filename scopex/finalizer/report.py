@@ -89,15 +89,18 @@ def _structured_business_content(item: EvidenceItem) -> str | None:
         return None
 
     keep: dict[str, Any] = {}
-    for key in ("scopex_role", "schema", "source", "window", "facts", "summary", "quality", "candidate_events_total"):
+    for key in ("scopex_role", "schema", "source", "analysis_id", "status", "facts",
+                "requested", "confirmed_total", "unresolved_total", "unseen_total",
+                "candidates_total", "coverage", "inconclusive_reasons", "region",
+                "start", "end", "checks", "core", "inspections", "review_guide"):
         if key in payload:
             keep[key] = payload[key]
-    candidates = payload.get("top_candidates")
+    candidates = payload.get("candidates")
     if isinstance(candidates, list):
-        # Concrete timestamps/counts around the strongest bounded candidates are
+        # Concrete timestamps/metrics around the strongest bounded candidates are
         # exactly what the user report needs. Keep a small set instead of a raw
         # prefix that might truncate them away after the large facts object.
-        keep["top_candidates"] = candidates[:6]
+        keep["candidates"] = candidates[:8]
     return json.dumps(keep, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
 
 
@@ -166,7 +169,7 @@ _SYSTEM_PROMPT = """你是 ScopeX 的业务结果编辑器，不是诊断 Agent�
 9. 每个条目必须引用真实 claim_ids；evidence_refs 只能从这些 Claim 已有的 evidence_refs 中选择。
 10. next_steps 只能围绕已有 inference/unknown/causal_hypothesis 的验证方向，不得凭空增加故障结论或执行动作。
 11. 如果证据不足，直接说明限制，不要补常识答案。
-12. 对结构化 business_facts，优先把最重要的统计和 top_candidates 写成人话；不要复述字段名。
+12. 对结构化 business_facts，优先把最重要的统计和 candidates（含时间、类型、倍数、结论）写成人话；不要复述字段名。
 13. 只输出一个 JSON 对象，不输出 Markdown 或额外解释。
 
 固定 schema：

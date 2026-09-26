@@ -157,67 +157,131 @@ def _humanize_business_facts(payload: dict) -> str | None:
         return "；".join(rows) if rows else None
 
     if source == "encoder-health":
-        facts = payload.get("facts")
-        if not isinstance(facts, dict):
-            return None
         rows: list[str] = []
-        samples = facts.get("samples_in_window")
-        invalid = facts.get("invalid_samples")
-        median_dt = facts.get("median_sample_dt_ms")
-        if isinstance(samples, (int, float)):
-            text = f"时间窗内共 {int(samples)} 个编码器采样"
-            if isinstance(invalid, (int, float)):
-                text += f"，无效/读取失败 {int(invalid)}"
-            if isinstance(median_dt, (int, float)):
-                text += f"，采样中位间隔 {_number(median_dt, 3)} ms"
-            rows.append(text)
+        facts = payload.get("facts")
+        if isinstance(facts, dict):
+            samples = facts.get("samples_in_window")
+            invalid = facts.get("invalid_samples")
+            median_dt = facts.get("median_sample_dt_ms")
+            if isinstance(samples, (int, float)):
+                text = f"时间窗内共 {int(samples)} 个编码器采样"
+                if isinstance(invalid, (int, float)):
+                    text += f"，无效/读取失败 {int(invalid)}"
+                if isinstance(median_dt, (int, float)):
+                    text += f"，采样中位间隔 {_number(median_dt, 3)} ms"
+                rows.append(text)
+            gaps = facts.get("sampling_gap_count")
+            if isinstance(gaps, (int, float)) and gaps:
+                rows.append(f"采样缺口 {int(gaps)} 处")
 
-        anomaly = facts.get("anomaly_event_count")
-        gaps = facts.get("sampling_gap_count")
-        reverse_glitch = facts.get("reverse_glitch_candidate_count")
-        reverse_interval = facts.get("reverse_interval_candidate_count")
-        reverse_step = facts.get("reverse_step_candidate_count")
-        positive_spike = facts.get("positive_spike_candidate_count")
-        if isinstance(anomaly, (int, float)):
-            if int(anomaly) == 0:
-                rows.append("未发现显著毛刺、回退或异常跳变候选")
-            else:
-                parts = []
-                if isinstance(reverse_glitch, (int, float)) and reverse_glitch:
-                    parts.append(f"回退-恢复毛刺 {int(reverse_glitch)}")
-                if isinstance(reverse_interval, (int, float)) and reverse_interval:
-                    parts.append(f"连续回退区间 {int(reverse_interval)}")
-                if isinstance(reverse_step, (int, float)) and reverse_step:
-                    parts.append(f"单步显著回退 {int(reverse_step)}")
-                if isinstance(positive_spike, (int, float)) and positive_spike:
-                    parts.append(f"异常正向跳变 {int(positive_spike)}")
-                if isinstance(gaps, (int, float)) and gaps:
-                    parts.append(f"采样缺口 {int(gaps)}")
-                rows.append(f"发现 {int(anomaly)} 个显著异常事件" + ("：" + "，".join(parts) if parts else ""))
+        status_labels = {
+            "confirmed_raw_anomaly": "已确认 raw 数据异常",
+            "no_anomaly_evidence_in_completed_checks": "已完成的检查未发现 raw 数据异常证据",
+            "inconclusive": "本次检查未能给出确定结论",
+            "no_raw_data": "时间窗内没有 raw 编码器读数",
+            "batch_inspected": "批量候选检查完成",
+        }
+        status_text = status_labels.get(payload.get("status")) if isinstance(payload.get("status"), str) else None
+        totals = []
+        for key, label in (("confirmed_total", "确认"), ("unresolved_total", "未决"), ("unseen_total", "未查看")):
+            value = payload.get(key)
+            if isinstance(value, (int, float)) and value:
+                totals.append(f"{label} {int(value)}")
+        candidates_total = payload.get("candidates_total")
+        if isinstance(candidates_total, (int, float)) and candidates_total:
+            rows.append(f"筛出 {int(candidates_total)} 个候选" + (f"（{'，'.join(totals)}）" if totals else ""))
+        elif totals:
+            rows.append("，".join(totals))
+        region = payload.get("region")
+        if isinstance(region, str) and region:
+            start = _short_time(payload.get("start"))
+            end = _short_time(payload.get("end"))
+            rows.append(f"检查区间 {region} {start}–{end}".rstrip() + (f"：{status_text}" if status_text else ""))
+        elif status_text:
+            rows.append(status_text)
 
-        top = payload.get("top_candidates")
-        if isinstance(top, list):
-            details = []
-            labels = {
-                "reverse_glitch_candidate": "回退-恢复毛刺",
-                "reverse_interval_candidate": "连续回退",
-                "reverse_step_candidate": "单步回退",
-                "positive_spike_candidate": "异常正跳",
-                "sampling_gap": "采样缺口",
+        candidates = payload.get("candidates")
+        if isinstance(candidates, list):
+            kind_labels = {
+                "profile_rate_candidate": "速率超限",
+                "profile_range_candidate": "计数越界",
+                "local_rate_deviation": "局部速率偏离",
+                "rate_transition": "速率变化",
+                "counter_or_acquisition_context": "控制事件边界",
             }
-            for event in top:
-                if not isinstance(event, dict) or event.get("type") not in labels:
+            review_labels = {
+                "confirmed_raw_anomaly": "已确认异常",
+                "unresolved": "未决",
+                "compatible_motion": "相容运动",
+                "no_anomaly_evidence": "无异常证据",
+                "unseen": "待查看",
+            }
+            details = []
+            for event in candidates:
+                if not isinstance(event, dict):
                     continue
-                when = _short_time(event.get("at") or event.get("start"))
-                if event.get("type") == "sampling_gap":
-                    details.append(f"{when} {labels[event['type']]} {_number(event.get('dt_ms'), 1)} ms")
-                else:
-                    delta = event.get("pulse_delta")
-                    details.append(f"{when} {labels[event['type']]} {delta:+} pulse" if isinstance(delta, (int, float)) else f"{when} {labels[event['type']]}")
-                if len(details) >= 3:
+                when = f"{_short_time(event.get('start'))}–{_short_time(event.get('end'))}"
+                kinds = [kind_labels.get(kind, kind) for kind in event.get("kinds", [])[:2]] or ["候选"]
+                metrics = event.get("metrics") if isinstance(event.get("metrics"), dict) else {}
+                measures = []
+                for key, label in (("excess", "超限"), ("deviation", "偏离"), ("shift", "变化")):
+                    value = metrics.get(key)
+                    if isinstance(value, (int, float)) and value:
+                        measures.append(f"{label} {_number(value, 1)} 倍")
+                peak = event.get("peak_rate_counts_s")
+                if isinstance(peak, (int, float)):
+                    measures.append(f"峰值 {_number(peak, 1)} counts/s")
+                review = review_labels.get(event.get("review_status"), "待查看")
+                piece = f"{when} {event.get('id', '?')} {'/'.join(kinds)}"
+                if measures:
+                    piece += f"（{'，'.join(measures)}）"
+                details.append(piece + f"：{review}")
+                if len(details) >= 4:
                     break
             if details:
-                rows.append("主要事件：" + "；".join(details))
+                suffix = ""
+                if isinstance(candidates_total, (int, float)) and candidates_total > len(details):
+                    suffix = f"（共 {int(candidates_total)} 个，此处列前 {len(details)} 个）"
+                rows.append("候选：" + "；".join(details) + suffix)
+
+        checks = payload.get("checks")
+        if isinstance(checks, list) and checks:
+            check_labels = {"verified_rate_limit": "速率上限检查", "verified_count_range": "计数范围检查",
+                            "motion_explanation": "运动解释"}
+            outcome_labels = {"violated": "违反", "insufficient": "证据不足",
+                              "compatible_transition": "相容变化", "no_contradiction_detected": "无矛盾"}
+            outcomes = []
+            for check in checks:
+                if isinstance(check, dict):
+                    name = check_labels.get(check.get("check"), check.get("check"))
+                    outcome = outcome_labels.get(check.get("outcome"), check.get("outcome"))
+                    outcomes.append(f"{name}{outcome}")
+            if outcomes:
+                rows.append("检查：" + "，".join(outcomes))
+
+        reasons = payload.get("inconclusive_reasons")
+        if isinstance(reasons, list) and reasons:
+            reason_labels = {
+                "unreviewed_candidates": "存在未查看候选",
+                "unresolved_checks": "存在未决检查",
+                "incomplete_or_uncertain_data": "数据覆盖不完整或存在不确定因素",
+                "insufficient_local_reference": "局部参考不足",
+                "fewer_than_three_raw_samples": "raw 样本少于 3 个",
+            }
+            texts = [reason_labels.get(reason, reason) for reason in reasons if isinstance(reason, str)]
+            if texts:
+                rows.append("未定原因：" + "、".join(texts))
+        coverage = payload.get("coverage")
+        if isinstance(coverage, dict):
+            notes = []
+            edges = coverage.get("uncovered_edges")
+            if isinstance(edges, list) and edges:
+                notes.append(f"请求窗口 {len(edges)} 端未全覆盖")
+            gaps_total = coverage.get("internal_gap_count")
+            if isinstance(gaps_total, (int, float)) and gaps_total:
+                notes.append(f"内部缺口 {int(gaps_total)} 处")
+            if notes:
+                rows.append("覆盖：" + "，".join(notes))
         return "；".join(rows) if rows else None
 
     if source == "system-health":

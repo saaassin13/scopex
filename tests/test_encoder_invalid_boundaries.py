@@ -56,9 +56,20 @@ class RawBoundaryTests(unittest.TestCase):
         s = self.scan_text(raw_text([("2026-09-15 00:00:00:000", 100),
                                     ("2026-09-15 00:00:00:020", 110),
                                     ("2026-09-15 00:00:00:010", 120),
-                                    ("2026-09-15 00:00:00:030", 130)]))
+                                    ("2026-09-15 00:00:00:030", 130),
+                                    ("2026-09-15 00:00:00:040", 140),
+                                    ("2026-09-15 00:00:00:050", 150)]))
         self.assertTrue(any(i["kind"] == "non_increasing_source_time" for i in s["issues"]))
-        self.assertEqual(s["facts"]["delta_counts"]["n"], 0)
+        # Ambiguity is bounded to the rollback interval plus the catch-up row:
+        # pairs spanning the clock discontinuity stay blocked, pairs fully after
+        # recovery stay live.
+        rolled = next(r for r in s["samples"] if r["time"] == "2026-09-15 00:00:00:010")
+        catch_up = next(r for r in s["samples"] if r["time"] == "2026-09-15 00:00:00:030")
+        after = next(r for r in s["samples"] if r["time"] == "2026-09-15 00:00:00:040")
+        self.assertTrue(rolled["barrier"])
+        self.assertTrue(catch_up["barrier"])
+        self.assertFalse(after["barrier"])
+        self.assertEqual(s["facts"]["delta_counts"]["n"], 1)
 
     def test_duplicate_timestamp_is_not_silently_deduplicated(self):
         s = self.scan_text(raw_text([("2026-09-15 00:00:00:000", 100)] * 2))
@@ -124,7 +135,7 @@ class RawBoundaryTests(unittest.TestCase):
             end = ANALYZER["millis"]("2026-09-14 04:00:00:000")
             state = ANALYZER["scan"](ANALYZER["discover_logs"](root, start, end), start, end)
             self.assertEqual(state["facts"]["samples_in_window"], 1)
-            self.assertEqual(state["inputs"][0]["path"], str(log.absolute()))
+            self.assertEqual(state["inputs"][0]["path"], str(log.resolve()))
 
     def test_short_gap_breaks_motion_comparison(self):
         state = analyze([(20, 10)] * 5 + [(400, 4000)] + [(20, 10)] * 5)

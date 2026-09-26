@@ -58,7 +58,7 @@ class EvaluationRequest(BaseModel):
 
 class DataPackageRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    modes: list[Literal["image_evidence", "image_window", "encoder_window", "encoder_source_files"]] = Field(min_length=1, max_length=4)
+    modes: list[Literal["image_evidence", "image_window", "encoder_window", "encoder_source_files", "working_plots"]] = Field(min_length=1, max_length=5)
 
 
 class ScheduleCreateRequest(BaseModel):

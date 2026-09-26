@@ -24,7 +24,10 @@ invent to obtain a confirmed result. Store its source/version in `source`.
 A rate violation is confirmed only when `(abs(delta)-tolerance)/(dt+2*time_error)`
 (with consistent units and a nonnegative numerator) exceeds the supplied bound,
 the pair is continuous, and the inspected context has no captured counter/control
-event needing explanation. Invalid readings are excluded from motion differences
+event needing explanation. Decision context is captured and evaluated with a
+1 s margin beyond both window edges — a reset just before `--start` or a control
+event just after the last raw sample still keeps the rate explanation unresolved.
+Invalid readings are excluded from motion differences
 but retained as range-violation evidence. Local shape thresholds are screening
 parameters, not physical bounds and not calibrated fault probabilities.
 
@@ -36,20 +39,35 @@ not assume negative values or values above `2**63` are invalid. `filtered[...]`
 never influences raw validity.
 
 Saved schema 6 contains captured raw lines, file-content hashes, samples, context,
-checks and reviewed/unresolved state. `inspect` works after original logs rotate.
+checks and reviewed/unresolved state; window views (`--start/--end` inspections)
+are stored separately from candidate reviews so report counts stay per-candidate,
+and each plot run is recorded under `plot_runs`. Candidates carry severity
+metrics — `excess` (over a supplied rate limit), `deviation` (from the local rate
+reference), `shift` (persistent change over local noise) — plus duration, sample
+count and peak rate; these restate existing calculations, they add no new verdict.
+`inspect` works after original logs rotate.
 `plot` reads this same snapshot and writes working PNG artifacts; it does not rescan
 logs. Each plot has raw count, actual `dt`, signed raw delta and signed short-window
-raw-derived speed (`501.144 / 4096 mm/count`). It never displays or uses `filtered`
-or `TurnTableSpeed`.
+raw-derived speed (`501.144 / 4096 mm/count`), absolute-time axes and candidate
+markers on the overview; candidate plots default to the five highest-severity
+candidates (`--candidate` selects only the requested ones instead of the
+default five). It never displays or uses `filtered`
+or `TurnTableSpeed`. Working PNGs stay working-derived: they can be collected
+into a task data package via the `working_plots` mode, where the manifest
+marks each entry `working_derived_plot` with its snapshot-recorded hash.
 Input changes during scan fail rather than silently mixing snapshots. Files must
 belong to the same encoder; the known format has no reliable device identity to
 automatically separate mixed devices. Use data-locator's single-device source.
 
 The default input limits are 256 MiB of log bytes and 250,000 raw samples; exceeding
-them returns an explicit error, not a partial normal result. Clock rollback makes
-that source's motion comparisons unavailable; same-time records are retained and
-break continuity rather than being silently deduplicated. This conservative choice
-may yield unresolved results on noisy/duplicated inputs.
+them returns an explicit error, not a partial normal result. A source clock rollback
+blocks motion comparisons only across the ambiguous interval — from the rollback
+until the source clock passes its pre-rollback maximum. Same-time records are
+retained (never silently deduplicated) and break only their adjacent pairs; several
+readings on one log line are all kept as samples behind a local barrier. The data
+access audit row is written only when both window bounds are complete and parseable
+(file mode 0600, fsynced); a scan that fails mid-read appends `completed: false`
+instead, and a failing audit append never discards a completed scan.
 
 `--motion-report`, legacy schema 3–5 inspection and application-based analysis are
 retired. Rerun `scan` to create schema 6. A positional-file call still invokes raw

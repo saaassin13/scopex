@@ -16,10 +16,10 @@
 
 | 入口 | 当前行为 |
 | --- | --- |
-| scan | 严格提取 raw，校验时间/格式，计算全窗基础指标，生成全部候选与分页摘要，保存可复核证据 |
-| inspect | 查看候选 R ID 或任意已捕获时间范围，提供核心变化、前后参考、原始行、分页样本、控制日志和检查结果，持久化本次检查 |
-| plot | 从同一快照生成 raw-only 四面板总览及候选局部 PNG，不重新读取日志 |
-| report | 从同一快照恢复已确认、未决、未查看状态，给出完整窗口摘要、覆盖缺口及来源 |
+| scan | 严格提取 raw，校验时间/格式，计算全窗基础指标，生成全部候选（含严重度量化：超限/偏离/变化倍数、时长、峰值速率）与分页摘要，保存可复核证据 |
+| inspect | 查看候选 R ID 或任意已捕获时间范围，提供核心变化、前后参考、原始行、分页样本、控制日志和检查结果，持久化本次检查；`--candidate` 可重复传参批量检查（一次快照读写） |
+| plot | 从同一快照生成 raw-only 四面板总览及候选局部 PNG，不重新读取日志；坐标轴为绝对时间，总览标注全部候选位置，默认绘制严重度前 5 的候选局部图 |
+| report | 从同一快照恢复已确认、未决、未查看状态（仅按候选检查计数），给出完整窗口摘要、覆盖缺口及来源 |
 
 模型选择问题、调用入口、关联必要日志并表达证据。数值提取、差分、比较和有明确条件的确认由工具完成。强模型可以帮助开发与找反例，但其结论不作为真值。
 
@@ -28,7 +28,8 @@
 ## 3. 第一版已落实的关键约束
 
 - 以实际 dt 计算 signed delta 和 counts/s，正反向对称处理；仅在合法连续样本之间作运动差分。
-- 原始排序前的时间倒退保留为问题；当前保守地禁用该来源的运动比较。相同时间样本保留而非自动去重。
+- 决策上下文以 1 秒边距捕获与评估：`--start` 之前的复位、最后一条 raw 样本之后的控制事件同样进入判定上下文，不会把可解释读数确认为异常。
+- 原始排序前的时间倒退保留为问题；回滚歧义限定在回滚点到时钟追平的区间内屏蔽。相同时间样本保留而非自动去重，仅屏障相邻对；一行多个 raw 读数全部保留。
 - 缺口、坏格式、已知无效 raw、捕获的相关控制事件形成边界；边界两端不能解释成瞬时运动。近零不自动当复位并剔除。
 - raw 的有符号解释有真实风险：本机 CowDisinfect 源码用 int64_t 配合 %zu 输出。只有来源明确的配置才做补码转换，始终保留原始打印文本；不默认把大于 2**63 或负数当无效。
 - 日志复位请求不等于完成。工具保留原文和时序，相关事件存在时不以跨边界速率确认异常。
@@ -72,18 +73,20 @@
 
 旧主脚本的应用优先、候选 schema 4、运动过程 schema 5 实现已被替换，不并存第二套判定。原 `--motion-report` 与 schema 3–5 查看入口退出；调用方和产品 Skill 改用 scan/plot/inspect/report。
 
-位置文件调用保留为 raw scan，`--events-out` 仅为 `--out` 别名。历史结果与源日志不改写，旧快照须重新 scan 才能使用新入口。数据访问审计继续记录 encoder_health、请求时间窗和实际输入文件。`plot` 输出任务 scratch 下的 working-derived PNG，不自动升级为原始图片 Evidence；默认产品链不要求 schema 6 才能交付普通文字，也不重启历史 Finalizer。
+位置文件调用保留为 raw scan，`--events-out` 仅为 `--out` 别名。历史结果与源日志不改写，旧快照须重新 scan 才能使用新入口。数据访问审计记录 encoder_health、请求时间窗和实际输入文件：仅当窗口两端完整可解析时写入（0600 权限并 fsync），读取中途失败的扫描以 `completed: false` 追记，审计追加失败不丢弃已完成的扫描。Finalizer 消费端（answer/report 投影）已适配 schema 6：候选时间窗、类型、量化倍数与检查结论进入产品答案，不再读旧版事件计数键。`plot` 输出任务 scratch 下的 working-derived PNG，不自动升级为原始图片 Evidence；默认产品链不要求 schema 6 才能交付普通文字，也不重启历史 Finalizer。
 
 ## 7. 验证与未验证范围
 
 本地 Python 3.12 / macOS，已执行：
 
-- 当前受影响专项 85 项通过：raw 与阈值/filtered/application 分离、有符号打印、无效边界、跨轮转坏行、跨小时日志选择、短窗 signed 速度、raw-only 四面板 PNG、全窗候选复核、固定判定上下文、分页、任意区间、来源消失后复核、时间误差和局部参考不足反例。命令：`PYTHONPATH=tests python3 -m unittest test_encoder_motion_context test_encoder_invalid_boundaries test_encoder_episodes test_business_skill_tools test_skill_provisioning test_evidence_projector test_image_working_set test_image_evidence_qualification -q`。
+- 当前受影响专项 122 项通过：raw 与阈值/filtered/application 分离、有符号打印、无效边界、跨轮转坏行、跨小时日志选择、短窗 signed 速度、raw-only 四面板 PNG、全窗候选复核、固定判定上下文、分页、任意区间、来源消失后复核、时间误差和局部参考不足反例，以及本轮新增的评审契约反例（窗口边距决策上下文、末尾控制事件、窗口检查不计数、同毫秒/同多读数保留、别名路径去重、审计行完整性/0600/失败追记、断点后抽稀、top5 绘图、批量 inspect、Finalizer 新契约渲染）。命令：`PYTHONPATH=tests python3 -m unittest test_encoder_motion_context test_encoder_invalid_boundaries test_encoder_episodes test_encoder_review_contract test_business_skill_tools test_skill_provisioning test_evidence_projector test_image_working_set test_image_evidence_qualification test_task_data_package test_product_answer_readability test_report_composer -q`。
 - compileall 与 git diff --check 通过。
 - 通用 skill-creator 校验器不认识既有 OpenClaw 字段 user-invocable；仅在临时验证副本中去除此扩展后通过，其余正文不变。原文件扩展的 YAML 类型及引用路径另外检查通过，未改变 OpenClaw 调用属性。
 - 全量回归曾在沙箱内因回环 socket 权限失败；放开本地测试权限并使用 /private/tmp 后，当时 688 项中 685 通过、3 项因既有 Linux-only 前置条件在 macOS 不通过。随后新增的编码器专项反例也已单独通过。未改平台门禁来冒充通过。
 
-2026-09-21 提交前复验（macOS / Python 3.12.7）：上述 84 项受影响测试、`python3 -m compileall -q scopex scripts skills tests`、`git diff --check` 和 `frontend` 下 `npm run build` 均通过。`TMPDIR=/private/tmp python3 -m unittest discover -s tests -q` 共运行 692 项，689 项通过，3 项仍被 Linux/Spark 平台前置条件阻断（`test_complete_main_with_mock_runtime_and_docker`、`test_completed_answer_without_gate_cannot_pass`、`test_positive_path_with_fake_native_helpers`）；全量门禁不记为通过。未执行端侧部署或模型验证。
+2026-09-21 提交前复验（macOS / Python 3.12.7，历史记录，"上述"指当日版本的命令与测试列表，与当前列表不同）：当日 84 项受影响测试、`python3 -m compileall -q scopex scripts skills tests`、`git diff --check` 和 `frontend` 下 `npm run build` 均通过。`TMPDIR=/private/tmp python3 -m unittest discover -s tests -q` 共运行 692 项，689 项通过，3 项仍被 Linux/Spark 平台前置条件阻断（`test_complete_main_with_mock_runtime_and_docker`、`test_completed_answer_without_gate_cannot_pass`、`test_positive_path_with_fake_native_helpers`）；全量门禁不记为通过。未执行端侧部署或模型验证。
+
+2026-09-26 修复与呈现层轮（macOS / Python 3.12）：上列当前命令 123 项通过，`python3 -m compileall -q scopex skills scripts tests` 与 `git diff --check` 通过；`TMPDIR=/private/tmp python3 -m unittest discover -s tests -q` 共 766 项，763 项通过，3 项仍为上述同一组 Linux/Spark 平台前置条件阻断，全量门禁不记为通过。本轮变更：窗口两端边距决策上下文（含 `--end` 之后的事件）与末尾控制事件不再误确认；回滚屏蔽限定区间且追平行自身带屏障（跨时钟不连续的对不可用伪造 dt 确证）；同毫秒/同行多读数保留；输入路径按 resolve 去重；窗口检查与候选检查分桶计数；审计行仅完整窗口写入（0600+fsync，失败追记 `completed: false`，追加失败不丢扫描）；绘图断点后预算按段长分配、绝对时间轴、总览候选标注、默认 top5 候选图、`max_points` 参数化；report 候选携带严重度量化并单源化未决原因；inspect 批量 `--candidate`；Finalizer answer/report 投影适配 schema 6；data_packages 对历史 null 窗口行跳过。所有修复均附构造日志复现验证，并另以 7 万样本合成日志完成 scan/plot/批量 inspect/report/Finalizer 渲染的端到端链路验证；随后 15 个独立审查/质疑 agent 的对抗验证面板确认判定语义与 HEAD 一致（AST 规范化 diff 后仅呈现层差异），并独立复现出本轮初版引入的 2 处缺陷（决策上下文 end 边距缺失、回滚追平对泄漏），已当日修复并以反例测试锁定。
 
 真实日志只读试跑：输入 `/Users/yanlan/Downloads/xintai_log/CowDisinfect-20260920-180000.log.1`，请求 18:35–19:00；实际 raw 为 18:35:35.817–18:47:29.780，共 39,876 条，2 处速率变化候选。两块查看均为 compatible_motion；请求窗口存在未覆盖边缘，因此整窗报告仍为 inconclusive。这仅验证真实格式、覆盖与调查链，不是有标签的健康结论。
 

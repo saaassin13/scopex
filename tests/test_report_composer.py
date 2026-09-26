@@ -39,25 +39,27 @@ def fixture():
         source='business_facts:encoder-health',
         raw=json.dumps({
             'scopex_role': 'business_facts',
-            'schema': 3,
+            'schema': 6,
             'source': 'encoder-health',
-            'window': {'start': '2026-09-14 12:00:00', 'end': '2026-09-14 13:00:00'},
+            'status': 'confirmed_raw_anomaly',
+            'requested': {'start': '2026-09-14 12:00:00:000', 'end': '2026-09-14 13:00:00:000'},
             'facts': {
                 'samples_in_window': 200859,
                 'sampling_gap_count': 0,
-                'anomaly_event_count': 2,
-                'reverse_glitch_candidate_count': 1,
-                'reverse_interval_candidate_count': 1,
             },
-            'top_candidates': [
+            'candidates_total': 2,
+            'confirmed_total': 1,
+            'unresolved_total': 1,
+            'unseen_total': 0,
+            'candidates': [
                 {
-                    'type': 'reverse_glitch_candidate',
+                    'id': 'R1',
                     'start': '2026-09-14 12:13:21:120',
-                    'count_before': 812345,
-                    'count_end': 812291,
-                    'pulse_delta': -54,
-                    'recovery_pulses_next_3': 71,
-                    'recovered': True,
+                    'end': '2026-09-14 12:13:21:360',
+                    'kinds': ['local_rate_deviation'],
+                    'metrics': {'deviation': 15.0},
+                    'peak_rate_counts_s': 2700.0,
+                    'review_status': 'confirmed_raw_anomaly',
                 }
             ],
         }, ensure_ascii=False),
@@ -133,7 +135,7 @@ class ReportComposerTests(unittest.TestCase):
         self.assertNotIn('tools', client.calls[0])
         prompt = client.calls[0]['user_prompt']
         self.assertIn('2026-09-14 12:13:21:120', prompt)
-        self.assertIn('pulse_delta', prompt)
+        self.assertIn('local_rate_deviation', prompt)
 
     def test_unknown_claim_or_unowned_evidence_is_rejected(self):
         _, claims = fixture()

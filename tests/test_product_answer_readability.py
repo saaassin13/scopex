@@ -69,22 +69,29 @@ class ProductAnswerReadabilityTests(unittest.TestCase):
         catalog.add(
             source='business_facts:encoder-health',
             raw=json.dumps({
-                'scopex_role': 'business_facts', 'source': 'encoder-health',
+                'scopex_role': 'business_facts', 'source': 'encoder-health', 'schema': 6,
+                'status': 'confirmed_raw_anomaly',
                 'facts': {
                     'samples_in_window': 35244, 'invalid_samples': 0, 'median_sample_dt_ms': 21.0,
-                    'sampling_gap_count': 0, 'anomaly_event_count': 3,
-                    'reverse_glitch_candidate_count': 2, 'reverse_interval_candidate_count': 1,
-                    'reverse_step_candidate_count': 0, 'positive_spike_candidate_count': 0,
+                    'sampling_gap_count': 0,
                 },
-                'top_candidates': [
-                    {'type': 'reverse_glitch_candidate', 'start': '2026-09-14 03:12:01:120', 'pulse_delta': -52},
+                'candidates_total': 3, 'confirmed_total': 1, 'unresolved_total': 2, 'unseen_total': 0,
+                'candidates': [
+                    {'id': 'R1', 'start': '2026-09-14 03:12:01:120', 'end': '2026-09-14 03:12:01:360',
+                     'kinds': ['local_rate_deviation'], 'metrics': {'deviation': 18.0},
+                     'peak_rate_counts_s': 5200.0, 'review_status': 'confirmed_raw_anomaly'},
+                    {'id': 'R2', 'start': '2026-09-14 03:40:11:500', 'end': '2026-09-14 03:40:11:720',
+                     'kinds': ['rate_transition'], 'metrics': {'shift': 6.5},
+                     'review_status': 'unresolved'},
                 ],
+                'inconclusive_reasons': ['unresolved_checks'],
             }, ensure_ascii=False),
             metadata={'evidence_type': 'structured_business_facts', 'evidence_role': 'business_facts'},
         )
         text = compose_product_answer(one_fact_claim(), catalog).to_dict()['conclusion'][0]['text']
-        self.assertIn('发现 3 个显著异常事件', text)
-        self.assertIn('回退-恢复毛刺 2', text)
+        self.assertIn('筛出 3 个候选', text)
+        self.assertIn('03:12:01', text)
+        self.assertIn('已确认', text)
         self.assertNotIn('scopex_role', text)
 
     def test_system_health_fallback_is_readable_without_exact_prose_contract(self):

@@ -102,7 +102,7 @@ services:
       - --timeout
       - "1800"
       - --max-requests
-      - "48"
+      - "64"
       - --max-tokens
       - "2048"
       - --max-active-tasks

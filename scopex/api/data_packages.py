@@ -24,7 +24,7 @@ class DataPackageError(ValueError):
 class DataPackageService:
     """Build task-owned downloads from recorded business-data access."""
 
-    MODES = {'image_evidence', 'image_window', 'encoder_window', 'encoder_source_files'}
+    MODES = {'image_evidence', 'image_window', 'encoder_window', 'encoder_source_files', 'working_plots'}
 
     def __init__(self, *, work_root: Path, data_binds: tuple[str, ...], max_bytes: int, max_files: int) -> None:
         self.work_root = Path(work_root)
@@ -109,6 +109,10 @@ class DataPackageService:
             options.append({'mode': 'encoder_window', 'label': '分析时间范围的原始日志', 'count': None, 'recommended': True})
             source_count = len({path for row in encoder for path in row.get('source_files', []) if isinstance(path, str)})
             options.append({'mode': 'encoder_source_files', 'label': '完整轮转日志', 'count': source_count, 'recommended': False})
+            working_plots = self._working_plots(task_id)
+            if working_plots:
+                options.append({'mode': 'working_plots', 'label': '分析过程图表（工作态派生）',
+                                'count': len(working_plots), 'recommended': True})
         package_dir = self._task_root(task_id) / 'collected'
         package = package_dir / 'scopex-data.zip'
         result = {'task_id': task_id, 'available': bool(options), 'options': options,
@@ -170,6 +174,43 @@ class DataPackageService:
     def _encoder_rows(self, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         return [row for row in rows if row.get('purpose') == 'encoder_health' and row.get('operation') == 'analyze']
 
+    def _working_plots(self, task_id: str) -> list[dict[str, Any]]:
+        """Working-derived encoder plots recorded in this task's saved snapshots.
+
+        The saved snapshot is the authoritative list (filenames plus expected
+        hashes); the PNGs themselves live in this task's own scratch directory,
+        so they are read directly instead of through configured data sources.
+        """
+        scratch = self._task_root(task_id) / 'scratch'
+        if not scratch.is_dir():
+            return []
+        out: list[dict[str, Any]] = []
+        for snapshot in sorted(scratch.glob('*.json')):
+            try:
+                state = json.loads(snapshot.read_text(encoding='utf-8'))
+            except (OSError, json.JSONDecodeError):
+                continue
+            if not isinstance(state, dict) or state.get('schema') != 6:
+                continue
+            plots = state.get('plots')
+            if not isinstance(plots, dict) or not isinstance(plots.get('artifacts'), list):
+                continue
+            directory = scratch / Path(str(plots.get('output_dir') or 'encoder-plots')).name
+            for artifact in plots['artifacts']:
+                if not isinstance(artifact, dict) or not isinstance(artifact.get('filename'), str):
+                    continue
+                recorded_path = artifact.get('path')
+                out.append({
+                    'agent_path': recorded_path if isinstance(recorded_path, str)
+                                  else str(directory / artifact['filename']),
+                    'filename': artifact['filename'],
+                    'host': directory / artifact['filename'],
+                    'sha256': artifact.get('sha256') if isinstance(artifact.get('sha256'), str) else None,
+                    'kind': artifact.get('kind'),
+                    'candidate_id': artifact.get('candidate_id'),
+                })
+        return out
+
     def build(self, task_id: str, modes: list[str], evidence: dict[str, Any]) -> Path:
         clean_modes = list(dict.fromkeys(modes))
         if not clean_modes or any(mode not in self.MODES for mode in clean_modes):
@@ -188,7 +229,7 @@ class DataPackageService:
         def issue(path, reason):
             manifest['missing'].append({'path': path, 'reason': reason})
 
-        def add_file(archive, agent_path, arcname, expected_sha=None, windows=None):
+        def add_file(archive, agent_path, arcname, expected_sha=None, windows=None, host_path=None):
             nonlocal total_bytes
             if arcname in written_paths:
                 return
@@ -196,7 +237,9 @@ class DataPackageService:
                 issue(agent_path, 'file_limit')
                 return
             try:
-                source = self._resolve(agent_path)
+                # host_path reads from this task's own scratch (working plots)
+                # instead of a configured business-data source.
+                source = Path(host_path) if host_path is not None else self._resolve(agent_path)
                 handle = source.open('rb')
             except (OSError, DataPackageError):
                 issue(agent_path, 'unavailable')
@@ -275,7 +318,11 @@ class DataPackageService:
                         add_file(archive, path, 'images/window/' + Path(path).name)
                 windows_by_file = {}
                 for row in self._encoder_rows(rows):
-                    window = (self._parse_time(str(row['start'])), self._parse_time(str(row['end'])))
+                    if not isinstance(row.get('start'), str) or not isinstance(row.get('end'), str):
+                        # Defensive: a legacy null-bound access row must not kill
+                        # the whole package build.
+                        continue
+                    window = (self._parse_time(row['start']), self._parse_time(row['end']))
                     for path in row.get('source_files', []):
                         if isinstance(path, str):
                             windows_by_file.setdefault(path, []).append(window)
@@ -292,6 +339,18 @@ class DataPackageService:
                             else:
                                 merged.append((start, end))
                         add_file(archive, path, 'logs/window/' + Path(path).name, windows=merged)
+                plot_roles: dict[str, dict[str, Any]] = {}
+                if 'working_plots' in clean_modes:
+                    for plot in self._working_plots(task_id):
+                        arcname = 'plots/' + plot['filename']
+                        add_file(archive, plot['agent_path'], arcname,
+                                 plot['sha256'], host_path=plot['host'])
+                        plot_roles[arcname] = {'role': 'working_derived_plot',
+                                               'plot_kind': plot['kind'],
+                                               'candidate_id': plot['candidate_id']}
+                for entry in manifest['files']:
+                    if entry['archive_path'] in plot_roles:
+                        entry.update(plot_roles[entry['archive_path']])
                 if not manifest['files']:
                     raise DataPackageError('没有可收集的数据：源文件不可用或超过限制；已有数据包保持不变')
                 manifest['total_bytes'] = total_bytes

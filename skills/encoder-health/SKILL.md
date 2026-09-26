@@ -39,22 +39,38 @@ python3 {baseDir}/scripts/encoder_health.py plot /task-scratch/encoder-raw.json 
 
 The overview has four raw-only panels: cumulative raw count, actual sample `dt`,
 signed `delta_raw`, and a signed raw-derived speed using a 200 ms net-delta
-window. Candidate plots include bounded context and highlight the candidate core.
-The speed is `(raw_end - raw_start) / actual_time * 501.144 / 4096`; it never uses
-`filtered` or `TurnTableSpeed`. Missing data and blocked pairs remain breaks.
-If `view_image` is available, inspect `overview.png` and the candidate plots as
-working-derived visual aids. The saved raw numbers and source lines remain the
-authoritative evidence; a plot cannot upgrade an unresolved candidate. The plot
-command returns only compact artifact metadata (path, hash, size and panels); do
-not re-read or restate the full saved plot metadata in the conversation.
+window. Every candidate position is marked on the overview with a red line, and
+the plotted candidates carry their ID and wall-clock time next to the line. Axes
+show absolute log time and each candidate plot's title carries its time window,
+so anomaly times can be read off the image directly. By default only the five
+highest-severity candidates get local plots; pass `--candidate R6 --candidate R7`
+to plot exactly that selection instead of the default five. Candidate plots
+include bounded context and highlight the
+candidate core. The speed is `(raw_end - raw_start) / actual_time * 501.144 / 4096`;
+it never uses `filtered` or `TurnTableSpeed`. Missing data and blocked pairs
+remain breaks. If `view_image` is available, inspect `overview.png` and the
+candidate plots as working-derived visual aids. The saved raw numbers and source
+lines remain the authoritative evidence; a plot cannot upgrade an unresolved
+candidate. The plot command returns only compact artifact metadata (path, hash,
+size and panels); do not re-read or restate the full saved plot metadata in the
+conversation.
 
 ## Inspect every candidate
 
-Inspect each returned candidate ID so the requested window is covered:
+Inspect every returned candidate so the requested window is covered. With four
+or more candidates a single batched call is required: it computes the same
+reviews in one snapshot load and keeps the conversation small enough to avoid
+mid-task context compaction:
 
 ```bash
-python3 {baseDir}/scripts/encoder_health.py inspect /task-scratch/encoder-raw.json --candidate R1
+python3 {baseDir}/scripts/encoder_health.py inspect /task-scratch/encoder-raw.json \
+  --candidate R1 --candidate R2 --candidate R3 --candidate R4
 ```
+
+A batch returns one summary line per candidate (region, times, status, check
+outcomes); each review is computed and persisted exactly like a single call.
+Single-candidate calls are for follow-ups on one region (paging with
+`--offset`/`--limit` or widening `--context-ms`).
 
 The result contains measured changes, exact source lines, local raw samples,
 counter-log context and check outcomes. It persists the check for later reports.
@@ -85,7 +101,10 @@ a fault; an isolated occurrence is not automatically normal.
 
 List remaining candidates or resume after context compaction. Reuse the saved
 snapshot and request only the next page; do not repeat pages or embed prior plot
-metadata in later prompts:
+metadata in later prompts. Whenever the report or an inspect result shows
+unreviewed candidates, its `next_action`/`hint` field already contains the
+complete batched command — copy and run it as one call instead of inspecting
+candidates one by one:
 
 ```bash
 python3 {baseDir}/scripts/encoder_health.py report /task-scratch/encoder-raw.json
@@ -93,7 +112,12 @@ python3 {baseDir}/scripts/encoder_health.py report /task-scratch/encoder-raw.jso
 python3 {baseDir}/scripts/encoder_health.py report /task-scratch/encoder-raw.json --offset <next_offset>
 ```
 Stop tool calls once every candidate has been inspected and the requested
-coverage/quality boundaries are reported.
+coverage/quality boundaries are reported. Candidates are ordered by severity:
+profile-backed checks first, then deviation size. Each candidate row carries the
+absolute time window, duration, sample count, peak rate and metric multiples
+(`excess` over a supplied rate limit, `deviation` from the local rate reference,
+`shift` of a persistent change) next to its review status — read these before
+opening plots.
 
 A profile is optional. Without it the first version screens shape changes but
 does not automatically confirm mechanical inconsistency. Read
