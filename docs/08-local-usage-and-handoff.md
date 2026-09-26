@@ -126,7 +126,7 @@ POST /runs 或定时触发
 
 **下一步（按依赖序）**：① RTSP 凭据就绪后经 ssh 隧道实时接入（CLI 已支持，全链路已验证）；② workstation 常驻部署（先手动进程）；③ 真实掉落样本验证；④ VLM 确认任务接入（ScopeX API 建任务读事件帧目录）；⑤ 页面启停入口与事件列表。
 
-**未提交状态**：monitor/、tests/test_cow_fall_*.py（6 个文件）、scripts/scan_foreground.py、docs/monitoring/（设计文档+zones JSON）及本 handoff 更新均未提交（截至 2026-09-26）；此前上下文链路修复已提交（605d7ca）。端侧 10.200.0.14 全程只读（本次仅复制录像），未动任务服务。
+**提交状态**：牛掉落模块已提交（c793a20，22 文件：monitor/cow_fall 全模块、7 个测试文件、scan_foreground.py、设计文档与 zones 标定 JSON 及本 handoff），分支 `feature/video-inference-validation`，未推送；此前上下文链路修复为 605d7ca。端侧 10.200.0.14 全程只读（本次仅复制录像），未动任务服务。
 
 编码器 PNG 只是从同一 raw 快照生成的 `working-derived` 可视化，不是原始图片 Evidence；task-149b8b45c37d 报告的 R6 已由用户确认为问题数据（同窗口其余 15 候选 compatible_motion），但整体检测仍无准确率/召回率/误报率统计，`no_anomaly_evidence`、`compatible_motion` 和无 raw 结果均不能写成设备健康证明。
 
