@@ -398,3 +398,29 @@ monitor.json 的 `calibrations_root` 与 start.sh 预建目录已统一到该路
 （9/23 时期，禁区右侧凸起误罩转盘台面 29% 重叠，即 fall-1 前段分析的病灶之一）
 已由用户在页面导入为 camera-96 v1，daemon 与页面版本已对齐
 （running == active == v1）。重标时重点：禁区右段沿转盘台面前缘走线，勿上凸。
+
+### 10.5 监控日志与排障速查
+
+明天回看时按下面查（workstation 上执行）。注意 `docker logs -t` 的时间戳是
+**UTC，加 8 小时即北京时间**；journalctl 与页面时间均为本地时间。
+
+```bash
+# 1. 监控容器日志：启停、重启、看门狗、事件触发、确认（10MB×3 轮转）
+docker logs -t --since 24h scopex-monitor | less
+docker logs -t scopex-monitor 2>&1 | grep -E "event|watchdog|frame age|launch failed"
+
+# 2. 隧道日志：断线与自动重连记录
+journalctl --user -u cow-fall-tunnel --since today --no-pager
+
+# 3. 事件档案（每事件 meta.json + 前后各 30 秒帧；30 天自动清理）
+ls -lt /opt/ScalingRobotics/scopex/data/monitor/cow-fall/events/ | head
+python3 -m json.tool /opt/ScalingRobotics/scopex/data/monitor/cow-fall/events/fall-*/meta.json
+
+# 4. 页面（VPN 内 http://10.200.0.2:8787）
+#    常驻监控：运行状态/帧龄/重启计数/事件列表与帧图；确认任务在"临时任务"历史里
+```
+
+对照关系：`[supervisor] session started (calibration vN)` = 换标定重启；
+`frame age ... exceeds watchdog` = 断流看门狗触发（通常伴随隧道日志断线）；
+`[event] fall-N rules=[...]` = 事件触发，对应事件目录与页面条目；
+`[confirm] fall-N -> task-xxx` = 已建确认任务。
