@@ -32,7 +32,12 @@ from monitor.cow_fall.zones import Point, ZoneConfig
 
 def load_session_config(path: Path, input_url: str,
                         replay: bool = False) -> SessionConfig:
-    raw = json.loads(path.read_text())
+    return session_config_from_raw(json.loads(path.read_text()), input_url,
+                                   replay=replay)
+
+
+def session_config_from_raw(raw: dict, input_url: str,
+                            replay: bool = False) -> SessionConfig:
     zone_raw = raw["zones"]
     platform_raw = zone_raw.get("platform_line")
     zones = ZoneConfig(
