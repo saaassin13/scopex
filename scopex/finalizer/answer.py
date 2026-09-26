@@ -164,124 +164,128 @@ def _humanize_business_facts(payload: dict) -> str | None:
             invalid = facts.get("invalid_samples")
             median_dt = facts.get("median_sample_dt_ms")
             if isinstance(samples, (int, float)):
-                text = f"时间窗内共 {int(samples)} 个编码器采样"
-                if isinstance(invalid, (int, float)):
-                    text += f"，无效/读取失败 {int(invalid)}"
+                text = f"这段时间共读取 {int(samples)} 条编码器数据"
+                if isinstance(invalid, (int, float)) and invalid:
+                    text += f"，其中 {int(invalid)} 条无效"
                 if isinstance(median_dt, (int, float)):
-                    text += f"，采样中位间隔 {_number(median_dt, 3)} ms"
+                    text += f"，通常每 {_number(median_dt, 1)} 毫秒一条"
                 rows.append(text)
             gaps = facts.get("sampling_gap_count")
             if isinstance(gaps, (int, float)) and gaps:
-                rows.append(f"采样缺口 {int(gaps)} 处")
+                rows.append(f"数据中间有 {int(gaps)} 段缺失")
 
         status_labels = {
-            "confirmed_raw_anomaly": "已确认 raw 数据异常",
-            "no_anomaly_evidence_in_completed_checks": "已完成的检查未发现 raw 数据异常证据",
-            "inconclusive": "本次检查未能给出确定结论",
-            "no_raw_data": "时间窗内没有 raw 编码器读数",
-            "batch_inspected": "批量候选检查完成",
+            "confirmed_raw_anomaly": "已确认编码器数据存在异常",
+            "no_anomaly_evidence_in_completed_checks": "检查完成，没有发现异常",
+            "inconclusive": "这次检查没能得出确定结论",
+            "no_raw_data": "这段时间没有读到编码器数据",
+            "batch_inspected": "疑点检查完成",
         }
         status_text = status_labels.get(payload.get("status")) if isinstance(payload.get("status"), str) else None
         totals = []
-        for key, label in (("confirmed_total", "确认"), ("unresolved_total", "未决"), ("unseen_total", "未查看")):
+        for key, label in (("confirmed_total", "确认异常"), ("unresolved_total", "无法确定"),
+                           ("unseen_total", "还没检查")):
             value = payload.get(key)
             if isinstance(value, (int, float)) and value:
-                totals.append(f"{label} {int(value)}")
+                totals.append(f"{label} {int(value)} 处")
         candidates_total = payload.get("candidates_total")
         if isinstance(candidates_total, (int, float)) and candidates_total:
-            rows.append(f"筛出 {int(candidates_total)} 个候选" + (f"（{'，'.join(totals)}）" if totals else ""))
+            rows.append(f"共发现 {int(candidates_total)} 处疑点" + (f"（{'，'.join(totals)}）" if totals else ""))
         elif totals:
             rows.append("，".join(totals))
         region = payload.get("region")
         if isinstance(region, str) and region:
             start = _short_time(payload.get("start"))
             end = _short_time(payload.get("end"))
-            rows.append(f"检查区间 {region} {start}–{end}".rstrip() + (f"：{status_text}" if status_text else ""))
+            rows.append(f"疑点 {region}（{start}–{end}）".rstrip("（）– ") + (f"：{status_text}" if status_text else ""))
         elif status_text:
             rows.append(status_text)
 
         candidates = payload.get("candidates")
         if isinstance(candidates, list):
             kind_labels = {
-                "profile_rate_candidate": "速率超限",
-                "profile_range_candidate": "计数越界",
-                "local_rate_deviation": "局部速率偏离",
-                "rate_transition": "速率变化",
-                "counter_or_acquisition_context": "控制事件边界",
+                "profile_rate_candidate": "速度超过设备允许的上限",
+                "profile_range_candidate": "计数值超出正常范围",
+                "local_rate_deviation": "速度突然变化，明显快于前后",
+                "rate_transition": "速度档位改变（多为正常启停）",
+                "counter_or_acquisition_context": "附近有复位或设置操作",
             }
             review_labels = {
-                "confirmed_raw_anomaly": "已确认异常",
-                "unresolved": "未决",
-                "compatible_motion": "相容运动",
-                "no_anomaly_evidence": "无异常证据",
-                "unseen": "待查看",
+                "confirmed_raw_anomaly": "确认异常",
+                "unresolved": "无法确定",
+                "compatible_motion": "看起来是正常动作",
+                "no_anomaly_evidence": "未发现异常",
+                "unseen": "还没检查",
             }
             details = []
             for event in candidates:
                 if not isinstance(event, dict):
                     continue
-                when = f"{_short_time(event.get('start'))}–{_short_time(event.get('end'))}"
-                kinds = [kind_labels.get(kind, kind) for kind in event.get("kinds", [])[:2]] or ["候选"]
+                when = f"{_short_time(event.get('start'))} 前后"
+                kinds = [kind_labels.get(kind, kind) for kind in event.get("kinds", [])[:2]] or ["需要查看"]
                 metrics = event.get("metrics") if isinstance(event.get("metrics"), dict) else {}
                 measures = []
-                for key, label in (("excess", "超限"), ("deviation", "偏离"), ("shift", "变化")):
+                for key, label in (("excess", "超出允许速度"), ("deviation", "比前后正常速度快"),
+                                   ("shift", "速度变化幅度是正常波动的")):
                     value = metrics.get(key)
                     if isinstance(value, (int, float)) and value:
                         measures.append(f"{label} {_number(value, 1)} 倍")
                 peak = event.get("peak_rate_counts_s")
                 if isinstance(peak, (int, float)):
-                    measures.append(f"峰值 {_number(peak, 1)} counts/s")
-                review = review_labels.get(event.get("review_status"), "待查看")
-                piece = f"{when} {event.get('id', '?')} {'/'.join(kinds)}"
+                    measures.append(f"最快约每秒 {_number(peak, 1)} 个计数")
+                review = review_labels.get(event.get("review_status"), "还没检查")
+                piece = f"{when}：{'，'.join(kinds)}"
                 if measures:
                     piece += f"（{'，'.join(measures)}）"
-                details.append(piece + f"：{review}")
+                details.append(piece + f"——{review}")
                 if len(details) >= 4:
                     break
             if details:
                 suffix = ""
                 if isinstance(candidates_total, (int, float)) and candidates_total > len(details):
-                    suffix = f"（共 {int(candidates_total)} 个，此处列前 {len(details)} 个）"
-                rows.append("候选：" + "；".join(details) + suffix)
+                    suffix = f"（共 {int(candidates_total)} 处，这里列出最需要关注的 {len(details)} 处）"
+                rows.append("疑点详情：" + "；".join(details) + suffix)
 
         checks = payload.get("checks")
         if isinstance(checks, list) and checks:
-            check_labels = {"verified_rate_limit": "速率上限检查", "verified_count_range": "计数范围检查",
-                            "motion_explanation": "运动解释"}
-            outcome_labels = {"violated": "违反", "insufficient": "证据不足",
-                              "compatible_transition": "相容变化", "no_contradiction_detected": "无矛盾"}
+            check_labels = {"verified_rate_limit": "速度上限检查", "verified_count_range": "计数范围检查",
+                            "motion_explanation": "动作判断"}
+            outcome_labels = {"violated": "超出上限", "insufficient": "现有证据不够下结论",
+                              "compatible_transition": "符合正常的启停变化", "no_contradiction_detected": "没有发现矛盾"}
             outcomes = []
             for check in checks:
                 if isinstance(check, dict):
                     name = check_labels.get(check.get("check"), check.get("check"))
                     outcome = outcome_labels.get(check.get("outcome"), check.get("outcome"))
-                    outcomes.append(f"{name}{outcome}")
+                    outcomes.append(f"{name}：{outcome}")
             if outcomes:
-                rows.append("检查：" + "，".join(outcomes))
+                rows.append("检查结果：" + "，".join(outcomes))
 
         reasons = payload.get("inconclusive_reasons")
         if isinstance(reasons, list) and reasons:
             reason_labels = {
-                "unreviewed_candidates": "存在未查看候选",
-                "unresolved_checks": "存在未决检查",
-                "incomplete_or_uncertain_data": "数据覆盖不完整或存在不确定因素",
-                "insufficient_local_reference": "局部参考不足",
-                "fewer_than_three_raw_samples": "raw 样本少于 3 个",
+                "unreviewed_candidates": "还有疑点没有检查",
+                "unresolved_checks": "有疑点无法确定",
+                "incomplete_or_uncertain_data": "数据不完整或存在干扰",
+                "insufficient_local_reference": "周围的数据不够做对比",
+                "fewer_than_three_raw_samples": "数据太少（不足 3 条）",
             }
             texts = [reason_labels.get(reason, reason) for reason in reasons if isinstance(reason, str)]
             if texts:
-                rows.append("未定原因：" + "、".join(texts))
+                rows.append("未能确定的原因：" + "、".join(texts))
         coverage = payload.get("coverage")
         if isinstance(coverage, dict):
             notes = []
             edges = coverage.get("uncovered_edges")
             if isinstance(edges, list) and edges:
-                notes.append(f"请求窗口 {len(edges)} 端未全覆盖")
+                parts = {e.get("edge") for e in edges if isinstance(e, dict)}
+                which = "开头和结尾都" if {"start", "end"} <= parts else ("开头" if "start" in parts else "结尾")
+                notes.append(f"分析时段的{which}缺数据")
             gaps_total = coverage.get("internal_gap_count")
             if isinstance(gaps_total, (int, float)) and gaps_total:
-                notes.append(f"内部缺口 {int(gaps_total)} 处")
+                notes.append(f"中间有 {int(gaps_total)} 段缺数据")
             if notes:
-                rows.append("覆盖：" + "，".join(notes))
+                rows.append("数据覆盖：" + "，".join(notes))
         return "；".join(rows) if rows else None
 
     if source == "system-health":

@@ -169,7 +169,7 @@ _SYSTEM_PROMPT = """你是 ScopeX 的业务结果编辑器，不是诊断 Agent�
 9. 每个条目必须引用真实 claim_ids；evidence_refs 只能从这些 Claim 已有的 evidence_refs 中选择。
 10. next_steps 只能围绕已有 inference/unknown/causal_hypothesis 的验证方向，不得凭空增加故障结论或执行动作。
 11. 如果证据不足，直接说明限制，不要补常识答案。
-12. 对结构化 business_facts，优先把最重要的统计和 candidates（含时间、类型、倍数、结论）写成人话；不要复述字段名。
+12. 对结构化 business_facts，用直白中文写给设备操作员：把最重要的统计和候选（时间、类型、倍数、结论）写成日常说法；禁止出现英文字段名、状态名（如 unresolved、candidate）和 counts/s 这类单位，统一说成"无法确定""疑点""每秒 N 个计数"；时间写成 时:分:秒。
 13. 只输出一个 JSON 对象，不输出 Markdown 或额外解释。
 
 固定 schema：

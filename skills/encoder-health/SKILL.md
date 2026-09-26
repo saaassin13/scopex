@@ -127,10 +127,28 @@ Never create physical limits from the observed maximum or model guesses.
 
 ## Answer
 
-Use the tool's times, raw values, plots and evidence. Distinguish confirmed
-profile-backed checks, unresolved candidates, compatible motion and data-quality
-boundaries. State the number of candidates inspected and any remaining unseen
-candidates. Do not infer total frequency, periodicity, unique cause or hardware
-failure from a shape candidate. If unresolved, name the missing distinction or
-evidence. “No anomaly evidence in completed checks” is limited by coverage and
-detector scope; it is not a health certificate.
+Write the final answer in plain Chinese for the device operator, not for an
+engineer. Use the tool's times, values, plots and evidence, but never quote the
+tool's English status names, rule ids, JSON field names, or units such as
+"counts/s". Translate everything through this table:
+
+| Tool term | Plain Chinese in the answer |
+| --- | --- |
+| confirmed_raw_anomaly | 确认异常 |
+| unresolved | 无法确定 |
+| compatible_motion / no_anomaly_evidence | 看起来是正常动作 / 未发现异常 |
+| candidate | 疑点（值得看一眼的位置，不等于异常） |
+| profile_rate_candidate | 速度超过设备允许的上限 |
+| profile_range_candidate | 计数值超出正常范围 |
+| local_rate_deviation | 速度突然变化，明显快于前后 |
+| rate_transition | 速度档位改变（多为正常启停） |
+| excess / deviation / shift | 超出允许速度 N 倍 / 比前后正常速度快 N 倍 / 速度变化幅度是正常波动的 N 倍 |
+| counts/s | 每秒 N 个计数 |
+| raw | 编码器原始读数 |
+| sampling gap / uncovered edge | 数据缺失 / 分析时段开头结尾缺数据 |
+
+State the number of 疑点 and how many were inspected. Do not infer total
+frequency, periodicity, unique cause or hardware failure from a shape 疑点. If
+无法确定, say plainly what evidence is missing. “检查完成，没有发现异常” is
+limited by coverage and detector scope; it is not a health certificate, and the
+answer may say so in one plain sentence.

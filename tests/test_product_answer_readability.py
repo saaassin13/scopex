@@ -89,10 +89,13 @@ class ProductAnswerReadabilityTests(unittest.TestCase):
             metadata={'evidence_type': 'structured_business_facts', 'evidence_role': 'business_facts'},
         )
         text = compose_product_answer(one_fact_claim(), catalog).to_dict()['conclusion'][0]['text']
-        self.assertIn('筛出 3 个候选', text)
+        self.assertIn('共发现 3 处疑点', text)
         self.assertIn('03:12:01', text)
-        self.assertIn('已确认', text)
+        self.assertIn('确认异常', text)
         self.assertNotIn('scopex_role', text)
+        # Plain speech for the device operator: no tool jargon in the answer.
+        for jargon in ('candidate', 'unresolved', 'counts/s', 'raw'):
+            self.assertNotIn(jargon, text)
 
     def test_system_health_fallback_is_readable_without_exact_prose_contract(self):
         catalog = EvidenceCatalog('task-1', 'session-1')
@@ -136,7 +139,7 @@ class ProductAnswerReadabilityTests(unittest.TestCase):
             'summary_claim_ids': ['C1'],
         })
         text = compose_product_answer(claims, catalog).to_dict()['conclusion'][0]['text']
-        self.assertIn('时间窗内共 100 个编码器采样', text)
+        self.assertIn('这段时间共读取 100 条编码器数据', text)
         self.assertNotIn('scopex_role', text)
         self.assertNotIn('2026-09-14 raw line', text)
 

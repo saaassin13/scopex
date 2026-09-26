@@ -326,9 +326,11 @@ class FinalizerRenderingTests(unittest.TestCase):
     def test_report_payload_renders_candidate_worklist_in_plain_speech(self):
         text = self.humanize(self.PAYLOAD)
         self.assertIn("18:41:23", text)
-        self.assertIn("已确认", text)
-        self.assertIn("偏离 12 倍", text)
-        self.assertIn("未决", text)
+        self.assertIn("确认异常", text)
+        self.assertIn("比前后正常速度快 12 倍", text)
+        self.assertIn("无法确定", text)
+        for jargon in ("candidate", "unresolved", "counts/s", "raw", "inconclusive"):
+            self.assertNotIn(jargon, text)
 
     def test_structured_content_keeps_schema6_keys(self):
         item = SimpleNamespace(raw=json.dumps(self.PAYLOAD),
