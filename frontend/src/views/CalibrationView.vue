@@ -139,15 +139,29 @@ function redraw() {
     if (close) ctx.closePath()
     ctx.fillStyle = fill
     if (close) ctx.fill()
-    ctx.strokeStyle = stroke
-    ctx.lineWidth = 2
+    // 白色外描边 + 彩色主线：夜间低对比画面上也看得清
+    ctx.lineJoin = 'round'
+    ctx.strokeStyle = 'rgba(255,255,255,0.9)'
+    ctx.lineWidth = 7
     ctx.stroke()
-    for (const [x, y] of points) {
+    ctx.strokeStyle = stroke
+    ctx.lineWidth = 4
+    ctx.stroke()
+    points.forEach(([x, y], index) => {
       ctx.beginPath()
-      ctx.arc(x * scale, y * scale, 5, 0, Math.PI * 2)
-      ctx.fillStyle = stroke
+      ctx.arc(x * scale, y * scale, 9, 0, Math.PI * 2)
+      ctx.fillStyle = 'rgba(255,255,255,0.95)'
       ctx.fill()
-    }
+      ctx.strokeStyle = stroke
+      ctx.lineWidth = 3
+      ctx.stroke()
+      // 顶点序号：连线顺序一眼可见
+      ctx.fillStyle = '#111'
+      ctx.font = 'bold 11px Inter, sans-serif'
+      ctx.textAlign = 'center'
+      ctx.textBaseline = 'middle'
+      ctx.fillText(String(index + 1), x * scale, y * scale)
+    })
   }
   drawPolygon(carousel.value, '#2e9e5b', 'rgba(46,158,91,0.18)', true)
   forbidden.forEach((zone) => drawPolygon(zone, '#c0392b', 'rgba(192,57,43,0.18)', zone.length >= 3))
@@ -200,14 +214,68 @@ function hitPoint(point: Point, target: Point) {
   return Math.hypot(point[0] - target[0], point[1] - target[1]) < 12
 }
 
+// --- 多边形自交保护：按点击顺序连线，乱序点击会画出打结的框 ---
+
+function segmentsIntersect(p1: Point, p2: Point, p3: Point, p4: Point): boolean {
+  const d = (a: Point, b: Point, c: Point) =>
+    (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])
+  const d1 = d(p3, p4, p1)
+  const d2 = d(p3, p4, p2)
+  const d3 = d(p1, p2, p3)
+  const d4 = d(p1, p2, p4)
+  return ((d1 > 0 && d2 < 0) || (d1 < 0 && d2 > 0)) &&
+         ((d3 > 0 && d4 < 0) || (d3 < 0 && d4 > 0))
+}
+
+function polygonSelfIntersects(points: Point[]): boolean {
+  const n = points.length
+  for (let i = 0; i < n; i += 1) {
+    for (let j = i + 2; j < n; j += 1) {
+      if (i === 0 && j === n - 1) continue // 共享端点的相邻边
+      if (segmentsIntersect(points[i], points[(i + 1) % n], points[j], points[(j + 1) % n]))
+        return true
+    }
+  }
+  return false
+}
+
+/** 拒绝让多边形打结的点：提示沿边缘依次点击。 */
+function canAppend(points: Point[], next: Point): boolean {
+  if (points.length < 2) return true
+  return !polygonSelfIntersects([...points, next])
+}
+
 function onCanvasClick(event: MouseEvent) {
   if (event.button === 2) return
   const point = toFrameCoords(event)
-  if (tool.value === 'carousel') carousel.value.push(point)
-  else if (tool.value === 'line' && line.value.length < 2) line.value.push(point)
+  if (tool.value === 'carousel') {
+    if (!canAppend(carousel.value, point)) {
+      error.value = '这个点会让线条交叉：请沿边缘按顺序点击（顺时针或逆时针都可以）'
+      return
+    }
+    carousel.value.push(point)
+  } else if (tool.value === 'line' && line.value.length < 2) line.value.push(point)
   else if (tool.value === 'forbidden') {
     if (!forbidden.length) forbidden.push([])
-    forbidden[forbidden.length - 1].push(point)
+    const active = forbidden[forbidden.length - 1]
+    if (!canAppend(active, point)) {
+      error.value = '这个点会让线条交叉：请沿边缘按顺序点击（顺时针或逆时针都可以）'
+      return
+    }
+    active.push(point)
+  }
+  error.value = ''
+  redraw()
+}
+
+// 撤销当前正在画的形状的最后一个点
+function undoLastPoint() {
+  if (tool.value === 'carousel') carousel.value.pop()
+  else if (tool.value === 'line') line.value.pop()
+  else if (forbidden.length) {
+    const last = forbidden[forbidden.length - 1]
+    last.pop()
+    if (!last.length) forbidden.pop()
   }
   redraw()
 }
@@ -266,9 +334,12 @@ function onMouseMove(event: MouseEvent) {
     }
     return
   }
-  if (drag.list === 'carousel') carousel.value[drag.point] = point
-  else if (drag.list === 'line') line.value[drag.point] = point
-  else forbidden[drag.zone][drag.point] = point
+  // 拖到会让多边形打结的位置时保持原位
+  const target = drag.list === 'carousel' ? carousel.value
+    : drag.list === 'line' ? line.value : forbidden[drag.zone]
+  const candidate = target.map((p, i) => (i === drag.point ? point : p))
+  if (target.length >= 3 && polygonSelfIntersects(candidate)) return
+  target[drag.point] = point
   redraw()
 }
 
@@ -467,15 +538,23 @@ watch(step, (value) => {
         </div>
 
         <div v-else-if="step === 1">
-          <p>在画面上沿转盘外沿依次点击：每点一下落一个点，点与点自动连成线，围一圈后自动闭合成一个面。至少 3 个点，建议 6~10 个点更贴合边缘。画歪的点直接拖走，右键删掉。</p>
-          <button @click="carousel = []; redraw()">清空重来</button>
+          <p>在画面上沿转盘外沿依次点击：每点一下落一个点，点与点自动连成线（顶点上的数字就是顺序），围一圈后自动闭合成一个面。至少 3 个点，建议 6~10 个点更贴合边缘。顺序乱了会提示交叉，点"撤销上一点"或右键删掉重 点。</p>
+          <div class="nav-buttons">
+            <button @click="undoLastPoint()">撤销上一点</button>
+            <button @click="carousel = []; redraw()">清空重来</button>
+          </div>
         </div>
 
         <div v-else-if="step === 2">
           <p>用同样的方式圈出掉落物会落到的地面（禁区，红色）。转盘（绿色）在这一步是锁定的，碰不到。机器人手臂经过的地方可以画进来——它驻留不超过 {{ params.trigger_sustain_s }} 秒，不会触发。</p>
-          <button @click="forbidden.push([])">新建一块禁区</button>
-          <button @click="expandFromCarousel">按转盘自动生成（再手动修正）</button>
-          <button @click="forbidden.pop(); redraw()">删除最后一块</button>
+          <div class="nav-buttons">
+            <button @click="undoLastPoint()">撤销上一点</button>
+            <button @click="forbidden.push([])">新建一块禁区</button>
+          </div>
+          <div class="nav-buttons">
+            <button @click="expandFromCarousel">按转盘自动生成（再手动修正）</button>
+            <button @click="forbidden.pop(); redraw()">删除最后一块</button>
+          </div>
         </div>
 
         <div v-else-if="step === 3">
