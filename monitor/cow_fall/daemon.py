@@ -66,6 +66,10 @@ class DaemonConfig:
     scopex_api_url: str = ""
     # Offline validation: replay this file instead of a live stream.
     video: Path | None = None
+    # Expected stream frame size; a calibration drawn on a different-size
+    # reference frame (e.g. a phone screenshot) would place zones at the
+    # wrong coordinates - refuse to run rather than misdetect silently.
+    stream_size: tuple[int, int] | None = None
     watchdog_s: float = 60.0
     backoff_s: tuple[float, ...] = (5.0, 10.0, 20.0, 60.0)
     stable_s: float = 300.0
@@ -97,6 +101,12 @@ def load_daemon_config(path: Path) -> DaemonConfig:
         kwargs["zones_fallback"] = Path(raw["zones_fallback"])
     if raw.get("video"):
         kwargs["video"] = Path(raw["video"])
+    if raw.get("stream_size"):
+        size = raw["stream_size"]
+        if (not isinstance(size, list) or len(size) != 2
+                or not all(isinstance(v, int) and v > 0 for v in size)):
+            raise ValueError("stream_size 必须是 [宽, 高] 的正整数")
+        kwargs["stream_size"] = (size[0], size[1])
     return DaemonConfig(
         camera=camera,
         bind_host=bind_host,
@@ -476,6 +486,13 @@ class SessionSupervisor:
                 zones_raw, snapshot = dict(self._zones_override), None
             else:
                 zones_raw, snapshot = resolve_zones_raw(self.cfg)
+            calibration_size = zones_raw.get("frame_size")
+            if (self.cfg.stream_size is not None and calibration_size is not None
+                    and list(calibration_size) != list(self.cfg.stream_size)):
+                raise ValueError(
+                    f"标定参考帧尺寸 {list(calibration_size)} 与监控画面尺寸 "
+                    f"{list(self.cfg.stream_size)} 不一致，多边形坐标会错位；"
+                    "请在标定页面用监控画面的原始截图重新标注")
             raw = compose_session_raw(self.cfg, zones_raw)
             source = str(self.cfg.video) if self.cfg.video is not None else self.rtsp_url
             if not source:

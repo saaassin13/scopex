@@ -407,6 +407,28 @@ class SessionSupervisorTests(unittest.TestCase):
         finally:
             supervisor.shutdown()
 
+    def test_stream_size_mismatch_is_rejected(self):
+        # A calibration drawn on a 2928x1816 phone screenshot must never
+        # run against the 1920x1080 stream: silently shifted zones.
+        cfg = fast_config(stream_size=(1920, 1080))
+        zones = {"frame_size": [2928, 1816],
+                 "zones": {"carousel": [[0, 0], [9, 0], [9, 9]]}}
+        supervisor = self._supervisor_with_zones(cfg, zones)
+        supervisor.request_start()
+        supervisor.start()
+        try:
+            self.assertTrue(wait_for(lambda: supervisor.status()["last_error"] is not None))
+            self.assertIn("尺寸", supervisor.status()["last_error"])
+            self.assertEqual(FakeSession.instances, [])
+        finally:
+            supervisor.shutdown()
+
+    def _supervisor_with_zones(self, cfg: DaemonConfig, zones: dict) -> SessionSupervisor:
+        def factory(config, on_event):
+            return FakeSession(config, on_event)
+        return SessionSupervisor(cfg, "rtsp://x", session_factory=factory,
+                                 _zones_override=zones)
+
     def test_missing_source_reports_error(self):
         cfg = fast_config()
         zones = {"zones": {"carousel": [[0, 0], [9, 0], [9, 9]]}}
