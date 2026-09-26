@@ -1,6 +1,10 @@
 # Cow-fall camera RTSP tunnel: forward the camera (reachable only from the
 # edge host) to workstation loopback for the scopex-monitor container.
 #
+# Plain ssh with Restart=always covers the autossh use case (detect the
+# dead peer via ServerAlive probes, exit, let systemd restart) without an
+# extra package or root. Prerequisite: ssh key auth to scaling@10.200.0.14.
+#
 # Install as a systemd USER unit (see docs/deployment.md 第 10.3 节):
 #   mkdir -p ~/.config/systemd/user
 #   cp app/deploy/systemd/cow-fall-tunnel.service ~/.config/systemd/user/
@@ -15,10 +19,11 @@ After=network-online.target
 Wants=network-online.target
 
 [Service]
-ExecStart=/usr/bin/autossh -M 0 -N \
+ExecStart=/usr/bin/ssh -N \
   -o ServerAliveInterval=30 \
   -o ServerAliveCountMax=3 \
   -o ExitOnForwardFailure=yes \
+  -o BatchMode=yes \
   -L 127.0.0.1:8554:192.168.40.96:554 \
   scaling@10.200.0.14
 Restart=always

@@ -260,10 +260,10 @@ scopex-runtime 容器 127.0.0.1:8790 控制监控；页面"常驻监控"启停/�
 
 ### 10.3 ssh 隧道常驻
 
-workstation 上以 systemd 用户级服务维持隧道（模板 `deploy/systemd/cow-fall-tunnel.service`）：
+workstation 上以 systemd 用户级服务维持隧道（模板 `deploy/systemd/cow-fall-tunnel.service`，普通 ssh + `Restart=always`，不需要 autossh 或 sudo）：
 
 ```bash
-# 前置：apt install autossh；首次 ssh scaling@10.200.0.14 完成免密登录
+# 前置：已配置到 scaling@10.200.0.14 的 ssh 免密登录
 mkdir -p ~/.config/systemd/user
 cp app/deploy/systemd/cow-fall-tunnel.service ~/.config/systemd/user/
 systemctl --user daemon-reload
