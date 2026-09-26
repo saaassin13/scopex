@@ -554,6 +554,7 @@ watch(step, (value) => {
           <div class="nav-buttons">
             <button @click="expandFromCarousel">按转盘自动生成（再手动修正）</button>
             <button @click="forbidden.pop(); redraw()">删除最后一块</button>
+            <button @click="forbidden.splice(0, forbidden.length); redraw()">清空全部禁区</button>
           </div>
         </div>
 
