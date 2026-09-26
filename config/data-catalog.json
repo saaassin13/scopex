@@ -44,6 +44,27 @@
         "max_pointcloud_files_per_operation": 8,
         "recursive_scan": false
       }
+    },
+    "cow_fall_events": {
+      "description": "牛掉落监控事件档案：每个事件一个目录（meta.json + frames/ 前后帧），由监控容器写入，供事件确认任务读取。",
+      "host_path": "/opt/ScalingRobotics/scopex/data/monitor/cow-fall",
+      "agent_path": "/agent-data/cow-fall",
+      "type": "event_archive",
+      "layout": {
+        "directory": "events/fall-<id>",
+        "filename": "meta.json、frames/{pre,post}-NNNNN.jpg",
+        "time_basis": "meta.json 的 opened_at（epoch 秒）",
+        "timezone": "Asia/Shanghai",
+        "notes": [
+          "事件目录不可变：确认任务只需读 meta.json 与少量代表帧（2~4 张）。",
+          "目录由 start.sh 在 compose up 前创建；目录缺失时该 bind 会被跳过。"
+        ]
+      },
+      "access": {
+        "max_hour_buckets": 24,
+        "max_files_per_operation": 256,
+        "recursive_scan": false
+      }
     }
   }
 }

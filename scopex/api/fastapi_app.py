@@ -13,6 +13,7 @@ from pydantic import BaseModel, ConfigDict, Field, StrictBool
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from scopex.api.calibrations import CalibrationService
+from scopex.api.monitor_proxy import register_monitor_routes
 from scopex.api.schedules import ScheduleNotFoundError, ScheduleService
 from scopex.api.service import (
     TaskBusyError,
@@ -384,6 +385,10 @@ def create_app(
         @app.post("/calibrations/{camera}/versions/{version}/verify")
         def verify_calibration(camera: str, version: int, body: CalibrationVerifyRequest) -> dict[str, Any]:
             return calibrations.record_verify(camera, version, body.result, body.note)
+
+    # Cow-fall monitor proxy is always mounted: when the optional monitor
+    # container is absent the proxy answers 503 and the page shows why.
+    register_monitor_routes(app)
 
     resolved_static = Path(static_dir).resolve() if static_dir is not None else None
     if resolved_static is not None and resolved_static.is_dir():

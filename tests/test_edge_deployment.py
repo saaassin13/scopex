@@ -65,7 +65,37 @@ class EdgeDeploymentTests(unittest.TestCase):
         self.assertIn('      - "1800"', compose)
         self.assertIn("      - --max-num-seqs\n      - \"1\"", compose)
         self.assertIn('      - "98304"', compose)
-        self.assertIn('      - "48"', compose)
+        self.assertIn('      - "64"', compose)
+
+    def test_monitor_service_is_opt_in_and_loopback_bounded(self):
+        compose = (ROOT / "deploy" / "edge" / "compose.yaml").read_text()
+        start = (ROOT / "deploy" / "edge" / "start.sh").read_text()
+        # Opt-in via profile: default deployments must not need the image.
+        self.assertIn('profiles: ["monitor"]', compose)
+        self.assertIn('"${SCOPEX_MONITOR_ENABLED:-0}" = "1"', start)
+        self.assertIn('--profile monitor', start)
+        self.assertIn('COW_FALL_RTSP_URL', start)
+        # Event files must be owned by the runtime user, or the scopex
+        # container cannot read them through the catalog bind.
+        self.assertIn("user: ${SCOPEX_UID}:${SCOPEX_GID}", compose)
+        self.assertIn("restart: unless-stopped", compose)
+        self.assertIn("COW_FALL_RTSP_URL: ${COW_FALL_RTSP_URL:-}", compose)
+        example = (ROOT / "deploy" / "edge" / "monitor.json.example").read_text()
+        self.assertIn('"bind_host": "127.0.0.1"', example)
+        self.assertIn('"auto_confirm": false', example)
+
+    def test_monitor_image_is_built_exported_and_imported(self):
+        build = (ROOT / "deploy" / "edge" / "build-images.sh").read_text()
+        export = (ROOT / "deploy" / "edge" / "export-images.sh").read_text()
+        import_script = (ROOT / "deploy" / "edge" / "import-images.sh").read_text()
+        for script in (build, export, import_script):
+            self.assertIn("monitor", script)
+        # The three imports must be verified in one process so a pip/ apt
+        # numpy clash that breaks cv2 cannot ship.
+        self.assertIn("import cv2, numpy, onnxruntime", build)
+        dockerfile = (ROOT / "docker" / "monitor.Dockerfile").read_text()
+        self.assertIn("onnxruntime==", dockerfile)
+        self.assertIn("ffmpeg", dockerfile)
 
 if __name__ == "__main__":
     unittest.main()

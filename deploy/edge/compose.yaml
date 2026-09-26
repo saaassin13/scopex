@@ -126,3 +126,51 @@ services:
       - /run
     security_opt:
       - no-new-privileges:true
+
+  # Cow-fall stream monitor. Opt-in via SCOPEX_MONITOR_ENABLED=1 in
+  # edge.env (start.sh maps it to the compose profile); without the
+  # profile this service - and its image requirement - does not exist.
+  monitor:
+    image: ${SCOPEX_MONITOR_IMAGE}
+    container_name: scopex-monitor
+    profiles: ["monitor"]
+    restart: unless-stopped
+    # session.stop joins threads and ffmpeg; 10s join + 5s kill headroom.
+    stop_grace_period: 30s
+    network_mode: host
+    user: ${SCOPEX_UID}:${SCOPEX_GID}
+    environment:
+      TZ: Asia/Shanghai
+      # Contains RTSP credentials; same trust level as SCOPEX_API_KEY
+      # (edge.env is 0600; visible to the docker group via inspect).
+      COW_FALL_RTSP_URL: ${COW_FALL_RTSP_URL:-}
+    volumes:
+      # Same host paths inside: zones configs and model paths are absolute.
+      - ${SCOPEX_APP_DIR}:${SCOPEX_APP_DIR}:ro
+      - ${SCOPEX_DATA_DIR}:${SCOPEX_DATA_DIR}:rw
+      - ${SCOPEX_MONITOR_MODEL_DIR}:${SCOPEX_MONITOR_MODEL_DIR}:ro
+      - ${SCOPEX_ROOT}/config/monitor.json:${SCOPEX_ROOT}/config/monitor.json:ro
+    working_dir: ${SCOPEX_APP_DIR}
+    command:
+      - python3
+      - -m
+      - monitor.cow_fall.daemon
+      - --config
+      - ${SCOPEX_ROOT}/config/monitor.json
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8790/status', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /var/tmp
+    security_opt:
+      - no-new-privileges:true

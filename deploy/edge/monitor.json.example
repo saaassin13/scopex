@@ -1,0 +1,17 @@
+{
+  "camera": "camera-96",
+  "bind_host": "127.0.0.1",
+  "bind_port": 8790,
+  "model_path": "/opt/ScalingRobotics/scopex/models-monitor/yolov8n-coco.onnx",
+  "output_root": "/opt/ScalingRobotics/scopex/data/monitor/cow-fall",
+  "calibrations_root": "/opt/ScalingRobotics/scopex/data/calibrations",
+  "auto_start": false,
+  "auto_confirm": false,
+  "scopex_api_url": "http://10.200.0.2:8787",
+  "watchdog_s": 60.0,
+  "backoff_s": [5, 10, 20, 60],
+  "stable_s": 300.0,
+  "retention_days": 30,
+  "retention_min_events": 50,
+  "confirm_cooldown_s": 300.0
+}
