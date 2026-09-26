@@ -353,3 +353,29 @@ task-5bbe39c61fa1（16 候选、无 profile）以逐候选 inspect 跑满 48 次
 （同快照实测 16 候选 0.93 秒、结论与逐个一致）；edge `--max-requests` 提升至 64
 （factory 校验范围 2–64 未变）。预期同类任务模型请求降至 ~10 次，不再触发
 中途压缩。
+
+### 2026-09-26 监控服务（牛掉落）部署验收
+
+workstation（10.200.0.2，arm64/Debian bookworm）首次启用 monitor profile。
+构建与部署踩到两处并已修复：镜像内无 pip（Dockerfile 补装 python3-pip；
+onnxruntime 1.20.1 aarch64 wheel 可用）；edge.env 中 RTSP URL 含 `&`，赋值
+必须单引号（否则 source 拆断，start.sh 报 requires COW_FALL_RTSP_URL）。
+
+验收结果（全部通过）：
+
+- 三容器 healthy（vllm / runtime / monitor），监控 auto_start 即时拉流，
+  实时帧龄亚秒级；容器内 45 秒真实录像回放零事件正常退出（真实模型链路）。
+- **拔隧道演练**：`systemctl --user stop cow-fall-tunnel` 后帧龄按秒增长，
+  60s 看门狗触发重启并进入退避（5/10/20s 阶梯）；隧道恢复后 20 秒内自动
+  回到 running，容器全程 healthy。
+- **确认任务全链路**（经 catalog `cow_fall_events` 源读 `/agent-data/cow-fall/`）：
+  合成事件与真实事件各验证一次，模型 view_image 抽查 2~4 张代表帧并给出
+  结论与依据帧名。首个真实事件 fall-1（19:03，R1 检测框中心越界，121 帧）
+  确认结论"明显误报"（牛被防护罩遮挡导致检测框偏移）——检测宁多勿漏、
+  确认层过滤的工作方式符合设计。
+- 部署期发现并修复一处代码缺陷：`auto_confirm` 关闭时确认 worker 未启动，
+  页面手动"发确认"会被静默丢弃（提交 4b 补丁，worker 无条件启动）。
+
+当前配置：`auto_start=true`、`auto_confirm=false`（事件确认走页面手动）；
+zones 使用 `docs/monitoring/zones-camera-96-v1.json` 兜底（标定页面启用版本
+前优先级更高）。真实掉落召回仍待现场样本。
