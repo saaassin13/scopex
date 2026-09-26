@@ -108,7 +108,7 @@ async function onFrameChosen(event: Event) {
 }
 
 function loadImage() {
-  return new Promise<void>((resolve) => {
+  return new Promise<void>((resolve, reject) => {
     const img = new Image()
     img.onload = () => {
       image.value = img
@@ -116,6 +116,7 @@ function loadImage() {
       requestAnimationFrame(redraw)
       resolve()
     }
+    img.onerror = () => reject(new Error('参考帧加载失败（文件损坏或已被清理），请重新上传一张'))
     img.src = frameUrl.value!
   })
 }
@@ -348,7 +349,8 @@ async function activate(version: number) {
   }
 }
 
-// 把一个已保存版本载入画布查看/续改：zones、参数与参考帧全部回显，
+// 把一个已保存版本载入画布查看/续改：zones 与参数必载；参考帧尽力载入，
+// 缺失或损坏时提示重传但不阻断（画布无底图时多边形暂不显示）。
 // 修改后保存会生成新版本，不动原版本。
 async function loadVersion(entry: CalibrationVersion) {
   busy.value = true
@@ -371,13 +373,27 @@ async function loadVersion(entry: CalibrationVersion) {
     params.min_on_carousel_ratio = Number(zones.min_on_carousel_ratio ?? params.min_on_carousel_ratio)
     params.platform_line_margin_px = Number(zones.platform_line_margin_px ?? params.platform_line_margin_px)
     params.min_conf = Number(zones.min_conf ?? params.min_conf)
+    let frameProblem = ''
     if (entry.frame_id) {
       frameId.value = entry.frame_id
       frameUrl.value = api.calibrationFrameUrl(camera.value, entry.frame_id)
-      await loadImage()
+      try {
+        await loadImage()
+      } catch (exc) {
+        frameProblem = exc instanceof Error ? exc.message : String(exc)
+        image.value = null
+        frameSize.value = null
+        frameUrl.value = null
+      }
+    } else {
+      frameProblem = '该版本没有参考帧；上传一张后可在画布上查看和编辑多边形'
+      image.value = null
+      frameSize.value = null
+      frameUrl.value = null
     }
     saveResult.value = null
-    step.value = frameSize.value ? 1 : 0
+    error.value = frameProblem
+    step.value = 0
   } catch (exc) {
     error.value = exc instanceof Error ? exc.message : String(exc)
   } finally {
@@ -526,21 +542,23 @@ watch(step, (value) => {
 <style scoped>
 .calibration-layout { display: flex; gap: 24px; align-items: flex-start; flex-wrap: wrap; }
 .calibration-canvas-area { flex: 1 1 560px; min-width: 320px; }
-.calibration-canvas-area canvas { max-width: 100%; border: 1px solid #ddd; border-radius: 6px; cursor: crosshair; }
+.calibration-canvas-area canvas { max-width: 100%; border: 1px solid var(--panel-border); border-radius: 6px; cursor: crosshair; }
 .calibration-panel { flex: 1 1 340px; min-width: 300px; }
 .steps { list-style: none; padding: 0; margin: 0 0 16px; }
-.steps li { padding: 6px 10px; border-left: 3px solid #ddd; color: #888; cursor: pointer; }
-.steps li.active { border-left-color: #2563eb; color: inherit; font-weight: 600; }
+.steps li { padding: 6px 10px; border-left: 3px solid rgba(255, 255, 255, 0.12); color: var(--muted); cursor: pointer; }
+.steps li.active { border-left-color: var(--accent); color: #eef2ff; font-weight: 600; }
 .steps li.done { color: inherit; border-left-color: #2e9e5b; }
 .params { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 8px; }
-.params label, .calibration-panel label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; margin-bottom: 8px; }
+.params label, .calibration-panel label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; margin-bottom: 8px; color: var(--muted); }
 .nav-buttons { display: flex; gap: 8px; margin-top: 16px; }
 .history { margin-top: 24px; }
+.history h4 { margin: 8px 0; color: var(--muted); font-size: 13px; }
 .camera-row { display: flex; gap: 8px; align-items: center; margin: 4px 0; flex-wrap: wrap; }
-.warn { color: #a05a00; }
-.save-result code { display: block; background: #f5f5f5; padding: 8px; border-radius: 4px; font-size: 12px; word-break: break-all; }
+.warn { color: #ffc46b; }
+.save-result code { display: block; background: rgba(0, 0, 0, 0.35); color: #eef2ff; padding: 8px; border-radius: 4px; font-size: 12px; word-break: break-all; }
 table { width: 100%; font-size: 13px; border-collapse: collapse; }
-th, td { text-align: left; padding: 4px 6px; border-bottom: 1px solid #eee; }
-tr.active td { background: #eef5ff; }
-.empty { border: 1px dashed #bbb; border-radius: 6px; padding: 32px; text-align: center; color: #777; }
+th { color: var(--muted); font-weight: 600; }
+th, td { text-align: left; padding: 4px 6px; border-bottom: 1px solid var(--panel-border); }
+tr.active td { background: rgba(157, 240, 200, 0.08); }
+.empty { border: 1px dashed rgba(255, 255, 255, 0.2); border-radius: 6px; padding: 32px; text-align: center; color: var(--muted); }
 </style>

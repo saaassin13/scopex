@@ -211,3 +211,7 @@ button:disabled { opacity: .45; cursor: not-allowed; }
 .assessment-toggle { line-height: 1.6; }
 .task-row-top { flex-wrap: wrap; }
 select option { background: #12161e; color: #eef2ff; }
+
+/* Compact inline text-button used by calibration/monitor tables. */
+button.link { border: 0; background: transparent; color: var(--accent); padding: 2px 6px; font-size: 13px; }
+button.link:hover { text-decoration: underline; }

@@ -208,24 +208,25 @@ onBeforeUnmount(() => window.clearInterval(timer))
 </template>
 
 <style scoped>
-.status-card { border: 1px solid #ddd; border-radius: 8px; padding: 16px; margin-bottom: 24px; }
-.status-card[data-state='running'] { border-color: #2e9e5b; }
-.status-card[data-state='error'] { border-color: #c0392b; }
+.status-card { border: 1px solid var(--panel-border); border-radius: 8px; padding: 16px; margin-bottom: 24px; background: var(--panel); }
+.status-card[data-state='running'] { border-color: rgba(46, 158, 91, 0.6); }
+.status-card[data-state='error'] { border-color: rgba(255, 90, 104, 0.55); }
 .status-main { display: flex; gap: 16px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; }
-.state-badge { font-weight: 600; padding: 2px 12px; border-radius: 12px; background: #eef5ff; }
-.status-card[data-state='running'] .state-badge { background: #e8f7ee; color: #1d7a44; }
+.state-badge { font-weight: 600; padding: 2px 12px; border-radius: 12px; background: rgba(255, 255, 255, 0.07); color: #b6bfce; }
+.status-card[data-state='running'] .state-badge { background: rgba(46, 158, 91, 0.16); color: #7de0a5; }
 .status-facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px; margin: 0 0 12px; }
-.status-facts dt { font-size: 12px; color: #888; }
+.status-facts dt { font-size: 12px; color: var(--muted); }
 .status-facts dd { margin: 0; font-size: 14px; }
 .nav-buttons { display: flex; gap: 8px; }
 table { width: 100%; font-size: 13px; border-collapse: collapse; }
-th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid #eee; vertical-align: top; }
-tr.open td { background: #fff8e8; }
-.frames-row td { background: #fafafa; }
+th { color: var(--muted); font-weight: 600; }
+th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--panel-border); vertical-align: top; }
+tr.open td { background: rgba(255, 196, 107, 0.07); }
+.frames-row td { background: rgba(255, 255, 255, 0.02); }
 .frame-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 8px; margin-bottom: 8px; }
 .frame-grid figure { margin: 0; }
 .frame-grid img { width: 100%; border-radius: 4px; display: block; }
-.frame-grid figcaption { font-size: 11px; color: #777; margin-top: 2px; }
-.warn { color: #a05a00; }
-.empty { border: 1px dashed #bbb; border-radius: 6px; padding: 32px; text-align: center; color: #777; }
+.frame-grid figcaption { font-size: 11px; color: var(--muted); margin-top: 2px; }
+.warn { color: #ffc46b; }
+.empty { border: 1px dashed rgba(255, 255, 255, 0.2); border-radius: 6px; padding: 32px; text-align: center; color: var(--muted); }
 </style>
