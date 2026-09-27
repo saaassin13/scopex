@@ -84,6 +84,42 @@ class RuleEvaluationTests(unittest.TestCase):
         self.assertEqual(evaluate_frame(rows, zones()), [])
 
 
+class ForbiddenZoneConstraintTests(unittest.TestCase):
+    """With explicit zones, YOLO cow hits only count inside a zone.
+
+    Night-vision reflections, workers in rain coats and striped equipment
+    misfire as 'cow' anywhere in the frame; the carousel-exterior test
+    alone turned every such misfire into a trigger (2026-09-27 incident:
+    25 false events overnight).
+    """
+
+    # Ground strip covering x >= 200; the left strip (x < 200) is the
+    # equipment area outside every zone.
+    GROUND = ((200.0, 320.0), (1000.0, 320.0), (1000.0, 500.0), (200.0, 500.0))
+
+    def _zones(self) -> ZoneConfig:
+        return zones(forbidden_zones=(self.GROUND,))
+
+    def test_misfire_outside_zones_is_ignored(self):
+        # Same geometry as the production misfires: outside the carousel,
+        # but also outside every forbidden zone (equipment strip at left).
+        misfire = Detection(box=(60, 380, 180, 470), conf=0.85)
+        self.assertEqual(evaluate_frame([misfire], self._zones()), [])
+
+    def test_fallen_cow_inside_zone_still_fires(self):
+        fallen = Detection(box=(300, 320, 700, 460), conf=0.85)
+        result = evaluate_frame([fallen], self._zones())
+        self.assertEqual(len(result), 1)
+        self.assertIn("R1_box_center_outside", result[0].rule_ids)
+
+    def test_no_explicit_zones_keeps_carousel_exterior_semantics(self):
+        # Fallback mode ("everything outside the carousel") must keep the
+        # original rule behavior.
+        fallen = Detection(box=(60, 380, 180, 470), conf=0.85)
+        result = evaluate_frame([fallen], zones())
+        self.assertEqual(len(result), 1)
+
+
 class FallTrackerTests(unittest.TestCase):
     def _obs(self, x=500.0, y=380.0):
         from monitor.cow_fall.rules import FallObservation

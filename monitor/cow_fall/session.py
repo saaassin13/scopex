@@ -116,7 +116,10 @@ class FallSession:
             ratio, centroid = foreground.update(bgr)
             anomalies: list[FallObservation] = []
             if zone_occupied(ratio, self.config.foreground) and centroid is not None:
-                detections = self.detector.detect(bgr, (width, height))
+                # The observation carries the zone_foreground rule id so
+                # events show which path fired them; piggybacking R1 here
+                # made foreground triggers indistinguishable from YOLO
+                # misfires in the archive.
                 pad = 40.0
                 anomalies.append(FallObservation(
                     box=(centroid[0] - pad, centroid[1] - pad,
@@ -125,7 +128,9 @@ class FallSession:
                     fully_outside=True,
                     mostly_off=False,
                     below_platform=False,
+                    override_rule_ids=("zone_foreground",),
                 ))
+                detections = self.detector.detect(bgr, (width, height))
                 # Cow rules add independent observations when a cow is
                 # clearly out of place (auxiliary to the zone trigger).
                 anomalies.extend(evaluate_frame(detections, self.config.zones))

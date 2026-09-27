@@ -121,6 +121,9 @@ class FileReplaySessionTests(unittest.TestCase):
             event_dir, _event = fired[0]
             meta = json.loads((event_dir / "meta.json").read_text())
             self.assertEqual(meta["status"], "open")
+            # The primary trigger must be identifiable in the archive:
+            # zone_foreground, not a piggybacked YOLO rule id.
+            self.assertIn("zone_foreground", meta["rules"])
             frames = sorted((event_dir / "frames").glob("*.jpg"))
             self.assertGreater(len(frames), 0)
             # Every archived frame decodes back to the source geometry.

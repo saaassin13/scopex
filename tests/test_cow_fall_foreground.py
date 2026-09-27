@@ -71,6 +71,17 @@ class ZoneForegroundTests(unittest.TestCase):
         self.assertGreater(ratio, 0.2)
         self.assertIsNotNone(centroid)
 
+    def test_global_illumination_change_stays_quiet(self):
+        # Lights on/off: the whole frame turns foreground while MOG2
+        # re-learns. That must read as quiet, not as a fallen cow.
+        fg = ZoneForeground(zones(), ForegroundConfig())
+        for _ in range(60):
+            fg.update(blank())
+        lit = np.full((H, W, 3), 230, dtype=np.uint8)
+        for _ in range(20):
+            ratio, centroid = fg.update(lit)
+            self.assertEqual((ratio, centroid), (0.0, None))
+
     def test_config_rejects_bad_ratio(self):
         with self.assertRaises(ValueError):
             ForegroundConfig(min_area_ratio=0.0)

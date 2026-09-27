@@ -38,6 +38,15 @@ class ValidateConfigTests(unittest.TestCase):
         self.assertEqual(errors, [])
         self.assertEqual(warnings, [])
 
+    def test_short_trigger_sustain_warns(self):
+        # v3/v4 of camera-96 were saved with 4s and fired 25 false events
+        # overnight; the validated value is 30s (robot arm dwells <=16s).
+        config = sample_config()
+        config["trigger_sustain_s"] = 4
+        errors, warnings = validate_config(config)
+        self.assertEqual(errors, [])
+        self.assertTrue(any("过短" in warning for warning in warnings))
+
     def test_missing_explicit_zones_warns(self):
         config = sample_config()
         config["zones"]["forbidden_zones"] = []

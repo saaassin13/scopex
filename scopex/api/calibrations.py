@@ -138,6 +138,10 @@ def validate_config(config: dict) -> tuple[list[str], list[str]]:
     sustain = config.get("trigger_sustain_s", 30.0)
     if not isinstance(sustain, (int, float)) or sustain <= 0:
         errors.append("trigger_sustain_s 必须为正数")
+    elif sustain < 15:
+        warnings.append(
+            f"触发持续秒数 {sustain}s 过短：离线验证结论是 30s（机器人臂驻留最长约 16s、"
+            "人员与夜视误检都是秒级瞬态），过短会大量误报")
     return errors, warnings
 
 

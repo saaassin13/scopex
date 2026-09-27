@@ -39,9 +39,14 @@ class FallObservation:
     fully_outside: bool
     mostly_off: bool
     below_platform: bool
+    # Explicit rule names override the bool-derived defaults, so non-YOLO
+    # observers (the zone-foreground trigger) can carry their own id.
+    override_rule_ids: tuple[str, ...] | None = None
 
     @property
     def rule_ids(self) -> tuple[str, ...]:
+        if self.override_rule_ids is not None:
+            return self.override_rule_ids
         fired = []
         if self.fully_outside:
             fired.append("R1_box_center_outside")
@@ -58,12 +63,20 @@ def evaluate_frame(detections: list[Detection], zones: ZoneConfig) -> list[FallO
     A normal cow is visible only as its rear half inside the carousel band,
     so any cow mostly or fully off the carousel, or hanging under the
     platform line, is out-of-place regardless of pose.
+
+    With explicit forbidden zones, only detections whose center lies inside
+    a zone count: YOLO misfires on people in rain coats, night-vision
+    reflections and striped equipment anywhere in the frame, and the
+    carousel-exterior test alone cannot tell those from a real fall.
     """
     anomalies: list[FallObservation] = []
     for det in detections:
         if det.label != "cow" or det.conf < zones.min_conf:
             continue
         center = box_center(det.box)
+        if zones.forbidden_zones and not any(
+                point_in_polygon(center, zone) for zone in zones.forbidden_zones):
+            continue
         on_ratio = box_overlap_ratio(det.box, zones.carousel)
         mostly_off = on_ratio < zones.min_on_carousel_ratio
         below_platform = False

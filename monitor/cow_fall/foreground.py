@@ -25,6 +25,11 @@ class ForegroundConfig:
     # Frames skipped while the background model warms up (frame 0 is all
     # foreground by construction and would immediately false-trigger).
     warmup_frames: int = 50
+    # A frame whose foreground covers more than this fraction of the WHOLE
+    # image is a global change (lights on/off, camera gain), not a fall:
+    # report quiet while MOG2 re-learns, instead of firing for the whole
+    # convergence window (history=300 at 2 fps ~ 150 s).
+    global_flash_ratio: float = 0.25
 
     def __post_init__(self) -> None:
         if not 0.0 < self.min_area_ratio < 1.0:
@@ -91,6 +96,12 @@ class ZoneForeground:
             self._subtractor.apply(frame_bgr)  # keep learning, stay quiet
             return 0.0, None
         full_mask = self._subtractor.apply(frame_bgr)
+        flash = float((full_mask > 200).sum()) / (width * height)
+        if flash > self.config.global_flash_ratio:
+            # Global illumination change: keep feeding the model so it
+            # re-learns, but stay quiet — a fallen cow never lights up the
+            # entire frame.
+            return 0.0, None
         zone_mask = cv2.bitwise_and(full_mask, full_mask, mask=self._zone_mask)
         binary = (zone_mask > 200).astype(np.uint8)
         foreground = int(binary.sum())
