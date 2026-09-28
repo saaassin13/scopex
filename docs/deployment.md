@@ -424,3 +424,9 @@ python3 -m json.tool /opt/ScalingRobotics/scopex/data/monitor/cow-fall/events/fa
 `frame age ... exceeds watchdog` = 断流看门狗触发（通常伴随隧道日志断线）；
 `[event] fall-N rules=[...]` = 事件触发，对应事件目录与页面条目；
 `[confirm] fall-N -> task-xxx` = 已建确认任务。
+
+### 2026-09-28 任务结果页面与异常复核规则更新
+
+代码 `8c6a8f9` 已部署到 `yanlan@10.200.0.2` 的原仓库 `/opt/ScalingRobotics/scopex/app`。现有仓库切到 `feature/video-inference-validation`，原 main 引用与三处现场前端差异保留；没有建立第二个仓库或服务。目标 Linux 全量 831 项通过，已有 Runtime 镜像的 Node 24.21.0 构建前端通过，部署后 Runtime 内新增专项 10 项通过。
+
+本次按当前 `update.sh` 的 `up -d --no-deps --force-recreate scopex` 更新，仅重建 ScopeX Runtime；第 6 节关于脚本不强制重启的旧描述不适用于当前脚本。新 API、前端资源哈希和历史记录核验通过，29 条任务 ID/状态保留，配置校验一致，vLLM 与 monitor 容器未重建。回滚包及验收回执位于 `/opt/ScalingRobotics/scopex/deploy-backups/20260928-8c6a8f9/`。业务识别准确率边界见交接第 7 节。
