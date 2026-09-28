@@ -1,98 +1,53 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { api, ApiError } from '../api'
-import type { TaskCalendarDay, TaskSnapshot } from '../types'
+import type { TaskSnapshot } from '../types'
 import type { TaskFilters } from '../assessment'
-import ResultBadge from '../components/ResultBadge.vue'
+import TaskList from '../components/TaskList.vue'
 import TaskResultFilters from '../components/TaskResultFilters.vue'
 
 const router = useRouter()
 const tasks = ref<TaskSnapshot[]>([])
-const calendarDays = ref<TaskCalendarDay[]>([])
+const scheduleNames = ref<Record<string, string>>({})
 const message = ref('')
-const assessmentEnabled = ref(false)
+const assessmentEnabled = ref(true)
 const filters = ref<TaskFilters>({})
-const historyLoading = ref(false)
-let generation = 0
+const showComposer = ref(false)
+const query = ref('')
+const day = ref('')
+const scope = ref<'all' | 'attention' | 'manual' | 'schedule'>('all')
+const offset = ref(0)
+const pageSize = 30
+const hasNext = ref(false)
 const loading = ref(false)
+const historyLoading = ref(false)
 const deletingId = ref('')
 const error = ref('')
-const now = new Date()
-const selectedMonth = ref(`${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`)
-const selectedDay = ref(`${selectedMonth.value}-${String(now.getDate()).padStart(2, '0')}`)
+let generation = 0
 let timer: number | undefined
+let searchTimer: number | undefined
 
-function fmt(value?: string | null) {
-  if (!value) return '—'
-  const date = new Date(value)
-  return Number.isNaN(date.getTime()) ? value : date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
-}
-
-function duration(task: TaskSnapshot) {
-  if (typeof task.duration_ms !== 'number') return ''
-  const sec = Math.max(0, Math.round(task.duration_ms / 1000))
-  if (sec < 60) return `${sec}s`
-  return `${Math.floor(sec / 60)}m ${sec % 60}s`
-}
-
-function canDelete(task: TaskSnapshot) {
-  return ['COMPLETED', 'FAILED', 'CANCELLED'].includes(task.state)
-}
-
-const monthDate = computed(() => {
-  const [year, month] = selectedMonth.value.split('-').map(Number)
-  return new Date(year, month - 1, 1)
-})
-const monthTitle = computed(() => `${monthDate.value.getFullYear()}年${monthDate.value.getMonth() + 1}月`)
-const dayStats = computed(() => new Map(calendarDays.value.map(row => [row.date, row])))
-const calendarCells = computed(() => {
-  const base = monthDate.value
-  const year = base.getFullYear()
-  const month = base.getMonth()
-  const days = new Date(year, month + 1, 0).getDate()
-  const first = (new Date(year, month, 1).getDay() + 6) % 7
-  const cells: Array<{ day: number | null; date?: string; stats?: TaskCalendarDay }> = []
-  for (let i = 0; i < first; i += 1) cells.push({ day: null })
-  for (let day = 1; day <= days; day += 1) {
-    const date = `${selectedMonth.value}-${String(day).padStart(2, '0')}`
-    cells.push({ day, date, stats: dayStats.value.get(date) })
-  }
-  return cells
-})
-
-function shiftMonth(delta: number) {
-  const base = monthDate.value
-  const next = new Date(base.getFullYear(), base.getMonth() + delta, 1)
-  selectedMonth.value = `${next.getFullYear()}-${String(next.getMonth() + 1).padStart(2, '0')}`
-  selectedDay.value = `${selectedMonth.value}-01`
-  void refresh()
-}
-
-async function refresh() {
+async function refresh(next = offset.value) {
   const token = ++generation
   historyLoading.value = true
   try {
-    const [calendar, rows] = await Promise.all([
-      api.getTaskCalendar(selectedMonth.value),
-      api.listTasks({ day: selectedDay.value, ...filters.value }),
-    ])
+    const rows = await api.listTasks({ day: day.value || undefined, ...filters.value,
+      query: query.value.trim() || undefined, attention: scope.value === 'attention',
+      trigger_type: ['manual', 'schedule'].includes(scope.value) ? scope.value as 'manual' | 'schedule' : undefined,
+      offset: next, limit: pageSize + 1 })
     if (token !== generation) return
-    calendarDays.value = calendar.days
-    tasks.value = rows.tasks
+    tasks.value = rows.tasks.slice(0, pageSize)
+    hasNext.value = rows.tasks.length > pageSize
+    offset.value = next
     error.value = ''
   } catch (exc) {
     if (token === generation) error.value = exc instanceof Error ? exc.message : String(exc)
   } finally { if (token === generation) historyLoading.value = false }
 }
-watch(filters, () => { tasks.value = []; void refresh() })
-
-async function selectDay(date?: string) {
-  if (!date) return
-  selectedDay.value = date
-  tasks.value = []
-  await refresh()
-}
+function resetList() { tasks.value = []; hasNext.value = false; void refresh(0) }
+watch([filters, day, scope], resetList)
+watch(query, () => { window.clearTimeout(searchTimer); searchTimer = window.setTimeout(resetList, 250) })
 
 async function createEntry() {
   const value = message.value.trim()
@@ -101,127 +56,67 @@ async function createEntry() {
   error.value = ''
   try {
     const task = await api.createRun(value, assessmentEnabled.value)
-    message.value = ''
     await router.push(`/tasks/${task.id}`)
-  } catch (exc) {
-    error.value = exc instanceof ApiError ? `${exc.code}: ${exc.message}` : String(exc)
-  } finally {
-    loading.value = false
-  }
+  } catch (exc) { error.value = exc instanceof ApiError ? exc.message : String(exc) }
+  finally { loading.value = false }
 }
-
 async function deleteEntry(task: TaskSnapshot) {
-  if (!canDelete(task) || deletingId.value) return
-  const ok = window.confirm('删除后会移除此 Run 的结果、事实依据、技术记录、临时工作目录和已导出的复盘包。原始日志/图片/JSON/点云不会删除。继续吗？')
-  if (!ok) return
+  if (deletingId.value || !window.confirm('删除本次执行记录、结果及复盘包？原始业务日志和图片会保留。')) return
   deletingId.value = task.id
-  error.value = ''
-  try {
-    await api.deleteTask(task.id)
-    await refresh()
-  } catch (exc) {
-    error.value = exc instanceof ApiError ? `${exc.code}: ${exc.message}` : String(exc)
-  } finally {
-    deletingId.value = ''
-  }
+  try { await api.deleteTask(task.id); await refresh() }
+  catch (exc) { error.value = exc instanceof Error ? exc.message : String(exc) }
+  finally { deletingId.value = '' }
 }
-
 onMounted(() => {
   void refresh()
-  timer = window.setInterval(refresh, 10000)
+  void api.listSchedules().then(data => {
+    scheduleNames.value = Object.fromEntries(data.schedules.map(row => [row.id, row.name]))
+  }).catch(() => { /* The original request remains the title when names are unavailable. */ })
+  timer = window.setInterval(() => { if (!historyLoading.value) void refresh() }, 10000)
 })
-onBeforeUnmount(() => { generation += 1; if (timer) window.clearInterval(timer) })
+onBeforeUnmount(() => { generation++; window.clearInterval(timer); window.clearTimeout(searchTimer) })
 </script>
 
 <template>
   <section class="dashboard-page">
-    <div class="hero-panel panel unified-agent-panel">
-      <div class="eyebrow">LOCAL · BUSINESS AGENT</div>
-      <h1>告诉 Agent 你要了解或处理什么</h1>
-      <p>直接输入问题或分析目标。Agent 会使用可用的业务能力完成调查，并保留结果、来源和执行记录。</p>
-
-      <form class="task-compose" @submit.prevent="createEntry">
-        <textarea
-          v-model="message"
-          rows="4"
-          placeholder="例如：检查3点的编码器数据是否存在异常；分析7点乳头识别率；当前支持哪些能力？"
-        ></textarea>
+    <header class="page-heading">
+      <div><h1>任务与结果</h1><p class="muted">查看检查结论，打开需要进一步排查的任务。</p></div>
+      <button class="primary-button" :aria-expanded="showComposer" aria-controls="new-task" @click="showComposer = !showComposer">{{ showComposer ? '收起新建' : '新建任务' }}</button>
+    </header>
+    <section v-if="showComposer" id="new-task" class="panel compose-panel">
+      <h2>新建检查</h2>
+      <form @submit.prevent="createEntry">
+        <label for="task-request">检查目标与时间范围</label>
+        <textarea id="task-request" v-model="message" rows="3" placeholder="例如：检查今天 08:00–09:00 的编码器数据，说明疑点和排查依据。"></textarea>
         <div class="compose-footer">
-          <label class="assessment-toggle"><input v-model="assessmentEnabled" type="checkbox" /> 本次同时给出结果标签</label>
-          <button class="primary-button" :disabled="loading || !message.trim()">
-            {{ loading ? '处理中…' : '发送' }}
-          </button>
+          <label class="assessment-toggle"><input v-model="assessmentEnabled" type="checkbox" /> 同时给出结果标签</label>
+          <button class="primary-button" :disabled="loading || !message.trim()">{{ loading ? '创建中…' : '开始检查' }}</button>
         </div>
       </form>
-      <p v-if="error" class="error-banner">{{ error }}</p>
-    </div>
-
-    <div class="history-calendar-layout">
-      <section class="panel calendar-panel">
-        <div class="section-heading">
-          <div>
-            <div class="eyebrow">RUN CALENDAR</div>
-            <h2>执行日历</h2>
-          </div>
-          <div class="calendar-nav">
-            <button class="ghost-button" @click="shiftMonth(-1)">←</button>
-            <strong>{{ monthTitle }}</strong>
-            <button class="ghost-button" @click="shiftMonth(1)">→</button>
-          </div>
+    </section>
+    <section class="panel task-workspace">
+      <div class="list-toolbar">
+        <div class="scope-switch" aria-label="任务范围">
+          <button v-for="item in ([['all', '全部任务'], ['attention', '需要关注'], ['schedule', '定时检查'], ['manual', '手动任务']] as const)"
+            :key="item[0]" :class="{ active: scope === item[0] }" :aria-pressed="scope === item[0]" @click="scope = item[0]">{{ item[1] }}</button>
         </div>
-        <div class="calendar-weekdays">
-          <span v-for="name in ['一','二','三','四','五','六','日']" :key="name">周{{ name }}</span>
-        </div>
-        <div class="calendar-grid">
-          <button
-            v-for="(cell, index) in calendarCells"
-            :key="cell.date || `blank-${index}`"
-            class="calendar-day"
-            :class="{ blank: !cell.date, selected: cell.date === selectedDay, failed: (cell.stats?.failed || 0) > 0 }"
-            :disabled="!cell.date"
-            @click="selectDay(cell.date)"
-          >
-            <span class="calendar-day-number">{{ cell.day || '' }}</span>
-            <template v-if="cell.stats">
-              <strong>{{ cell.stats.count }} 次</strong>
-              <small>
-                <template v-if="cell.stats.failed">{{ cell.stats.failed }} 失败</template>
-                <template v-else-if="cell.stats.running">{{ cell.stats.running }} 运行中</template>
-                <template v-else>{{ cell.stats.completed }} 完成</template>
-              </small>
-            </template>
-          </button>
-        </div>
-      </section>
-
-      <aside class="panel day-history">
-        <div class="section-heading">
-          <div>
-            <div class="eyebrow">RUNS · {{ selectedDay }}</div>
-            <h2>当天执行记录</h2>
-          </div>
-          <button class="ghost-button" @click="refresh">刷新</button>
-        </div>
-        <TaskResultFilters v-model="filters" />
-        <p v-if="historyLoading" class="muted" role="status">正在更新列表…</p>
-        <div v-else-if="!tasks.length" class="empty-state">当天没有符合筛选条件的执行记录。</div>
-        <div v-for="task in tasks" :key="task.id" class="task-row task-row-with-action" @click="router.push(`/tasks/${task.id}`)">
-          <div class="task-row-top">
-            <span class="state-pill" :data-state="task.state">{{ task.state }}</span>
-            <ResultBadge :value="task.assessment" />
-            <span class="mode-badge">{{ task.trigger_type === 'schedule' ? '定时' : '手动' }}</span>
-            <button
-              v-if="canDelete(task)"
-              class="task-delete-button"
-              :disabled="deletingId === task.id"
-              title="删除执行记录"
-              @click.stop="deleteEntry(task)"
-            >{{ deletingId === task.id ? '…' : '删除' }}</button>
-          </div>
-          <strong>{{ task.user_request || task.id }}</strong>
-          <small>{{ fmt(task.started_at || task.created_at) }}<template v-if="duration(task)"> · {{ duration(task) }}</template></small>
-        </div>
-      </aside>
-    </div>
+        <button class="ghost-button" :disabled="historyLoading" @click="refresh()">刷新</button>
+      </div>
+      <div class="list-search">
+        <label><span>搜索任务内容</span><input v-model="query" type="search" maxlength="200" placeholder="编码器、相机模糊…" /></label>
+        <label><span>执行日期</span><input v-model="day" type="date" /></label>
+        <button v-if="day" class="ghost-button" @click="day = ''">全部日期</button>
+      </div>
+      <details class="list-filters"><summary>按执行状态或结果筛选<span v-if="Object.values(filters).some(Boolean)"> · 已启用</span></summary><TaskResultFilters v-model="filters" /></details>
+      <p v-if="error" class="error-banner" role="alert">{{ error }}</p>
+      <p v-if="historyLoading" class="muted" role="status">正在更新任务…</p>
+      <p v-else-if="!error && !tasks.length" class="empty-state">没有符合条件的任务。可以调整日期、搜索词或筛选条件。</p>
+      <TaskList :tasks="tasks" :schedule-names="scheduleNames" :deleting-id="deletingId" allow-delete @delete="deleteEntry" />
+      <div v-if="tasks.length || offset" class="history-pagination">
+        <button class="ghost-button" :disabled="historyLoading || offset === 0" @click="refresh(Math.max(0, offset - pageSize))">上一页</button>
+        <span>第 {{ Math.floor(offset / pageSize) + 1 }} 页</span>
+        <button class="ghost-button" :disabled="historyLoading || !hasNext" @click="refresh(offset + pageSize)">下一页</button>
+      </div>
+    </section>
   </section>
 </template>

@@ -8,6 +8,7 @@ import MonitorView from './views/MonitorView.vue'
 
 export default createRouter({
   history: createWebHashHistory(),
+  scrollBehavior(_to, _from, savedPosition) { return savedPosition || { top: 0 } },
   routes: [
     { path: '/', name: 'dashboard', component: DashboardView },
     { path: '/schedules', name: 'schedules', component: SchedulesView },

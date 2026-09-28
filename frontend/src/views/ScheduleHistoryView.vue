@@ -4,7 +4,7 @@ import { RouterLink, useRoute } from 'vue-router'
 import { api } from '../api'
 import type { TaskSnapshot } from '../types'
 import type { TaskFilters } from '../assessment'
-import ResultBadge from '../components/ResultBadge.vue'
+import TaskList from '../components/TaskList.vue'
 import TaskResultFilters from '../components/TaskResultFilters.vue'
 
 const route = useRoute()
@@ -18,14 +18,6 @@ const busy = ref(false)
 const error = ref('')
 const pageSize = 50
 let generation = 0
-const states: Record<string, string> = { COMPLETED: '已完成', FAILED: '失败', RUNNING: '执行中',
-  CREATED: '等待执行', PAUSED: '已暂停', STOPPED: '已停止', FINALIZING: '正在生成结果' }
-function fmt(value?: string | null) { return value ? new Date(value).toLocaleString() : '—' }
-function duration(task: TaskSnapshot) {
-  if (task.duration_ms == null) return '—'
-  const seconds = Math.round(task.duration_ms / 1000)
-  return seconds < 60 ? `${seconds} 秒` : `${Math.floor(seconds / 60)} 分 ${seconds % 60} 秒`
-}
 async function load(next = 0) {
   const token = ++generation
   busy.value = true
@@ -65,12 +57,7 @@ watch(id, async (value) => {
     <p v-if="busy" role="status">正在加载…</p>
     <p v-else-if="!error && !tasks.length" class="empty-state">暂无执行记录。</p>
     <div :aria-busy="busy">
-      <RouterLink v-for="task in tasks" :key="task.id" class="task-row history-run" :to="`/tasks/${task.id}`">
-        <div class="task-row-top"><span class="state-pill" :data-state="task.state">{{ states[task.state] || task.state }}</span>
-          <ResultBadge :value="task.assessment" /><span>执行：{{ fmt(task.started_at || task.created_at) }}</span></div>
-        <strong>{{ task.user_request || task.id }}</strong>
-        <small>计划时间：{{ fmt(task.scheduled_for) }} · 执行耗时：{{ duration(task) }} · 查看结果 →</small>
-      </RouterLink>
+      <TaskList :tasks="tasks" :schedule-names="{ [id]: name }" />
     </div>
     <div v-if="tasks.length || offset" class="history-pagination">
       <button class="ghost-button" :disabled="busy || offset === 0" @click="load(Math.max(0, offset - pageSize))">上一页</button>

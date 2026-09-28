@@ -206,14 +206,14 @@ def _humanize_business_facts(payload: dict) -> str | None:
             kind_labels = {
                 "profile_rate_candidate": "速度超过设备允许的上限",
                 "profile_range_candidate": "计数值超出正常范围",
-                "local_rate_deviation": "速度突然变化，明显快于前后",
-                "rate_transition": "速度档位改变（多为正常启停）",
+                "local_rate_deviation": "速率突然偏离前后参考",
+                "rate_transition": "读数变化速率改变，需结合实际运动判断",
                 "counter_or_acquisition_context": "附近有复位或设置操作",
             }
             review_labels = {
                 "confirmed_raw_anomaly": "确认异常",
                 "unresolved": "无法确定",
-                "compatible_motion": "看起来是正常动作",
+                "compatible_motion": "与允许动作相容，未确认异常",
                 "no_anomaly_evidence": "未发现异常",
                 "unseen": "还没检查",
             }
@@ -225,8 +225,8 @@ def _humanize_business_facts(payload: dict) -> str | None:
                 kinds = [kind_labels.get(kind, kind) for kind in event.get("kinds", [])[:2]] or ["需要查看"]
                 metrics = event.get("metrics") if isinstance(event.get("metrics"), dict) else {}
                 measures = []
-                for key, label in (("excess", "超出允许速度"), ("deviation", "比前后正常速度快"),
-                                   ("shift", "速度变化幅度是正常波动的")):
+                for key, label in (("excess", "实测速率下界是已核实上限的"), ("deviation", "相对局部波动尺度偏离"),
+                                   ("shift", "速率变化是局部波动尺度的")):
                     value = metrics.get(key)
                     if isinstance(value, (int, float)) and value:
                         measures.append(f"{label} {_number(value, 1)} 倍")

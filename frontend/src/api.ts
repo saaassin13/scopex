@@ -49,8 +49,12 @@ export const api = {
   health: () => request<{ status: string; active_task_id: string | null }>('/health'),
   createRun: (message: string, assessment_enabled = false) =>
     request<TaskSnapshot>('/runs', { method: 'POST', body: JSON.stringify({ message, assessment_enabled }) }),
-  listTasks: (options?: { mode?: 'task' | 'conversation' | 'auto'; day?: string; schedule_id?: string; limit?: number; offset?: number; state?: string; assessment_status?: string; push_decision?: string }) => {
+  listTasks: (options?: { mode?: 'task' | 'conversation' | 'auto'; day?: string; schedule_id?: string; limit?: number; offset?: number; state?: string; assessment_status?: string; push_decision?: string; query?: string; trigger_type?: 'manual' | 'schedule'; attention?: boolean }) => {
     const params = new URLSearchParams()
+    params.set('include_preview', 'true')
+    if (options?.query) params.set('query', options.query)
+    if (options?.trigger_type) params.set('trigger_type', options.trigger_type)
+    if (options?.attention) params.set('attention', 'true')
     if (options?.state) params.set('state', options.state)
     if (options?.assessment_status) params.set('assessment_status', options.assessment_status)
     if (options?.push_decision) params.set('push_decision', options.push_decision)
@@ -104,6 +108,8 @@ export const api = {
       method: 'POST', body: JSON.stringify({ rating, tags, note }),
     }),
   exportUrl: (id: string) => `/tasks/${encodeURIComponent(id)}/export`,
+  getPlots: (id: string) => request<{ plots: Array<{ index: number; filename: string; candidate_id: string | null; kind: string }> }>(`/tasks/${encodeURIComponent(id)}/plots`),
+  plotUrl: (id: string, index: number) => `/tasks/${encodeURIComponent(id)}/plots/${index}`,
   getDataPackage: (id: string) =>
     request<DataPackageSnapshot>(`/tasks/${encodeURIComponent(id)}/data-package`),
   buildDataPackage: (id: string, modes: DataPackageMode[]) =>

@@ -3,6 +3,10 @@ import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { RouterLink, useRoute } from 'vue-router'
 import { api, ApiError } from '../api'
 import AssessmentPanel from '../components/AssessmentPanel.vue'
+import ReportText from '../components/ReportText.vue'
+import EncoderPlots from '../components/EncoderPlots.vue'
+import { executionLabels } from '../assessment'
+import { taskTitle } from '../taskPresentation'
 import type {
   Evaluation,
   EvidenceItem,
@@ -22,6 +26,7 @@ const task = ref<TaskSnapshot | null>(null)
 const events = ref<ProgressEvent[]>([])
 const evidence = ref<EvidenceItem[]>([])
 const result = ref<ResultResponse | null>(null)
+const resultLoaded = ref(false)
 const evaluation = ref<Evaluation | null>(null)
 const cursor = ref(0)
 const instruction = ref('')
@@ -246,6 +251,7 @@ async function refresh() {
     }
     evidence.value = (await api.getEvidence(taskId.value)).items
     result.value = await api.getResult(taskId.value)
+    resultLoaded.value = true
     if (isTerminal.value) {
       evaluation.value = (await api.getEvaluation(taskId.value)).evaluation
       if (evaluation.value && !feedbackOpen.value) {
@@ -264,6 +270,9 @@ async function refresh() {
     error.value = exc instanceof Error ? exc.message : String(exc)
   } finally {
     refreshing = false
+    if (isTerminal.value && task.value?.assessment?.status !== 'pending' && !error.value) {
+      window.clearInterval(timer); timer = undefined
+    } else if (!timer) { timer = window.setInterval(refresh, 1500) }
   }
 }
 
@@ -350,8 +359,8 @@ onBeforeUnmount(() => timer && window.clearInterval(timer))
       <div>
         <RouterLink v-if="task?.schedule_id" class="back-link" :to="`/schedules/${task.schedule_id}/history`">← 返回定时任务执行历史</RouterLink>
         <RouterLink v-else class="back-link" to="/">← 返回执行记录</RouterLink>
-        <div class="eyebrow">RUN · {{ taskId }}</div>
-        <h1>{{ task?.user_request || '加载任务…' }}</h1>
+        <h1>{{ task ? taskTitle(task) : '加载任务…' }}</h1>
+        <details class="task-request"><summary>查看完整任务说明</summary><p>{{ task?.user_request }}</p><small class="muted">{{ taskId }}</small></details>
         <div class="run-meta">
           <span>触发：{{ task?.trigger_type === 'schedule' ? '定时' : '手动' }}</span>
           <span>开始：{{ fmt(task?.started_at) }}</span>
@@ -362,7 +371,7 @@ onBeforeUnmount(() => timer && window.clearInterval(timer))
           <span v-if="task?.scheduled_for">计划：{{ fmt(task.scheduled_for) }}</span>
         </div>
       </div>
-      <span class="state-pill large" :data-state="task?.state">{{ task?.state || 'LOADING' }}</span>
+      <span class="state-pill large" :data-state="task?.state">{{ executionLabels[task?.state || ''] || '加载中' }}</span>
     </div>
 
     <p v-if="error" class="error-banner">{{ error }}</p>
@@ -381,10 +390,11 @@ onBeforeUnmount(() => timer && window.clearInterval(timer))
             <span v-else-if="answer" class="trust-badge">Fallback</span>
           </div>
 
-          <div v-if="textReport" class="text-report">
+          <p v-if="!resultLoaded" class="muted" role="status">正在读取任务结果…</p>
+          <div v-else-if="textReport" class="text-report">
             <p v-if="textMeta?.status !== 'complete'" class="error-banner">回答未完整交付；下方仅为草稿，已有依据保留。</p>
             <p v-if="Array.isArray(textMeta?.unresolved_citation_refs) && textMeta.unresolved_citation_refs.length" class="error-banner">部分正文引用无法对应来源，需要人工核实。</p>
-            <div class="report-prose">{{ textReport }}</div>
+            <ReportText :text="textReport" />
             <p class="muted">来源可追溯不代表所有语义、数字和因果关系均已自动验证。</p>
           </div>
           <div v-else-if="conversationAnswer" class="conversation-answer">
@@ -466,7 +476,8 @@ onBeforeUnmount(() => timer && window.clearInterval(timer))
           <div v-else class="empty-state">{{ isQueued ? '已进入等待队列，尚未开始分析。' : '执行结束后显示结果。' }}</div>
         </section>
 
-        <section v-if="isTerminal" class="panel feedback-panel">
+        <EncoderPlots v-if="isTerminal && resultLoaded" :task-id="taskId" />
+        <details v-if="isTerminal" class="panel feedback-panel"><summary class="details-heading">评价结果与导出复盘包</summary>
           <div class="section-heading">
             <div>
               <div class="eyebrow">FEEDBACK</div>
@@ -496,9 +507,8 @@ onBeforeUnmount(() => timer && window.clearInterval(timer))
             <textarea v-model="feedbackNote" rows="3" placeholder="补充说明（可选）"></textarea>
             <button class="primary-button" :disabled="feedbackBusy" @click="saveFeedback">{{ feedbackBusy ? '保存中…' : '保存评价' }}</button>
           </div>
-        </section>
-
-        <section v-if="isTerminal && dataPackage?.available" class="panel data-package-panel">
+        </details>
+        <details v-if="isTerminal && dataPackage?.available" class="panel data-package-panel"><summary class="details-heading">查看与下载原始数据</summary>
           <div class="section-heading">
             <div>
               <div class="eyebrow">SOURCE DATA</div>
@@ -532,10 +542,10 @@ onBeforeUnmount(() => timer && window.clearInterval(timer))
           <button class="primary-button" :disabled="collectionBusy || !selectedDataModes.length" @click="collectData">
             {{ collectionBusy ? '正在收集…' : dataPackage.package_ready ? '重新收集' : '收集原始数据' }}
           </button>
-        </section>
+        </details>
 
         <section class="panel">
-          <details class="secondary-details" :open="!isTerminal">
+          <details class="secondary-details">
             <summary class="details-heading">
               <span><span class="eyebrow">PROGRESS</span><strong>调查进度 / 技术记录</strong></span>
               <span class="muted">{{ events.length }} events</span>
@@ -556,21 +566,21 @@ onBeforeUnmount(() => timer && window.clearInterval(timer))
       </div>
 
       <aside class="side-column">
-        <section class="panel control-panel">
+        <section v-if="!isTerminal" class="panel control-panel">
           <div class="eyebrow">CONTROL</div>
           <h2>任务控制</h2>
           <textarea v-model="instruction" rows="4" placeholder="追加方向，例如：只检查编码器原始值，不要继续检查图片。"></textarea>
           <div class="control-actions">
             <button v-if="isQueued" class="danger-button" @click="cancelQueued">取消排队</button>
-            <button v-if="isRunning" class="secondary-button" :disabled="actionBusy" @click="perform('steer')">Steer</button>
+            <button v-if="isRunning" class="secondary-button" :disabled="actionBusy" @click="perform('steer')">追加方向</button>
             <button v-if="isRunning" class="danger-button" :disabled="actionBusy" @click="perform('stop')">暂停</button>
-            <button v-if="isPaused" class="primary-button" :disabled="actionBusy" @click="perform('resume')">Resume</button>
+            <button v-if="isPaused" class="primary-button" :disabled="actionBusy" @click="perform('resume')">继续执行</button>
           </div>
           <p class="muted">暂停在安全模型请求边界生效；结果会保留。当前暂停任务仍保留执行名额。</p>
         </section>
 
         <section class="panel evidence-panel compact-evidence">
-          <details open>
+          <details>
             <summary class="details-heading">
               <span><span class="eyebrow">FACTS</span><strong>事实依据</strong></span>
               <span class="muted">{{ report ? report.facts.length : fallbackUserFacts.length }}</span>

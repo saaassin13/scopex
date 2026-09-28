@@ -7,7 +7,7 @@ from typing import Annotated, Any, Literal
 
 from fastapi import FastAPI, Query, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field, StrictBool
 from starlette.exceptions import HTTPException as StarletteHTTPException
@@ -233,8 +233,17 @@ def create_app(
         state: str | None = None,
         assessment_status: str | None = None,
         push_decision: str | None = None,
+        query: Annotated[str | None, Query(max_length=200)] = None,
+        trigger_type: Literal["manual", "schedule"] | None = None,
+        attention: bool = False,
+        include_preview: bool = False,
     ) -> dict[str, Any]:
         filters = {key: value for key, value in {"state": state, "assessment_status": assessment_status, "push_decision": push_decision}.items() if value is not None}
+        filters.update({key: value for key, value in {"query": query, "trigger_type": trigger_type}.items() if value is not None})
+        if attention:
+            filters["attention"] = True
+        if include_preview:
+            filters["include_preview"] = True
         return {"tasks": service.list_tasks(mode=mode, day=day, schedule_id=schedule_id, limit=limit, offset=offset, **filters)}
 
     @app.get("/tasks/calendar")
@@ -312,6 +321,19 @@ def create_app(
     @app.get("/tasks/{task_id}/data-package")
     def get_data_package(task_id: str) -> dict[str, Any]:
         return service.get_data_package(task_id)
+
+    @app.get("/tasks/{task_id}/plots")
+    def task_plots(task_id: str) -> dict[str, Any]:
+        service.get_task(task_id)
+        rows = service.data_packages.preview_plots(task_id)
+        return {"plots": [{"index": i, "filename": row["filename"], "candidate_id": row["candidate_id"],
+                           "kind": row["kind"]} for i, row in enumerate(rows)]}
+
+    @app.get("/tasks/{task_id}/plots/{index}")
+    def task_plot(task_id: str, index: int) -> Response:
+        service.get_task(task_id)
+        return Response(service.data_packages.preview_plot_bytes(task_id, index), media_type="image/png",
+                        headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"})
 
     @app.post("/tasks/{task_id}/data-package")
     def build_data_package(task_id: str, body: DataPackageRequest) -> dict[str, Any]:

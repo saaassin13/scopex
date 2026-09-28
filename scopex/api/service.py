@@ -63,6 +63,7 @@ _BUSINESS_COMMAND_MARKERS = (
     "encoder_health.py",
     "nipple_stats.py",
     "image_quality_metrics.py",
+    "image_quality_window.py",
     "log_context.py",
 )
 
@@ -317,7 +318,9 @@ class TaskService:
     def list_tasks(self, *, mode: str | None = None, day: str | None = None,
                    schedule_id: str | None = None, limit: int | None = None, offset: int = 0,
                    state: str | None = None, assessment_status: str | None = None,
-                   push_decision: str | None = None) -> list[dict]:
+                   push_decision: str | None = None, query: str | None = None,
+                   trigger_type: str | None = None, attention: bool = False,
+                   include_preview: bool = False) -> list[dict]:
         if mode is not None and mode not in {"task", "conversation", "auto"}:
             raise ValueError("mode must be task, conversation or auto")
         if offset < 0 or (limit is not None and not 1 <= limit <= 200):
@@ -328,6 +331,10 @@ class TaskService:
             raise ValueError("unsupported assessment status")
         if push_decision is not None and push_decision not in PUSH_DECISIONS:
             raise ValueError("unsupported push decision")
+        if trigger_type is not None and trigger_type not in {"manual", "schedule"}:
+            raise ValueError("unsupported trigger type")
+        if query is not None and len(query) > 200:
+            raise ValueError("query must be at most 200 characters")
         day_value = self._parse_day(day) if day is not None else None
         tasks: list[dict] = []
         for stored_task_id in self.store.list_task_ids():
@@ -345,11 +352,39 @@ class TaskService:
                     continue
                 if push_decision is not None and row["assessment"]["push_decision"] != push_decision:
                     continue
+                if query and query.casefold().strip() not in str(row.get("user_request", "")).casefold():
+                    continue
+                if trigger_type is not None and row.get("trigger_type", "manual") != trigger_type:
+                    continue
+                if attention and row.get("state") != "FAILED" and row["assessment"]["status"] not in {"abnormal", "needs_review"}:
+                    continue
                 tasks.append(row)
             except (TaskNotFoundError, json.JSONDecodeError, OSError):
                 continue
         tasks.sort(key=lambda row: str(row.get("started_at") or row.get("created_at") or ""), reverse=True)
-        return tasks[offset:offset + limit] if limit is not None else tasks[offset:]
+        page = tasks[offset:offset + limit] if limit is not None else tasks[offset:]
+        if include_preview:
+            for row in page:
+                row["result_preview"] = self._result_preview(row)
+        return page
+
+    def _result_preview(self, task: dict) -> str:
+        """Read an excerpt only for the displayed page; never infer a verdict."""
+        try:
+            result = self.store.read_json(task["id"], "result.json")
+        except (OSError, json.JSONDecodeError):
+            return ""
+        if not isinstance(result, dict):
+            return ""
+        text = result.get("report_text") or result.get("answer_text")
+        if not isinstance(text, str):
+            return ""
+        meta = result.get("report_meta")
+        footer = meta.get("assessment_footer") if isinstance(meta, dict) else None
+        if isinstance(footer, str) and footer and text.endswith(footer):
+            text = text[:-len(footer)]
+        text = " ".join(text.split())
+        return text[:240] + ("…" if len(text) > 240 else "")
 
     def calendar_month(self, month: str) -> dict:
         try:

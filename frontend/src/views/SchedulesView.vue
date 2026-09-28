@@ -2,6 +2,7 @@
 import { onBeforeUnmount, onMounted, ref } from 'vue'
 import { RouterLink } from 'vue-router'
 import { api, ApiError } from '../api'
+import { executionLabels } from '../assessment'
 import type { ScheduleSnapshot } from '../types'
 
 const schedules = ref<ScheduleSnapshot[]>([])
@@ -14,6 +15,8 @@ const intervalMinutes = ref(30)
 const dailyTime = ref('08:00')
 const runAt = ref('')
 const busy = ref(false)
+const showComposer = ref(false)
+const refreshing = ref(true)
 const error = ref('')
 let timer: number | undefined
 
@@ -34,7 +37,7 @@ async function refresh() {
     schedules.value = (await api.listSchedules()).schedules
   } catch (exc) {
     error.value = exc instanceof Error ? exc.message : String(exc)
-  }
+  } finally { refreshing.value = false }
 }
 
 async function createSchedule() {
@@ -52,6 +55,7 @@ async function createSchedule() {
     await api.createSchedule(payload)
     name.value = ''
     message.value = ''
+    showComposer.value = false
     await refresh()
   } catch (exc) {
     error.value = exc instanceof ApiError ? `${exc.code}: ${exc.message}` : String(exc)
@@ -100,9 +104,13 @@ onBeforeUnmount(() => timer && window.clearInterval(timer))
 
 <template>
   <section class="schedule-page">
-    <div class="panel schedule-compose-panel">
+    <header class="page-heading"><div><h1>定时检查</h1><p class="muted">按检查项目管理计划，查看各自的执行结果。</p></div>
+      <button class="primary-button" :aria-expanded="showComposer" @click="showComposer = !showComposer">{{ showComposer ? '收起新建' : '新建定时检查' }}</button>
+    </header>
+    <p v-if="error" class="error-banner" role="alert">{{ error }}</p>
+    <div v-if="showComposer" class="panel schedule-compose-panel">
       <div class="eyebrow">SCHEDULE</div>
-      <h1>定时任务</h1>
+      <h2>新建定时检查</h2>
       <p class="muted">到点只触发普通业务 Task；设备断电或 ScopeX 未运行期间错过的历史时间点直接跳过，不补跑。</p>
 
       <form class="schedule-form" @submit.prevent="createSchedule">
@@ -130,25 +138,25 @@ onBeforeUnmount(() => timer && window.clearInterval(timer))
           <button class="primary-button" :disabled="busy || !name.trim() || !message.trim()">{{ busy ? '保存中…' : '保存定时任务' }}</button>
         </div>
       </form>
-      <p v-if="error" class="error-banner">{{ error }}</p>
     </div>
 
     <div class="panel">
       <div class="section-heading">
-        <div><div class="eyebrow">CONFIGURED</div><h2>已配置任务</h2></div>
+        <div><h2>已配置检查</h2></div>
         <button class="ghost-button" @click="refresh">刷新</button>
       </div>
-      <div v-if="!schedules.length" class="empty-state">还没有定时任务。</div>
+      <p v-if="refreshing" class="muted" role="status">正在加载定时检查…</p>
+      <div v-else-if="!error && !schedules.length" class="empty-state">还没有定时检查。</div>
       <div v-for="row in schedules" :key="row.id" class="schedule-row">
         <div class="schedule-main">
           <div class="schedule-title-line">
             <RouterLink :to="`/schedules/${row.id}/history`"><strong>{{ row.name }}</strong></RouterLink>
             <span class="state-pill" :data-state="row.enabled ? 'RUNNING' : 'PAUSED'">{{ row.enabled ? '启用' : '停用' }}</span>
           </div>
-          <p>{{ row.message }}</p>
+          <details class="schedule-instruction"><summary>检查内容</summary><p>{{ row.message }}</p></details>
           <div class="schedule-meta">
             <span>{{ ruleText(row) }}</span>
-            <span>上次：{{ fmt(row.last_run_at) }} · {{ row.last_status || '—' }}</span>
+            <span>上次：{{ fmt(row.last_run_at) }} · {{ executionLabels[row.last_status || ''] || row.last_status || '—' }}</span>
             <span>下次：{{ fmt(row.next_run_at) }}</span>
             <span v-if="row.missed_count">离线跳过：{{ row.missed_count }} 次 · 最近 {{ fmt(row.last_missed_at) }}</span>
           </div>

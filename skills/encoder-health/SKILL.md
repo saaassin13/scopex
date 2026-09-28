@@ -136,13 +136,13 @@ tool's English status names, rule ids, JSON field names, or units such as
 | --- | --- |
 | confirmed_raw_anomaly | 确认异常 |
 | unresolved | 无法确定 |
-| compatible_motion / no_anomaly_evidence | 看起来是正常动作 / 未发现异常 |
+| compatible_motion / no_anomaly_evidence | 现有检查与允许动作相容，未确认异常（不等于已证实正常） |
 | candidate | 疑点（值得看一眼的位置，不等于异常） |
 | profile_rate_candidate | 速度超过设备允许的上限 |
 | profile_range_candidate | 计数值超出正常范围 |
-| local_rate_deviation | 速度突然变化，明显快于前后 |
-| rate_transition | 速度档位改变（多为正常启停） |
-| excess / deviation / shift | 超出允许速度 N 倍 / 比前后正常速度快 N 倍 / 速度变化幅度是正常波动的 N 倍 |
+| local_rate_deviation | 速率突然偏离前后参考 |
+| rate_transition | 读数变化速率改变，需结合实际运动判断 |
+| excess / deviation / shift | 实测速率下界是已核实上限的 N 倍 / 相对局部波动尺度偏离 N 倍 / 速率变化是局部波动尺度的 N 倍 |
 | counts/s | 每秒 N 个计数 |
 | raw | 编码器原始读数 |
 | sampling gap / uncovered edge | 数据缺失 / 分析时段开头结尾缺数据 |
@@ -152,3 +152,36 @@ frequency, periodicity, unique cause or hardware failure from a shape 疑点. If
 无法确定, say plainly what evidence is missing. “检查完成，没有发现异常” is
 limited by coverage and detector scope; it is not a health certificate, and the
 answer may say so in one plain sentence.
+
+## Accurate, actionable handoff
+
+Accuracy is the objective, not fewer reports. Never raise thresholds, hide
+candidates or promote ambiguous results to normal to reduce review workload.
+Separate confirmed raw violations, unresolved suspicious readings, allowed-motion
+compatibility and data gaps. A missing verified device profile limits confirmation;
+it does not make a suspicious candidate unworthy of investigation.
+
+A flat raw trace means the reported count did not change, NOT that the turntable
+physically stopped. A step in raw rate does not by itself prove a real start or
+stop. If the user or independent evidence establishes ongoing movement, preserve
+that fact and explain the discrepancy instead of using an allowed-motion label
+to dismiss it. Keep that supplied operational evidence separate from raw-derived
+measurements and do not generalize it to other windows. Values derived from the
+same encoder are not independent proof of actual speed or position.
+
+Lead with the actual finding and exact time. For each unresolved or confirmed
+candidate, use `report`'s `review.comparison`, checks and `evidence` to state the
+measured before/core/after values, duration, source filename and line numbers.
+Show which observation makes it suspicious, what alternative remains, and the
+specific next evidence needed (for example, whether the turntable actually
+started at that time, or whether a counter reset/reconnect occurred). Inspect
+wider saved context if needed; do not merely ask for a generic "profile" or dump
+all raw lines on the operator. Adjacent rates are references, not verified normal
+motion. `deviation` is NOT a speed ratio; never describe it as "N times faster".
+
+Generate local plots for every candidate discussed as needing operator review,
+using explicit `--candidate` selection when the default top five omit one.
+Explain that the four panels show cumulative reading, sampling interval,
+increment and short-window derived speed, and point to the exact highlighted
+time. Keep full-window review counts and coverage visible; do not confuse
+review completed, no established violation, and equipment healthy.

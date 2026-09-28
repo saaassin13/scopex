@@ -18,6 +18,7 @@ export interface TaskSnapshot {
   id: string
   state: string
   user_request?: string
+  result_preview?: string
   session_key?: string
   created_at?: string
   updated_at?: string

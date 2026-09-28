@@ -28,12 +28,12 @@ async function assess() {
 <template>
   <section class="panel assessment-panel" aria-label="结果判定">
     <div class="section-heading">
-      <div><div class="eyebrow">结果判定</div><h2><ResultBadge :value="value" /></h2></div>
+      <div><div class="eyebrow">检查结论</div><h2><ResultBadge :value="value" /></h2></div>
       <button v-if="canAssess" class="ghost-button" :disabled="busy" @click="assess">{{ busy ? '提交中…' : '手动评估结果' }}</button>
     </div>
     <p>{{ value?.summary || '本次未开启自动判定；任务完成后可主动评估。' }}</p>
     <p v-if="value?.source === 'manual_text'" class="muted">仅归类已保存正文，未重新调查或独立核验事实。本次模型调用尝试：{{ value.model_calls }}。</p>
-    <p v-else class="muted">异常条件来自任务说明；标签不代表独立可信度认证。平台推送尚未接入。</p>
+    <details class="assessment-note"><summary>判定说明</summary><p class="muted">标签由本次任务给出，不代表经过独立复核。任务执行完成也不等于设备正常。</p></details>
     <p v-if="value?.push_decision === 'suggested'" class="muted">当前仅保存推送建议，未发送任何通知。</p>
     <p v-if="error" class="error-banner" role="alert">{{ error }}</p>
   </section>

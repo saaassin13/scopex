@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import type { Assessment } from '../types'
-import { assessmentLabel, pushLabels } from '../assessment'
+import { assessmentLabel } from '../assessment'
 defineProps<{ value?: Assessment | null }>()
 </script>
 
@@ -9,9 +9,7 @@ defineProps<{ value?: Assessment | null }>()
     <span class="result-badge" :data-result="value?.status || 'not_assessed'" :title="value?.summary">
       {{ assessmentLabel(value) }}
     </span>
-    <span v-if="value?.push_decision && value.push_decision !== 'undecided'" class="result-push-badge">
-      {{ pushLabels[value.push_decision] }}
-    </span>
+
   </span>
 </template>
 

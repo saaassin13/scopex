@@ -327,7 +327,8 @@ class FinalizerRenderingTests(unittest.TestCase):
         text = self.humanize(self.PAYLOAD)
         self.assertIn("18:41:23", text)
         self.assertIn("确认异常", text)
-        self.assertIn("比前后正常速度快 12 倍", text)
+        self.assertIn("相对局部波动尺度偏离 12 倍", text)
+        self.assertNotIn("比前后正常速度快", text)
         self.assertIn("无法确定", text)
         for jargon in ("candidate", "unresolved", "counts/s", "raw", "inconclusive"):
             self.assertNotIn(jargon, text)
@@ -353,3 +354,19 @@ class FinalizerRenderingTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+class OperatorEvidenceTests(unittest.TestCase):
+    def test_report_preserves_comparison_and_exact_source_for_ambiguous_candidate(self):
+        state = BatchSteeringTests.multi_candidate_state()
+        candidate = state['candidates'][0]
+        detail = ANALYZER['inspect'](state, candidate['id'])
+        report = ANALYZER['report'](state)
+        item = next(row for row in report['candidates'] if row['id'] == candidate['id'])
+        self.assertEqual(item['review']['comparison'], detail['comparison'])
+        self.assertEqual(item['review_status'], 'unresolved')
+        self.assertTrue(item['evidence'])
+        for evidence in item['evidence']:
+            sample = next(row for row in state['samples'] if row['time'] == evidence['time'])
+            self.assertEqual(evidence['raw_count'], str(sample['count']))
+            self.assertEqual(evidence['line_no'], sample['line_no'])
+        self.assertEqual(report['candidates_total'], len(state['candidates']))

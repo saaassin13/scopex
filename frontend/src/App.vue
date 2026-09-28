@@ -10,14 +10,16 @@ import ActivityPanel from './components/ActivityPanel.vue'
         <span class="brand-mark">SX</span>
         <span>
           <strong>ScopeX</strong>
-          <small>Local Business Agent</small>
+          <small>设备运行检查</small>
         </span>
       </RouterLink>
       <nav class="topnav">
-        <RouterLink to="/">临时任务</RouterLink>
-        <RouterLink to="/schedules">定期任务</RouterLink>
-        <RouterLink to="/monitor">常驻监控</RouterLink>
-        <RouterLink to="/calibrations">监控标定</RouterLink>
+        <RouterLink to="/">任务与结果</RouterLink>
+        <RouterLink to="/schedules">定时检查</RouterLink>
+        <details class="legacy-navigation"><summary>历史监控</summary><div>
+          <RouterLink to="/monitor">监控记录与控制</RouterLink>
+          <RouterLink to="/calibrations">历史标定</RouterLink>
+        </div></details>
       </nav>
       <ActivityPanel />
     </header>

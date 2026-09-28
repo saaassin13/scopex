@@ -186,6 +186,8 @@ class DataPackageService:
             return []
         out: list[dict[str, Any]] = []
         for snapshot in sorted(scratch.glob('*.json')):
+            if snapshot.is_symlink():
+                continue
             try:
                 state = json.loads(snapshot.read_text(encoding='utf-8'))
             except (OSError, json.JSONDecodeError):
@@ -210,6 +212,34 @@ class DataPackageService:
                     'candidate_id': artifact.get('candidate_id'),
                 })
         return out
+
+    def preview_plots(self, task_id: str) -> list[dict[str, Any]]:
+        """Only task-owned PNGs with a recorded digest may be previewed."""
+        scratch = self._task_root(task_id) / 'scratch'
+        if scratch.is_symlink() or scratch.parent.is_symlink():
+            return []
+        rows = []
+        for item in self._working_plots(task_id):
+            path = item['host']
+            if (Path(item['filename']).name != item['filename'] or path.suffix.lower() != '.png'
+                    or not re.fullmatch(r'[a-f0-9]{64}', item['sha256'] or '')
+                    or not path.resolve().is_relative_to(scratch.resolve())
+                    or any(p.is_symlink() for p in (path, path.parent)) or not path.is_file()):
+                continue
+            rows.append(item)
+        return rows
+
+    def preview_plot_bytes(self, task_id: str, index: int) -> bytes:
+        rows = self.preview_plots(task_id)
+        if not 0 <= index < len(rows):
+            raise DataPackageError('图表不存在或无法安全读取')
+        item = rows[index]
+        with item['host'].open('rb') as stream:
+            data = stream.read(20 * 1024 * 1024 + 1)
+        if (len(data) > 20 * 1024 * 1024 or not data.startswith(b'\x89PNG\r\n\x1a\n')
+                or hashlib.sha256(data).hexdigest() != item['sha256']):
+            raise DataPackageError('图表与保存的分析快照不一致，无法预览')
+        return data
 
     def build(self, task_id: str, modes: list[str], evidence: dict[str, Any]) -> Path:
         clean_modes = list(dict.fromkeys(modes))

@@ -100,3 +100,71 @@ when the observations justify it; do not pad with a table of all-normal labels.
 The entire conversation's image allowance accumulates across calls, including
 reopens. A view reported as omitted/truncated is not a completed inspection.
 Scratch previews can help screening but cannot replace original-image judgment.
+
+## Three consecutive dirty / blurry originals (2026-09-28 user rule)
+
+For 30 / 60 minute checks, flag an anomaly when THREE CONSECUTIVE original
+images from the same camera show visible dirt or blur. This is the user's
+acceptance rule, not a threshold to invent or tune for fewer reports. Metrics
+alone never establish dirty/blurred appearance. Assess the relevant subject and
+visible affected area; distinguish appearance from a physical cause.
+
+First sample across the requested window using data-locator and reserve image
+slots. When an original looks degraded, locate its real neighbors:
+
+```bash
+python3 {baseDir}/scripts/image_quality_window.py neighbors <original.jpg> \
+  --start "2026-09-28 08:00:00" --end "2026-09-28 08:30:00"
+```
+
+Use the actual requested dates. The tool lists at most five consecutive saved
+originals around the anchor, including across an hour boundary. View enough
+adjacent originals to establish or refute a triple (at most two images per
+view_image call, within the cumulative allowance). Nonadjacent samples,
+reopening one image three times, low metric scores, missing or omitted images
+must not be counted as three consecutive observations. A clear or uncertain
+intervening original prevents a triple from being established. If the allowance
+is insufficient, say what remains unverified, rather than infer unseen frames.
+
+Record only the originals actually viewed in task scratch. Format example
+(the dates, filenames and verdict below are examples, not actual observations):
+
+```json
+{
+  "camera": "left_camera_multimodal",
+  "start": "2026-09-28 08:00:00",
+  "end": "2026-09-28 08:30:00",
+  "observations": [
+    {
+      "path": "/agent-data/left-camera/20260928/08/20260928-080100000.jpg",
+      "visually_reviewed": true,
+      "verdict": "degraded",
+      "reason": "主体边缘模糊，细节难以分辨"
+    }
+  ]
+}
+```
+
+Verdicts: `degraded` (visible dirt or blur), `clear`, `uncertain`. Aggregate:
+
+```bash
+python3 {baseDir}/scripts/image_quality_window.py summarize /task-scratch/image-observations.json
+```
+
+The tool checks adjacency against the original camera directory, deduplicates
+reopens and merges overlapping triples into one event. A run of five degraded
+originals is one event, not three alarms. It scans only the named 30/60-minute
+window; `--source-root` is only for an explicitly configured alternate same-camera
+source, never a reason to widen/change the user's source. Before a window ends,
+three adjacent frames must all lie within that window; do not borrow outside
+frames to assert an in-window event.
+
+Lead the answer with the rule outcome and each event's exact time, consecutive
+frame count, visible basis and three original filenames. Then show sampling
+coverage and unknown periods. `abnormal` means the user-specified visual rule
+was met, not a hardware diagnosis. `insufficient_evidence` and `no_images` must
+never become normal. If all stored originals were reviewed and no triple exists,
+`criterion_not_met` still applies only to saved images. Business detection may
+fail to save images: consecutive saved originals do not prove uninterrupted
+camera capture. Report the actual saved-frame spacing; do not infer continuous
+blur duration or whole-window percentages from three frames.

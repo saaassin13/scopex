@@ -394,6 +394,18 @@ def public_candidate(state, candidate):
     result.pop("lo")
     result.pop("hi")
     result["review_status"] = state["reviews"].get(candidate["id"], {}).get("status", "unseen")
+    review = state["reviews"].get(candidate["id"])
+    if review:
+        result["review"] = review
+        rows = state["samples"]
+        indices = {candidate["lo"], candidate["hi"]}
+        pairs = state["pairs"][candidate["lo"]:candidate["hi"]]
+        if pairs:
+            peak = max(pairs, key=lambda pair: abs(pair["rate"] or 0))
+            indices.update((peak["lo"], peak["hi"]))
+        result["evidence"] = [{"time": rows[i]["time"], "raw_count": str(rows[i]["count"]),
+                               "source": rows[i]["source"], "line_no": rows[i]["line_no"]}
+                              for i in sorted(indices)]
     return result
 
 
