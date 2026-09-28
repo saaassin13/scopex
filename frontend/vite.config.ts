@@ -3,6 +3,8 @@ import vue from '@vitejs/plugin-vue'
 
 export default defineConfig({
   plugins: [vue()],
+  // 相对资源地址同时支持 VPN 根路径与云平台设备代理路径。
+  base: "./",
   server: {
     host: '127.0.0.1',
     port: 5173,

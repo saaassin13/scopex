@@ -455,3 +455,13 @@ python3 -m json.tool /opt/ScalingRobotics/scopex/data/monitor/cow-fall/events/fa
 - 相机历史任务 `task-1783a079dd87` 的三张原图接口返回 JPEG，逐张 SHA-256 与证据一致。页面 index/JS/CSS 与本地构建一致。Chrome 主流程此前在本地通过；本轮线上浏览器复验未完成（IAB 超时，原生 Chrome 有用户输入），不计为线上交互验收通过。
 - 原 258 个任务、2453 个任务资产文件 SHA-256 未变；健康检查 ok。未创建新业务任务或修改原任务结果。
 - 回滚资产及回执位于 `/opt/ScalingRobotics/scopex/deploy-backups/20260928-32ee650/`：`app-before.tar.gz`、`config-before.tar.gz`、`before.json`、`manifest.json`、`runtime-regression.txt`、`feature-acceptance.json`、`acceptance.json`。代码回滚时暂停计划并确认无活动任务，恢复备份的 `app/`，执行 `update.sh`，验收后恢复先前计划；普通代码回滚无需恢复配置备份或替换历史数据。
+
+## 云平台设备路径代理
+
+前端通过 Vite `base: './'` 使用相对静态资源，`frontend/src/agentUrl.ts` 根据页面所在目录生成接口、图片、图表和下载地址。相同构建既能在 VPN 根路径直接访问，也能挂在 ScalingCloud 的 `/api/edge-agents/{device_id}/proxy/` 下；无需按设备重新构建或写入云域名。Vue hash 路由仍使用 `#/...`，不改变任务与结果逻辑。
+
+必须构建并更新前端产物后再启用云平台代理；仅更新源码而保留旧 dist 不会完成适配。测试命令：`cd frontend && node --test tests/agentUrl.test.ts && npm run build`。若 Node 原生配置加载用于只读依赖目录，可使用 `npm run build -- --configLoader native`；生产标准构建命令不变。
+
+云平台负责复用其登录状态，ScopeX 不新增账号体系。云平台会移除 Cookie/Authorization 等身份凭据，只转发业务请求。通过代理收到 401 时，页面通知同源父窗口处理登录失效；VPN 直连不受影响。monitor 不在本次云平台接入范围，端侧既有停用状态不改变。
+
+纯前端更新可使用 `python3 scripts/deploy_frontend.py --dist <已校验构建目录> --target /opt/ScalingRobotics/scopex/app/frontend/dist --backups /opt/ScalingRobotics/scopex/deploy-backups/frontend --revision <构建提交> --expected-index-sha256 <已核验现场入口摘要>`。执行前核实 Runtime 挂载的是 app 父目录、静态服务逐次读取该 dist；核对现场前端源码与构建基线一致。脚本备份旧 dist、保留旧哈希资源，先写入新资源，最后原子替换 index.html，不重建 Runtime、不暂停计划或任务。部署后比对 HTTP 页面/资源摘要及容器 ID/启动时间。回滚时先恢复备份资源，再原子替换备份 index.html；不要删除新旧资源来清理缓存。Python、依赖或容器更新仍使用原维护流程。

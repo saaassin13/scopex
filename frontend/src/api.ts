@@ -1,3 +1,4 @@
+import { agentUrl } from './agentUrl'
 import type {
   Assessment,
   ActivitySnapshot,
@@ -28,7 +29,7 @@ export class ApiError extends Error {
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(path, {
+  const response = await fetch(agentUrl(path), {
     ...init,
     headers: {
       'Content-Type': 'application/json',
@@ -37,7 +38,10 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   })
   const payload = await response.json().catch(() => ({}))
   if (!response.ok) {
-    const error = payload?.error ?? {}
+    if (response.status === 401 && window.parent !== window) {
+      window.parent.postMessage({ type: 'scopex:session-expired' }, window.location.origin)
+    }
+    const error = payload?.error ?? { code: payload?.error_code, message: payload?.message }
     throw new ApiError(response.status, error.code ?? 'request_failed', error.message ?? response.statusText)
   }
   return payload as T
@@ -107,18 +111,18 @@ export const api = {
     request<Evaluation>(`/tasks/${encodeURIComponent(id)}/evaluation`, {
       method: 'POST', body: JSON.stringify({ rating, tags, note }),
     }),
-  exportUrl: (id: string) => `/tasks/${encodeURIComponent(id)}/export`,
+  exportUrl: (id: string) => agentUrl(`/tasks/${encodeURIComponent(id)}/export`),
   getImages: (id: string) => request<{ images: Array<{ index: number; filename: string; source: string }> }>(`/tasks/${encodeURIComponent(id)}/images`),
-  imageUrl: (id: string, index: number) => `/tasks/${encodeURIComponent(id)}/images/${index}`,
+  imageUrl: (id: string, index: number) => agentUrl(`/tasks/${encodeURIComponent(id)}/images/${index}`),
   getPlots: (id: string) => request<{ plots: Array<{ index: number; filename: string; candidate_id: string | null; kind: string }> }>(`/tasks/${encodeURIComponent(id)}/plots`),
-  plotUrl: (id: string, index: number) => `/tasks/${encodeURIComponent(id)}/plots/${index}`,
+  plotUrl: (id: string, index: number) => agentUrl(`/tasks/${encodeURIComponent(id)}/plots/${index}`),
   getDataPackage: (id: string) =>
     request<DataPackageSnapshot>(`/tasks/${encodeURIComponent(id)}/data-package`),
   buildDataPackage: (id: string, modes: DataPackageMode[]) =>
     request<DataPackageSnapshot>(`/tasks/${encodeURIComponent(id)}/data-package`, {
       method: 'POST', body: JSON.stringify({ modes }),
     }),
-  dataPackageDownloadUrl: (id: string) => `/tasks/${encodeURIComponent(id)}/data-package/download`,
+  dataPackageDownloadUrl: (id: string) => agentUrl(`/tasks/${encodeURIComponent(id)}/data-package/download`),
   listSchedules: () => request<{ schedules: ScheduleSnapshot[] }>('/schedules'),
   createSchedule: (payload: {
     name: string
@@ -142,10 +146,7 @@ export const api = {
     }),
   runScheduleNow: (id: string) =>
     request<Record<string, unknown>>(`/schedules/${encodeURIComponent(id)}/run`, { method: 'POST', body: '{}' }),
-  deleteSchedule: async (id: string) => {
-    const response = await fetch(`/schedules/${encodeURIComponent(id)}`, { method: 'DELETE' })
-    if (!response.ok) throw new ApiError(response.status, 'request_failed', response.statusText)
-  },
+  deleteSchedule: (id: string) => request<void>(`/schedules/${encodeURIComponent(id)}`, { method: 'DELETE' }),
   listCalibrations: () => request<{ cameras: CalibrationCamera[] }>('/calibrations'),
   getCalibration: (camera: string) =>
     request<CalibrationCamera>(`/calibrations/${encodeURIComponent(camera)}`),
@@ -157,7 +158,7 @@ export const api = {
       method: 'POST', body: JSON.stringify({ image_b64: imageB64 }),
     }),
   calibrationFrameUrl: (camera: string, frameId: string) =>
-    `/calibrations/${encodeURIComponent(camera)}/frames/${encodeURIComponent(frameId)}`,
+    agentUrl(`/calibrations/${encodeURIComponent(camera)}/frames/${encodeURIComponent(frameId)}`),
   saveCalibration: (camera: string, config: Record<string, unknown>, note: string, frameId: string | null) =>
     request<CalibrationSaveResult>(`/calibrations/${encodeURIComponent(camera)}`, {
       method: 'POST', body: JSON.stringify({ config, note, frame_id: frameId }),
@@ -181,5 +182,5 @@ export const api = {
     request<{ ok: boolean; queued: string }>(
       `/monitor/events/${encodeURIComponent(eventId)}/confirm`, { method: 'POST' }),
   monitorFrameUrl: (eventId: string, name: string) =>
-    `/monitor/events/${encodeURIComponent(eventId)}/frames/${encodeURIComponent(name)}`,
+    agentUrl(`/monitor/events/${encodeURIComponent(eventId)}/frames/${encodeURIComponent(name)}`),
 }
