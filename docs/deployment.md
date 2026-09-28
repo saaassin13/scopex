@@ -444,3 +444,14 @@ python3 -m json.tool /opt/ScalingRobotics/scopex/data/monitor/cow-fall/events/fa
 - 前端 index、JS、CSS 的 HTTP 内容哈希一致；浏览器连接工具起初超时，后通过原生 Chrome 实际打开任务列表和上述结果详情并截图，页面复验完成。
 
 回滚配置、旧应用、计划和服务回执保存在目标 `/opt/ScalingRobotics/scopex/deploy-backups/20260928-edge7-8c6a8f9/`；本地发布清单、验证日志、业务结果和截图在 `.local/deploy-20260928-edge7/`。本轮不提交或推送代码，不修改另一台 workstation 的服务状态。
+
+
+### 2026-09-28 停用计划编辑与照片预览更新（10.200.0.7）
+
+功能提交 `32ee650` 已发布，验收时间 `2026-09-28 13:06:04 +08:00`。本轮 Python/前端变更，无依赖、Compose 或模型变化，按第 6 节代码更新路径执行：备份应用和配置、暂停原 4 个计划、`update.sh --check-only`、停止空闲 ScopeX Runtime、同步 `app/`、目标 Runtime 镜像回归、`update.sh` 重建 Runtime、验收、恢复计划。vLLM 容器 ID/启动时间保留，RTSP 关闭、两个服务仍为 `restart: no`。
+
+- 发布 338 文件哈希一致；目标 Python 3.11 Runtime 的 34 项相关回归通过。
+- 实际停用计划可编辑并保持停用，修改后恢复原定义；启用状态编辑返回 409。原计划 ID、名称、内容、规则及历史字段保留，4 个启用计划恢复，下一次时间从恢复时重新计算。
+- 相机历史任务 `task-1783a079dd87` 的三张原图接口返回 JPEG，逐张 SHA-256 与证据一致。页面 index/JS/CSS 与本地构建一致。Chrome 主流程此前在本地通过；本轮线上浏览器复验未完成（IAB 超时，原生 Chrome 有用户输入），不计为线上交互验收通过。
+- 原 258 个任务、2453 个任务资产文件 SHA-256 未变；健康检查 ok。未创建新业务任务或修改原任务结果。
+- 回滚资产及回执位于 `/opt/ScalingRobotics/scopex/deploy-backups/20260928-32ee650/`：`app-before.tar.gz`、`config-before.tar.gz`、`before.json`、`manifest.json`、`runtime-regression.txt`、`feature-acceptance.json`、`acceptance.json`。代码回滚时暂停计划并确认无活动任务，恢复备份的 `app/`，执行 `update.sh`，验收后恢复先前计划；普通代码回滚无需恢复配置备份或替换历史数据。
