@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, ref } from 'vue'
+import { nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import { RouterLink } from 'vue-router'
 import { api, ApiError } from '../api'
 import { executionLabels } from '../assessment'
@@ -16,6 +16,8 @@ const dailyTime = ref('08:00')
 const runAt = ref('')
 const busy = ref(false)
 const showComposer = ref(false)
+const editingId = ref('')
+const nameInput = ref<HTMLInputElement | null>(null)
 const refreshing = ref(true)
 const error = ref('')
 let timer: number | undefined
@@ -40,6 +42,36 @@ async function refresh() {
   } finally { refreshing.value = false }
 }
 
+function newSchedule() {
+  editingId.value = ''
+  name.value = ''
+  message.value = ''
+  kind.value = 'interval'
+  intervalMinutes.value = 30
+  dailyTime.value = '08:00'
+  runAt.value = ''
+  assessmentEnabled.value = true
+  showComposer.value = true
+  void nextTick(() => nameInput.value?.focus())
+}
+
+function editSchedule(row: ScheduleSnapshot) {
+  if (row.enabled) return
+  editingId.value = row.id
+  name.value = row.name
+  message.value = row.message
+  kind.value = row.kind
+  intervalMinutes.value = row.interval_minutes ?? 30
+  dailyTime.value = row.daily_time ?? '08:00'
+  const date = row.run_at ? new Date(row.run_at) : null
+  runAt.value = date && !Number.isNaN(date.getTime())
+    ? new Date(date.getTime() - date.getTimezoneOffset() * 60000).toISOString().slice(0, 16) : ''
+  assessmentEnabled.value = row.assessment_enabled !== false
+  error.value = ''
+  showComposer.value = true
+  void nextTick(() => nameInput.value?.focus())
+}
+
 async function createSchedule() {
   if (!name.value.trim() || !message.value.trim() || busy.value) return
   busy.value = true
@@ -52,7 +84,9 @@ async function createSchedule() {
     if (kind.value === 'interval') payload.interval_minutes = intervalMinutes.value
     if (kind.value === 'daily') payload.daily_time = dailyTime.value
     if (kind.value === 'once') payload.run_at = runAt.value
-    await api.createSchedule(payload)
+    if (editingId.value) await api.updateSchedule(editingId.value, { ...payload, assessment_enabled: assessmentEnabled.value })
+    else await api.createSchedule(payload)
+    editingId.value = ''
     name.value = ''
     message.value = ''
     showComposer.value = false
@@ -105,19 +139,20 @@ onBeforeUnmount(() => timer && window.clearInterval(timer))
 <template>
   <section class="schedule-page">
     <header class="page-heading"><div><h1>定时检查</h1><p class="muted">按检查项目管理计划，查看各自的执行结果。</p></div>
-      <button class="primary-button" :aria-expanded="showComposer" @click="showComposer = !showComposer">{{ showComposer ? '收起新建' : '新建定时检查' }}</button>
+      <button class="primary-button" :disabled="busy" :aria-expanded="showComposer" @click="showComposer ? showComposer = false : newSchedule()">{{ showComposer ? '收起表单' : '新建定时检查' }}</button>
     </header>
     <p v-if="error" class="error-banner" role="alert">{{ error }}</p>
     <div v-if="showComposer" class="panel schedule-compose-panel">
       <div class="eyebrow">SCHEDULE</div>
-      <h2>新建定时检查</h2>
+      <h2>{{ editingId ? '编辑定时检查' : '新建定时检查' }}</h2>
+      <p v-if="editingId" class="muted">保存后保持停用，再手动启用生效。已执行任务保留原始内容。</p>
       <p class="muted">到点只触发普通业务 Task；设备断电或 ScopeX 未运行期间错过的历史时间点直接跳过，不补跑。</p>
 
       <form class="schedule-form" @submit.prevent="createSchedule">
-        <label><span>任务名称</span><input v-model="name" placeholder="例如：编码器30分钟检查" /></label>
+        <label><span>任务名称</span><input ref="nameInput" v-model="name" maxlength="120" required placeholder="例如：编码器30分钟检查" /></label>
         <label class="wide-field">
           <span>任务内容</span>
-          <textarea v-model="message" rows="4" placeholder="直接写检查目标和异常条件，例如：检查当前CPU和内存，任一项使用率超过80%判为异常。"></textarea>
+          <textarea v-model="message" maxlength="32768" required rows="4" placeholder="直接写检查目标和异常条件，例如：检查当前CPU和内存，任一项使用率超过80%判为异常。"></textarea>
         </label>
         <label>
           <span>触发方式</span>
@@ -135,7 +170,8 @@ onBeforeUnmount(() => timer && window.clearInterval(timer))
           <small class="muted">异常条件直接写在任务内容中；由原任务同时给出标签，不另调报告模型。仅影响后续执行，不补评历史。</small>
         </label>
         <div class="schedule-submit">
-          <button class="primary-button" :disabled="busy || !name.trim() || !message.trim()">{{ busy ? '保存中…' : '保存定时任务' }}</button>
+          <button class="primary-button" :disabled="busy || !name.trim() || !message.trim()">{{ busy ? '保存中…' : editingId ? '保存修改' : '保存定时任务' }}</button>
+          <button type="button" class="ghost-button" :disabled="busy" @click="showComposer = false; editingId = ''">取消</button>
         </div>
       </form>
     </div>
@@ -162,6 +198,7 @@ onBeforeUnmount(() => timer && window.clearInterval(timer))
           </div>
         </div>
         <div class="schedule-actions">
+          <button class="ghost-button" :disabled="row.enabled || busy" :title="row.enabled ? '请先停用再编辑' : '编辑计划'" @click="editSchedule(row)">编辑</button>
           <button class="ghost-button" role="switch" :aria-checked="row.assessment_enabled !== false" :disabled="!!assessmentUpdating" @click="toggleAssessment(row)">
             结果评估：{{ row.assessment_enabled === false ? '关闭' : '开启' }}
           </button>

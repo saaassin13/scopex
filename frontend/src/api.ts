@@ -108,6 +108,8 @@ export const api = {
       method: 'POST', body: JSON.stringify({ rating, tags, note }),
     }),
   exportUrl: (id: string) => `/tasks/${encodeURIComponent(id)}/export`,
+  getImages: (id: string) => request<{ images: Array<{ index: number; filename: string; source: string }> }>(`/tasks/${encodeURIComponent(id)}/images`),
+  imageUrl: (id: string, index: number) => `/tasks/${encodeURIComponent(id)}/images/${index}`,
   getPlots: (id: string) => request<{ plots: Array<{ index: number; filename: string; candidate_id: string | null; kind: string }> }>(`/tasks/${encodeURIComponent(id)}/plots`),
   plotUrl: (id: string, index: number) => `/tasks/${encodeURIComponent(id)}/plots/${index}`,
   getDataPackage: (id: string) =>
@@ -128,6 +130,8 @@ export const api = {
     enabled?: boolean
     assessment_enabled?: boolean
   }) => request<ScheduleSnapshot>('/schedules', { method: 'POST', body: JSON.stringify(payload) }),
+  updateSchedule: (id: string, payload: { name: string; message: string; kind: 'interval' | 'daily' | 'once'; interval_minutes?: number; daily_time?: string; run_at?: string; assessment_enabled: boolean }) =>
+    request<ScheduleSnapshot>(`/schedules/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(payload) }),
   setScheduleAssessment: (id: string, assessment_enabled: boolean) =>
     request<ScheduleSnapshot>(`/schedules/${encodeURIComponent(id)}/assessment`, {
       method: 'PATCH', body: JSON.stringify({ assessment_enabled }),

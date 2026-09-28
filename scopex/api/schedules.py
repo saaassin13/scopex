@@ -129,6 +129,27 @@ class ScheduleService:
             self._persist_locked()
         return dict(row)
 
+    def update(self, schedule_id: str, *, name: str, message: str, kind: str,
+               interval_minutes: int | None = None, daily_time: str | None = None,
+               run_at: str | None = None, assessment_enabled: bool = True) -> dict[str, Any]:
+        with self._lock:
+            row = self._items.get(schedule_id)
+            if row is None:
+                raise ScheduleNotFoundError(schedule_id)
+            if row["enabled"]:
+                raise TaskBusyError("请先停用定时任务，再修改")
+            name, message = name.strip(), message.strip()
+            if not name or not message or len(name) > 120 or len(message) > 32768:
+                raise ValueError("任务名称或内容为空，或超过长度限制")
+            if not isinstance(assessment_enabled, bool):
+                raise ValueError("assessment_enabled must be a boolean")
+            rule = self._normalize_rule(kind, interval_minutes, daily_time, run_at)
+            row.update(name=name, message=message, kind=kind, **rule,
+                       assessment_enabled=assessment_enabled, next_run_at=None,
+                       updated_at=iso(now_local()))
+            self._persist_locked()
+            return dict(row)
+
     def set_enabled(self, schedule_id: str, enabled: bool) -> dict[str, Any]:
         with self._lock:
             row = self._items.get(schedule_id)
@@ -204,6 +225,8 @@ class ScheduleService:
             row = self._items.get(schedule_id)
             if row is None:
                 raise ScheduleNotFoundError(schedule_id)
+            if advance_schedule and (not row.get("enabled") or row.get("next_run_at") != planned):
+                return {"schedule_id": schedule_id, "status": "SKIPPED_DISABLED"}
             snapshot = dict(row)
 
         triggered_at = now_local()
@@ -243,7 +266,7 @@ class ScheduleService:
                 row["last_run_at"] = run["triggered_at"]
                 row["last_status"] = status
                 row["last_task_id"] = task_id
-                if advance_schedule:
+                if advance_schedule and row.get("enabled") and row.get("next_run_at") == planned:
                     if row["kind"] == "once":
                         row["enabled"] = False
                         row["next_run_at"] = None

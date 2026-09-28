@@ -93,6 +93,17 @@ class ScheduleCreateRequest(BaseModel):
     assessment_enabled: StrictBool = True
 
 
+class ScheduleUpdateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: str = Field(min_length=1, max_length=120)
+    message: str = Field(min_length=1, max_length=32768)
+    kind: Literal["interval", "daily", "once"]
+    interval_minutes: int | None = Field(default=None, ge=1, le=10080)
+    daily_time: str | None = Field(default=None, max_length=5)
+    run_at: str | None = Field(default=None, max_length=64)
+    assessment_enabled: StrictBool = True
+
+
 class ScheduleEnabledRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     enabled: bool
@@ -322,6 +333,18 @@ def create_app(
     def get_data_package(task_id: str) -> dict[str, Any]:
         return service.get_data_package(task_id)
 
+    @app.get("/tasks/{task_id}/images")
+    def task_images(task_id: str) -> dict[str, Any]:
+        evidence = service.get_evidence(task_id)
+        rows = service.data_packages.preview_images(evidence)
+        return {"images": [{"index": i, "filename": Path(row["path"]).name,
+                             "source": row["path"]} for i, row in enumerate(rows)]}
+
+    @app.get("/tasks/{task_id}/images/{index}")
+    def task_image(task_id: str, index: int) -> Response:
+        data = service.data_packages.preview_image_bytes(service.get_evidence(task_id), index)
+        return Response(data, media_type="image/jpeg", headers={"Cache-Control": "no-store"})
+
     @app.get("/tasks/{task_id}/plots")
     def task_plots(task_id: str) -> dict[str, Any]:
         service.get_task(task_id)
@@ -361,6 +384,10 @@ def create_app(
                 enabled=body.enabled,
                 assessment_enabled=body.assessment_enabled,
             )
+
+        @app.patch("/schedules/{schedule_id}")
+        def update_schedule(schedule_id: str, body: ScheduleUpdateRequest) -> dict[str, Any]:
+            return schedules.update(schedule_id, **body.model_dump())
 
         @app.patch("/schedules/{schedule_id}/enabled")
         def set_schedule_enabled(schedule_id: str, body: ScheduleEnabledRequest) -> dict[str, Any]:

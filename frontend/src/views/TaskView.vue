@@ -5,6 +5,7 @@ import { api, ApiError } from '../api'
 import AssessmentPanel from '../components/AssessmentPanel.vue'
 import ReportText from '../components/ReportText.vue'
 import EncoderPlots from '../components/EncoderPlots.vue'
+import TaskImages from '../components/TaskImages.vue'
 import { executionLabels } from '../assessment'
 import { taskTitle } from '../taskPresentation'
 import type {
@@ -476,6 +477,7 @@ onBeforeUnmount(() => timer && window.clearInterval(timer))
           <div v-else class="empty-state">{{ isQueued ? '已进入等待队列，尚未开始分析。' : '执行结束后显示结果。' }}</div>
         </section>
 
+        <TaskImages v-if="isTerminal && resultLoaded" :task-id="taskId" />
         <EncoderPlots v-if="isTerminal && resultLoaded" :task-id="taskId" />
         <details v-if="isTerminal" class="panel feedback-panel"><summary class="details-heading">评价结果与导出复盘包</summary>
           <div class="section-heading">

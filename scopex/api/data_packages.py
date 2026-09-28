@@ -213,6 +213,40 @@ class DataPackageService:
                 })
         return out
 
+    def preview_images(self, evidence: dict[str, Any]) -> list[dict[str, Any]]:
+        rows = []
+        seen = set()
+        for item in self._image_evidence(evidence):
+            if (item['path'] in seen or Path(item['path']).suffix.lower() not in {'.jpg', '.jpeg'}
+                    or not re.fullmatch(r'[a-f0-9]{64}', item['sha256'])):
+                continue
+            # Resolve only evidence-owned paths within configured read-only sources.
+            try:
+                self._resolve(item['path'])
+            except DataPackageError:
+                continue
+            seen.add(item['path'])
+            rows.append(item)
+        return sorted(rows, key=lambda row: row['path'])
+
+    def preview_image_bytes(self, evidence: dict[str, Any], index: int) -> bytes:
+        rows = self.preview_images(evidence)
+        if not 0 <= index < len(rows):
+            raise DataPackageError('照片不存在或无法安全读取')
+        item = rows[index]
+        try:
+            path = self._resolve(item['path'])
+            if not path.is_file():
+                raise DataPackageError('原图已移除或无法读取')
+            with path.open('rb') as stream:
+                data = stream.read(20 * 1024 * 1024 + 1)
+        except OSError as exc:
+            raise DataPackageError('原图已移除或无法读取') from exc
+        if (len(data) > 20 * 1024 * 1024 or not data.startswith(b'\xff\xd8\xff')
+                or hashlib.sha256(data).hexdigest() != item['sha256']):
+            raise DataPackageError('原图与保存的分析证据不一致，无法预览')
+        return data
+
     def preview_plots(self, task_id: str) -> list[dict[str, Any]]:
         """Only task-owned PNGs with a recorded digest may be previewed."""
         scratch = self._task_root(task_id) / 'scratch'

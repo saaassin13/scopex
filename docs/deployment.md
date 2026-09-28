@@ -138,7 +138,7 @@ docker compose --env-file /opt/ScalingRobotics/scopex/config/edge.env --env-file
 
 **不重复首次安装，不传模型，不重新构建 Runtime 镜像。** 如果依赖发生变化，改走第 8 节。
 
-当前 `update.sh` 只执行 `compose up -d`，挂载代码变化不保证重启 Python 进程。因此当前更新流程先停服务，更新后再启动，避免旧进程继续运行。此流程会短暂停止 vLLM。
+当前 `update.sh` 执行 `compose up -d --no-deps --force-recreate scopex`，会重建 ScopeX Runtime，使挂载代码生效；不会启动或重建 vLLM。仅更新 Python、前端或 Skill，且 Compose、设备配置与镜像均未变化、vLLM 正在运行时，可以在完成维护前检查和同步后执行 `update.sh`。下列为完整停机更新流程：当模型/Compose 参数也有变化，或 vLLM 原本已停止时使用；会停止并重新启动两个服务。
 
 1. **准备机：** 构建前端（前端依赖变化时先执行 `npm --prefix frontend install`）。
 
@@ -430,3 +430,17 @@ python3 -m json.tool /opt/ScalingRobotics/scopex/data/monitor/cow-fall/events/fa
 代码 `8c6a8f9` 已部署到 `yanlan@10.200.0.2` 的原仓库 `/opt/ScalingRobotics/scopex/app`。现有仓库切到 `feature/video-inference-validation`，原 main 引用与三处现场前端差异保留；没有建立第二个仓库或服务。目标 Linux 全量 831 项通过，已有 Runtime 镜像的 Node 24.21.0 构建前端通过，部署后 Runtime 内新增专项 10 项通过。
 
 本次按当前 `update.sh` 的 `up -d --no-deps --force-recreate scopex` 更新，仅重建 ScopeX Runtime；第 6 节关于脚本不强制重启的旧描述不适用于当前脚本。新 API、前端资源哈希和历史记录核验通过，29 条任务 ID/状态保留，配置校验一致，vLLM 与 monitor 容器未重建。回滚包及验收回执位于 `/opt/ScalingRobotics/scopex/deploy-backups/20260928-8c6a8f9/`。业务识别准确率边界见交接第 7 节。
+
+### 2026-09-28 scaling@10.200.0.7 更新与启动回执
+
+检查时目标仍为原 `c6d36a2` 对应应用，两个容器自 9 月 17 日起已停止，新版相机连续性工具不存在。用户此前已授权部署，本轮按第 6 节完整流程和第 7 节配置变更步骤完成：备份 → 暂停计划 → `update.sh --check-only` 与 `stop.sh` → 只同步 `app/` → `start.sh` → 数据/业务/页面验收 → 恢复计划。没有重复首次安装或混用旧 systemd 启动方式。
+
+- 发布代码 `8c6a8f9`，文档基线 `086e53f`，另同步本对话的交接文档更新；336 个发布文件在同步后逐项 SHA-256 匹配。目标不含 `.git`，版本以发布清单和回执为证，不伪造目标 Git HEAD。
+- 复用已安装 Runtime、Sandbox、vLLM 镜像和现有模型，依赖探针通过；本机前端构建通过。目标实际 Runtime 中 38 项回归、分析 Sandbox 中 70 项编码器回归通过。之前同版代码的 Linux 831 项全量结果保留原范围，不冒称本机重新执行了 831 项。
+- 启动后 ScopeX 可访问、vLLM healthy。采用当前 Compose 的 `98304` 上下文、`64` 请求、`1800s` 调查预算，两个服务 `restart=no`。设备路径、模型权重和已有镜像不变。仅为兼容可选监控配置补入关闭状态及默认镜像/模型目录变量，`SCOPEX_MONITOR_ENABLED=0`，未创建 monitor 容器，8554/8790 无监听。
+- 原 257 条历史任务的 2,443 个资产文件逐项哈希不变；原 4 个计划恢复启用，规则和任务内容保留，下一次触发从恢复时重新计算（30 分钟计划 13:09:04、60 分钟计划 13:39:04，Asia/Shanghai）。停机期间不补跑。
+- 稳定日志 `CowDisinfect-20260928-110000.log` 的 11:49:39–11:50:39 窗口成功读取 3,305 个 raw 样本。最初探针使用正在轮转的 12 点日志，触发 `input_changed` 并拒绝结果；这次未通过记录保留，没有改检测器绕过保护。
+- 原生业务任务 `task-1783a079dd87` COMPLETED/complete，实际查看三张指定原图并执行 `neighbors`、`summarize`，保存了连续三张规则的异常结果和覆盖限制。这证明部署调用链可用，不是独立人工确认的识别准确率验收。
+- 前端 index、JS、CSS 的 HTTP 内容哈希一致；浏览器连接工具起初超时，后通过原生 Chrome 实际打开任务列表和上述结果详情并截图，页面复验完成。
+
+回滚配置、旧应用、计划和服务回执保存在目标 `/opt/ScalingRobotics/scopex/deploy-backups/20260928-edge7-8c6a8f9/`；本地发布清单、验证日志、业务结果和截图在 `.local/deploy-20260928-edge7/`。本轮不提交或推送代码，不修改另一台 workstation 的服务状态。
